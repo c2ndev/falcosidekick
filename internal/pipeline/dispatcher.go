@@ -18,6 +18,7 @@ package pipeline
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -53,6 +54,7 @@ type OutputWorker struct {
 	lastSuccess    atomic.Value
 	queue          chan *domain.Event
 	circuitBreaker *CircuitBreaker
+	inflight       sync.WaitGroup
 	retry          RetryConfig
 	queueCapacity  int
 	workerCount    int
@@ -106,6 +108,11 @@ func (w *OutputWorker) Enqueue(event *domain.Event) {
 	}
 }
 
+// WaitInflight blocks until all in-flight send operations complete.
+func (w *OutputWorker) WaitInflight() {
+	w.inflight.Wait()
+}
+
 // GetStatus returns observable state for the UI.
 func (w *OutputWorker) GetStatus() OutputStatus {
 	return OutputStatus{
@@ -127,14 +134,16 @@ func (w *OutputWorker) runWorker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case event := <-w.queue:
+			w.inflight.Add(1)
 			w.queueDepth.Add(-1)
 			w.sendWithRetry(ctx, event)
+			w.inflight.Done()
 		}
 	}
 }
 
 func (w *OutputWorker) sendWithRetry(ctx context.Context, event *domain.Event) {
-	if w.circuitBreaker.GetState() == CircuitOpen {
+	if !w.circuitBreaker.AllowRequest() {
 		w.failedTotal.Add(1)
 		if w.metrics != nil {
 			w.metrics.RecordOutput(ctx, w.output.Name(), "circuit_open", 0)
@@ -209,7 +218,7 @@ func (d *Dispatcher) DispatchEvent(event *domain.Event, targets []string) {
 	}
 }
 
-// DrainQueues waits for all queues to empty or the context to expire.
+// DrainQueues waits for all queues to empty AND all in-flight sends to complete.
 func (d *Dispatcher) DrainQueues(ctx context.Context) {
 	for {
 		select {
@@ -224,6 +233,9 @@ func (d *Dispatcher) DrainQueues(ctx context.Context) {
 				}
 			}
 			if allEmpty {
+				for _, w := range d.workers {
+					w.WaitInflight()
+				}
 				return
 			}
 			time.Sleep(50 * time.Millisecond)

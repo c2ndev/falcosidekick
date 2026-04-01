@@ -29,7 +29,7 @@ const (
 	CircuitClosed CircuitState = iota
 	// CircuitOpen blocks all requests.
 	CircuitOpen
-	// CircuitHalfOpen allows one probe request to test recovery.
+	// CircuitHalfOpen allows exactly one probe request to test recovery.
 	CircuitHalfOpen
 )
 
@@ -61,6 +61,7 @@ type CircuitBreaker struct {
 	failureCount int
 	successCount int
 	state        CircuitState
+	probing      bool
 	mu           sync.Mutex
 }
 
@@ -87,8 +88,38 @@ func (cb *CircuitBreaker) GetState() CircuitState {
 	if cb.state == CircuitOpen && time.Since(cb.lastFailure) > cb.cfg.ResetTimeout {
 		cb.state = CircuitHalfOpen
 		cb.successCount = 0
+		cb.probing = false
 	}
 	return cb.state
+}
+
+// AllowRequest checks if a request should be allowed through.
+// In closed state, always allows. In open state, always blocks.
+// In half-open state, allows exactly one probe request at a time.
+func (cb *CircuitBreaker) AllowRequest() bool {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	if cb.state == CircuitOpen && time.Since(cb.lastFailure) > cb.cfg.ResetTimeout {
+		cb.state = CircuitHalfOpen
+		cb.successCount = 0
+		cb.probing = false
+	}
+
+	switch cb.state {
+	case CircuitClosed:
+		return true
+	case CircuitOpen:
+		return false
+	case CircuitHalfOpen:
+		if cb.probing {
+			return false
+		}
+		cb.probing = true
+		return true
+	default:
+		return false
+	}
 }
 
 // RecordSuccess registers a successful request.
@@ -97,6 +128,7 @@ func (cb *CircuitBreaker) RecordSuccess() {
 	defer cb.mu.Unlock()
 
 	cb.failureCount = 0
+	cb.probing = false
 	if cb.state == CircuitHalfOpen {
 		cb.successCount++
 		if cb.successCount >= cb.cfg.SuccessThreshold {
@@ -110,6 +142,7 @@ func (cb *CircuitBreaker) RecordFailure() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
+	cb.probing = false
 	cb.failureCount++
 	cb.lastFailure = time.Now()
 	if cb.failureCount >= cb.cfg.FailureThreshold {

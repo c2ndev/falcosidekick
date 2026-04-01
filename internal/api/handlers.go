@@ -50,7 +50,7 @@ func (s *Server) handlePostEvent(c fiber.Ctx) error {
 func (s *Server) handlePostTest(c fiber.Ctx) error {
 	event := domain.Event{
 		Time:         time.Now().UTC(),
-		OutputFields: map[string]interface{}{},
+		OutputFields: map[string]interface{}{"source": "falcosidekick-test"},
 		Tags:         []string{"test"},
 		Rule:         "Test event",
 		Output:       "This is a test event from falcosidekick",

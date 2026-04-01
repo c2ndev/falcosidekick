@@ -75,6 +75,9 @@ func NewEnricher(cfg EnricherConfig) (*Enricher, error) {
 	if fieldThreshold <= 0 {
 		fieldThreshold = defaultTruncateFieldThreshold
 	}
+	if fieldThreshold <= len(truncateFieldSuffix) {
+		return nil, fmt.Errorf("enricher: truncate_field_threshold must be > %d", len(truncateFieldSuffix))
+	}
 
 	return &Enricher{
 		customFields:           cfg.CustomFields,

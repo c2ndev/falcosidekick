@@ -375,3 +375,52 @@ func TestDispatcherConcurrentDispatch(t *testing.T) {
 
 	require.Equal(t, int64(100), count.Load())
 }
+
+func TestDrainQueuesWaitsForInflightSend(t *testing.T) {
+	sendStarted := make(chan struct{})
+	sendBlock := make(chan struct{})
+	var sendCompleted atomic.Bool
+
+	output := &mockOutput{
+		name: "test",
+		sendFunc: func(_ context.Context, _ *domain.Event) error {
+			close(sendStarted)
+			<-sendBlock
+			sendCompleted.Store(true)
+			return nil
+		},
+	}
+
+	d := NewDispatcher([]domain.Output{output}, defaultWorkerConfig(), nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.Start(ctx)
+
+	d.DispatchEvent(newTestEvent(), []string{"test"})
+
+	<-sendStarted
+
+	drainDone := make(chan struct{})
+	go func() {
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer drainCancel()
+		d.DrainQueues(drainCtx)
+		close(drainDone)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-drainDone:
+		t.Fatal("DrainQueues returned while Send was still in flight")
+	default:
+	}
+
+	close(sendBlock)
+
+	select {
+	case <-drainDone:
+		assert.True(t, sendCompleted.Load(), "Send must complete before DrainQueues returns")
+	case <-time.After(5 * time.Second):
+		t.Fatal("DrainQueues did not return after Send completed")
+	}
+}

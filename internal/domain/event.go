@@ -103,8 +103,13 @@ func (e *Event) Validate() error {
 	if e.Time.IsZero() {
 		return fmt.Errorf("%w: time is required", ErrInvalidEvent)
 	}
-	if e.OutputFields == nil {
-		e.OutputFields = make(map[string]interface{})
+	if e.Priority != "" {
+		if _, err := ParsePriority(string(e.Priority)); err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalidEvent, err)
+		}
+	}
+	if len(e.OutputFields) == 0 {
+		return fmt.Errorf("%w: output_fields is required", ErrInvalidEvent)
 	}
 	if e.Source == "" {
 		e.Source = "syscall"

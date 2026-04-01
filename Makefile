@@ -86,13 +86,40 @@ test-coverage: ## Run tests with coverage report and threshold check
 ## --------------------------------------
 
 .PHONY: lint
-lint: ## Run golangci-lint
+lint: ## Run golangci-lint (Go)
 	golangci-lint run ./...
 
 .PHONY: lint-fix
 lint-fix: ## Run golangci-lint with auto-fix
 	golangci-lint run --fix ./...
 	golangci-lint fmt ./...
+
+## --------------------------------------
+## Frontend (ui/)
+## --------------------------------------
+
+.PHONY: ui-install
+ui-install: ## Install frontend dependencies
+	cd ui && npm install
+
+.PHONY: ui-build
+ui-build: ## Build frontend for production
+	cd ui && npm run build
+
+.PHONY: ui-lint
+ui-lint: ## Lint frontend
+	cd ui && npm run lint
+
+.PHONY: ui-dev
+ui-dev: ## Start frontend dev server
+	cd ui && npm run dev
+
+## --------------------------------------
+## Full verification
+## --------------------------------------
+
+.PHONY: verify
+verify: lint test ui-build ui-lint ## Run all Go and UI checks
 
 ## --------------------------------------
 ## Release

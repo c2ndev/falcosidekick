@@ -136,3 +136,35 @@ func TestWebhookCreateValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestWebhookCheckCertDefaultsToTrue(t *testing.T) {
+	o, err := Type.New(map[string]any{"address": "http://example.com"}, domain.OutputDeps{})
+	require.NoError(t, err)
+
+	w := o.(*output)
+	assert.Nil(t, w.cfg.CheckCert, "CheckCert not set in config")
+
+	certFalse := false
+	o2, err := Type.New(map[string]any{"address": "http://example.com", "checkcert": &certFalse}, domain.OutputDeps{})
+	require.NoError(t, err)
+	w2 := o2.(*output)
+	require.NotNil(t, w2.cfg.CheckCert)
+	assert.False(t, *w2.cfg.CheckCert, "CheckCert explicitly false")
+}
+
+func TestWebhookSchemaIncludesMinimumPriority(t *testing.T) {
+	found := false
+	for _, f := range Type.Schema.Fields {
+		if f.Name == "minimumpriority" {
+			found = true
+			assert.Equal(t, "priority", f.Type)
+		}
+	}
+	assert.True(t, found, "minimumpriority must be in schema")
+}
+
+func TestWebhookSchemaDoesNotExposeMutualTLS(t *testing.T) {
+	for _, f := range Type.Schema.Fields {
+		assert.NotEqual(t, "mutualtls", f.Name, "mutualtls should not be in schema until implemented")
+	}
+}

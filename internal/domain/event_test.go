@@ -125,21 +125,32 @@ func TestEventValidate(t *testing.T) {
 		},
 		{
 			name:    "missing rule",
-			event:   Event{Time: now, Source: "syscall"},
+			event:   Event{Time: now, Source: "syscall", OutputFields: map[string]interface{}{"k": "v"}},
 			wantErr: true,
 		},
 		{
 			name:    "missing time",
-			event:   Event{Rule: "Test rule", Source: "syscall"},
+			event:   Event{Rule: "Test rule", Source: "syscall", OutputFields: map[string]interface{}{"k": "v"}},
 			wantErr: true,
 		},
 		{
-			name:  "nil output fields defaults to empty map",
-			event: Event{Rule: "Test rule", Time: now, Source: "syscall"},
+			name:    "nil output fields rejected",
+			event:   Event{Rule: "Test rule", Time: now, Source: "syscall"},
+			wantErr: true,
+		},
+		{
+			name:    "empty output fields rejected",
+			event:   Event{Rule: "Test rule", Time: now, Source: "syscall", OutputFields: map[string]interface{}{}},
+			wantErr: true,
+		},
+		{
+			name:    "invalid priority rejected",
+			event:   Event{Rule: "Test rule", Time: now, Priority: "bogus", OutputFields: map[string]interface{}{"k": "v"}},
+			wantErr: true,
 		},
 		{
 			name:  "empty source defaults to syscall",
-			event: Event{Rule: "Test rule", Time: now},
+			event: Event{Rule: "Test rule", Time: now, OutputFields: map[string]interface{}{"k": "v"}},
 		},
 	}
 

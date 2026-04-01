@@ -101,6 +101,54 @@ func TestCircuitBreakerReopensOnFailureInHalfOpen(t *testing.T) {
 	assert.Equal(t, CircuitOpen, cb.GetState())
 }
 
+func TestAllowRequestClosedAlwaysAllows(t *testing.T) {
+	cb := NewCircuitBreaker(CircuitBreakerConfig{})
+	assert.True(t, cb.AllowRequest())
+	assert.True(t, cb.AllowRequest())
+	assert.True(t, cb.AllowRequest())
+}
+
+func TestAllowRequestOpenAlwaysBlocks(t *testing.T) {
+	cb := NewCircuitBreaker(CircuitBreakerConfig{FailureThreshold: 1, ResetTimeout: 5 * time.Second})
+	cb.RecordFailure()
+	assert.False(t, cb.AllowRequest())
+	assert.False(t, cb.AllowRequest())
+}
+
+func TestAllowRequestHalfOpenSingleProbe(t *testing.T) {
+	cb := NewCircuitBreaker(CircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		ResetTimeout:     50 * time.Millisecond,
+	})
+
+	cb.RecordFailure()
+	assert.False(t, cb.AllowRequest())
+
+	time.Sleep(100 * time.Millisecond)
+
+	assert.True(t, cb.AllowRequest(), "first probe should be allowed")
+	assert.False(t, cb.AllowRequest(), "second probe should be blocked while first is active")
+	assert.False(t, cb.AllowRequest(), "third probe should also be blocked")
+
+	cb.RecordSuccess()
+	assert.True(t, cb.AllowRequest(), "after success, requests should be allowed again")
+}
+
+func TestAllowRequestHalfOpenProbeFailureReopens(t *testing.T) {
+	cb := NewCircuitBreaker(CircuitBreakerConfig{
+		FailureThreshold: 1,
+		ResetTimeout:     50 * time.Millisecond,
+	})
+
+	cb.RecordFailure()
+	time.Sleep(100 * time.Millisecond)
+
+	assert.True(t, cb.AllowRequest())
+	cb.RecordFailure()
+	assert.False(t, cb.AllowRequest(), "should be open again after probe failure")
+}
+
 func TestCircuitStateString(t *testing.T) {
 	tests := []struct {
 		want  string
