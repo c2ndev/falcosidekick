@@ -37,11 +37,11 @@ const (
 )
 
 type config struct {
-	CustomHeaders map[string]string `mapstructure:"customheaders"`
-	Address       string            `mapstructure:"address"`
-	Method        string            `mapstructure:"method"`
-	CheckCert     bool              `mapstructure:"checkcert"`
-	MutualTLS     bool              `mapstructure:"mutualtls"`
+	CustomHeaders   map[string]string `mapstructure:"customheaders"`
+	CheckCert       *bool             `mapstructure:"checkcert"`
+	Address         string            `mapstructure:"address"`
+	Method          string            `mapstructure:"method"`
+	MinimumPriority string            `mapstructure:"minimumpriority"`
 }
 
 // Type describes the webhook output for the catalog.
@@ -54,8 +54,8 @@ var Type = domain.OutputType{
 			{Name: "address", Type: "string", Required: true, Label: "URL"},
 			{Name: "method", Type: "enum", Values: []string{"POST", "PUT"}, Default: "POST", Label: "HTTP Method"},
 			{Name: "customheaders", Type: "map", Label: "Custom Headers"},
+			{Name: "minimumpriority", Type: "priority", Label: "Minimum Priority"},
 			{Name: "checkcert", Type: "bool", Default: true, Label: "Verify TLS Certificate"},
-			{Name: "mutualtls", Type: "bool", Default: false, Label: "Mutual TLS"},
 		},
 	},
 }
@@ -77,9 +77,14 @@ func createOutput(raw map[string]any, _ domain.OutputDeps) (domain.Output, error
 		cfg.Method = defaultMethod
 	}
 
+	checkCert := true
+	if cfg.CheckCert != nil {
+		checkCert = *cfg.CheckCert
+	}
+
 	return &output{
 		cfg:    cfg,
-		client: buildHTTPClient(cfg.CheckCert),
+		client: buildHTTPClient(checkCert),
 	}, nil
 }
 

@@ -54,6 +54,14 @@ func TestNewEnricherInvalidTemplate(t *testing.T) {
 	assert.Contains(t, err.Error(), "parse template")
 }
 
+func TestNewEnricherRejectsTooSmallFieldThreshold(t *testing.T) {
+	_, err := NewEnricher(EnricherConfig{
+		TruncateFieldThreshold: 3,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "truncate_field_threshold")
+}
+
 func TestEnrichGeneratesUUID(t *testing.T) {
 	e, _ := NewEnricher(EnricherConfig{})
 	event := newTestEvent()
