@@ -46,12 +46,12 @@ IMAGE_TAG := falcosecurity/falcosidekick:latest
 .PHONY: falcosidekick
 falcosidekick: ## Build falcosidekick binary
 	$(GO) mod download
-	GOOS=$(GOOS) GOARCH=$(GOARCH) $(GO) build -trimpath -ldflags "$(LDFLAGS)" -gcflags all=-trimpath=/src -asmflags all=-trimpath=/src -a -installsuffix cgo -o $@ .
+	GOOS=$(GOOS) GOARCH=$(GOARCH) $(GO) build -trimpath -ldflags "$(LDFLAGS)" -gcflags all=-trimpath=/src -asmflags all=-trimpath=/src -a -installsuffix cgo -o $@ ./cmd/falcosidekick/
 
 .PHONY: falcosidekick-linux
 falcosidekick-linux: ## Build falcosidekick binary for Linux
 	$(GO) mod download
-	GOOS=linux GOARCH=$(GOARCH) $(GO) build -ldflags "$(LDFLAGS)" -gcflags all=-trimpath=/src -asmflags all=-trimpath=/src -a -installsuffix cgo -o falcosidekick .
+	GOOS=linux GOARCH=$(GOARCH) $(GO) build -ldflags "$(LDFLAGS)" -gcflags all=-trimpath=/src -asmflags all=-trimpath=/src -a -installsuffix cgo -o falcosidekick ./cmd/falcosidekick/
 
 .PHONY: build-image
 build-image: falcosidekick-linux ## Build Docker image
