@@ -35,14 +35,6 @@ LDFLAGS=-X $(PKG).GitVersion=$(GIT_VERSION) -X $(PKG).gitCommit=$(GIT_HASH) -X $
 
 # Directories.
 ROOT_DIR:=$(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
-TOOLS_DIR := hack/tools
-TOOLS_BIN_DIR := $(abspath $(TOOLS_DIR)/bin)
-GO_INSTALL = ./hack/go_install.sh
-
-# Binaries.
-GOLANGCI_LINT_VER := v1.57.2
-GOLANGCI_LINT_BIN := golangci-lint
-GOLANGCI_LINT := $(TOOLS_BIN_DIR)/$(GOLANGCI_LINT_BIN)-$(GOLANGCI_LINT_VER)
 
 # Docker
 IMAGE_TAG := falcosecurity/falcosidekick:latest
@@ -52,21 +44,21 @@ IMAGE_TAG := falcosecurity/falcosidekick:latest
 ## --------------------------------------
 
 .PHONY: falcosidekick
-falcosidekick:
+falcosidekick: ## Build falcosidekick binary
 	$(GO) mod download
 	GOOS=$(GOOS) GOARCH=$(GOARCH) $(GO) build -trimpath -ldflags "$(LDFLAGS)" -gcflags all=-trimpath=/src -asmflags all=-trimpath=/src -a -installsuffix cgo -o $@ .
 
 .PHONY: falcosidekick-linux
-falcosidekick-linux:
+falcosidekick-linux: ## Build falcosidekick binary for Linux
 	$(GO) mod download
 	GOOS=linux GOARCH=$(GOARCH) $(GO) build -ldflags "$(LDFLAGS)" -gcflags all=-trimpath=/src -asmflags all=-trimpath=/src -a -installsuffix cgo -o falcosidekick .
 
 .PHONY: build-image
-build-image: falcosidekick-linux
+build-image: falcosidekick-linux ## Build Docker image
 	$(DOCKER) build -t $(IMAGE_TAG) .
 
 .PHONY: push-image
-push-image:
+push-image: ## Push Docker image
 	$(DOCKER) push $(IMAGE_TAG)
 
 ## --------------------------------------
@@ -74,24 +66,33 @@ push-image:
 ## --------------------------------------
 
 .PHONY: test
-test:
+test: ## Run unit tests with race detection
 	$(GO) vet ./...
 	$(GO) test ${TEST_FLAGS} ./...
 
 .PHONY: test-coverage
-test-coverage:
-	$(GO) test ./outputs -count=1 -cover -v ./...
+test-coverage: ## Run tests with coverage report and threshold check
+	$(GO) test -race -coverprofile=coverage.out -covermode=atomic ./...
+	@$(GO) tool cover -func=coverage.out | tail -1
+	@COVERAGE=$$($(GO) tool cover -func=coverage.out | grep total | awk '{print $$3}' | tr -d '%'); \
+	if [ $$(echo "$$COVERAGE < 80" | bc -l) -eq 1 ]; then \
+		echo "FAIL: Coverage $$COVERAGE% is below 80% threshold"; exit 1; \
+	else \
+		echo "OK: Coverage $$COVERAGE%"; \
+	fi
 
 ## --------------------------------------
 ## Linting
 ## --------------------------------------
 
 .PHONY: lint
-lint: $(GOLANGCI_LINT) ## Lint codebase
-	$(GOLANGCI_LINT) run -v
+lint: ## Run golangci-lint
+	golangci-lint run ./...
 
-lint-full: $(GOLANGCI_LINT) ## Run slower linters to detect possible issues
-	$(GOLANGCI_LINT) run -v --fast=false
+.PHONY: lint-fix
+lint-fix: ## Run golangci-lint with auto-fix
+	golangci-lint run --fix ./...
+	golangci-lint fmt ./...
 
 ## --------------------------------------
 ## Release
@@ -102,17 +103,10 @@ goreleaser-snapshot: ## Release snapshot using goreleaser
 	LDFLAGS="$(LDFLAGS)" goreleaser --snapshot --skip=sign --clean
 
 ## --------------------------------------
-## Tooling Binaries
-## --------------------------------------
-
-$(GOLANGCI_LINT): ## Build golangci-lint from tools folder.
-	GOBIN=$(TOOLS_BIN_DIR) $(GO_INSTALL) github.com/golangci/golangci-lint/cmd/golangci-lint $(GOLANGCI_LINT_BIN) $(GOLANGCI_LINT_VER)
-
-## --------------------------------------
 ## Cleanup / Verification
 ## --------------------------------------
 
 .PHONY: clean
-clean:
-	rm -rf hack/tools/bin
+clean: ## Remove build artifacts
 	rm -rf dist
+	rm -rf coverage.out
