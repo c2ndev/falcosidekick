@@ -1,0 +1,70 @@
+// Copyright (C) 2026 The Falco Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package api
+
+import (
+	"context"
+	"time"
+
+	"github.com/gofiber/fiber/v3"
+
+	"github.com/falcosecurity/falcosidekick/internal/domain"
+)
+
+func (s *Server) handlePostEvent(c fiber.Ctx) error {
+	var event domain.Event
+	if err := c.Bind().JSON(&event); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "invalid JSON: " + err.Error(),
+		})
+	}
+
+	if err := event.Validate(); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": err.Error(),
+		})
+	}
+
+	if s.metrics != nil {
+		s.metrics.RecordInput(context.Background(), event.Source, "accepted")
+	}
+
+	s.pipeline.ProcessEvent(context.Background(), &event)
+	return c.SendStatus(fiber.StatusOK)
+}
+
+func (s *Server) handlePostTest(c fiber.Ctx) error {
+	event := domain.Event{
+		Time:         time.Now().UTC(),
+		OutputFields: map[string]interface{}{},
+		Tags:         []string{"test"},
+		Rule:         "Test event",
+		Output:       "This is a test event from falcosidekick",
+		Source:       "internal",
+		Hostname:     "falcosidekick",
+		Priority:     domain.PriorityInformational,
+	}
+
+	s.pipeline.ProcessEvent(context.Background(), &event)
+	return c.SendStatus(fiber.StatusOK)
+}
+
+func (s *Server) handleGetHealthz(c fiber.Ctx) error {
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"status": "ok",
+	})
+}
