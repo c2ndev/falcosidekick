@@ -1,5 +1,19 @@
-// Package domain defines the core types, interfaces, and errors for falcosidekick.
-// It has zero dependencies on other internal packages.
+// Copyright (C) 2026 The Falco Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 package domain
 
 import (
@@ -12,6 +26,7 @@ import (
 // Priority represents a Falco event severity level.
 type Priority string
 
+// Priority constants ordered by severity (lowest to highest).
 const (
 	PriorityDebug         Priority = "debug"
 	PriorityInformational Priority = "informational"
@@ -23,9 +38,8 @@ const (
 	PriorityEmergency     Priority = "emergency"
 )
 
-// priorityOrder defines the severity ordering. Immutable after init.
 var priorityOrder = map[Priority]int{
-	"":                   -1,
+	"":                    -1,
 	PriorityDebug:         0,
 	PriorityInformational: 1,
 	PriorityNotice:        2,
@@ -36,19 +50,18 @@ var priorityOrder = map[Priority]int{
 	PriorityEmergency:     7,
 }
 
-// allPriorities lists valid priorities for validation. Immutable after init.
 var allPriorities = map[Priority]bool{
 	PriorityDebug: true, PriorityInformational: true, PriorityNotice: true,
 	PriorityWarning: true, PriorityError: true, PriorityCritical: true,
 	PriorityAlert: true, PriorityEmergency: true,
 }
 
-// GTE returns true if p is greater than or equal to other in severity.
+// GTE reports whether p is greater than or equal to other in severity.
 func (p Priority) GTE(other Priority) bool {
 	return priorityOrder[p] >= priorityOrder[other]
 }
 
-// String returns the priority as a title-cased string for display.
+// String returns the priority as a title-cased display string.
 func (p Priority) String() string {
 	if p == "" {
 		return ""
@@ -57,7 +70,7 @@ func (p Priority) String() string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-// ParsePriority converts a string to a Priority. Case-insensitive.
+// ParsePriority converts a case-insensitive string to a Priority.
 func ParsePriority(s string) (Priority, error) {
 	p := Priority(strings.ToLower(strings.TrimSpace(s)))
 	if p == "" {
@@ -71,19 +84,18 @@ func ParsePriority(s string) (Priority, error) {
 
 // Event represents a Falco security event.
 type Event struct {
-	UUID         string                 `json:"uuid,omitempty"`
-	Output       string                 `json:"output"`
-	Priority     Priority               `json:"priority"`
-	Rule         string                 `json:"rule"`
 	Time         time.Time              `json:"time"`
 	OutputFields map[string]interface{} `json:"output_fields"`
+	UUID         string                 `json:"uuid,omitempty"`
+	Output       string                 `json:"output"`
+	Rule         string                 `json:"rule"`
 	Source       string                 `json:"source"`
-	Tags         []string               `json:"tags,omitempty"`
 	Hostname     string                 `json:"hostname,omitempty"`
+	Priority     Priority               `json:"priority"`
+	Tags         []string               `json:"tags,omitempty"`
 }
 
-// Validate checks that the event has the minimum required fields
-// and applies defaults for optional fields.
+// Validate checks required fields and applies defaults.
 func (e *Event) Validate() error {
 	if e.Rule == "" {
 		return fmt.Errorf("%w: rule is required", ErrInvalidEvent)
@@ -100,10 +112,8 @@ func (e *Event) Validate() error {
 	return nil
 }
 
-// MarshalJSON implements custom JSON encoding. Priority is encoded as a string.
-func (e Event) MarshalJSON() ([]byte, error) {
+// MarshalJSON encodes the event as JSON.
+func (e *Event) MarshalJSON() ([]byte, error) {
 	type Alias Event
-	return json.Marshal(&struct {
-		Alias
-	}{Alias: Alias(e)})
+	return json.Marshal(&struct{ *Alias }{Alias: (*Alias)(e)})
 }
