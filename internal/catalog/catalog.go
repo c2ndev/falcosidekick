@@ -1,5 +1,19 @@
-// Package catalog provides an output type catalog for creating configured
-// outputs and listing available types for the UI.
+// Copyright (C) 2026 The Falco Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 package catalog
 
 import (
@@ -9,15 +23,13 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/domain"
 )
 
-// Catalog holds all known output types. It is constructed once at startup
-// from an explicit list (no init, no globals).
+// Catalog holds all known output types.
 type Catalog struct {
-	mu    sync.RWMutex
 	types map[string]domain.OutputType
+	mu    sync.RWMutex
 }
 
 // New creates a Catalog from an explicit list of output types.
-// Returns an error if the list is empty or contains duplicates.
 func New(types []domain.OutputType) (*Catalog, error) {
 	if len(types) == 0 {
 		return nil, fmt.Errorf("catalog: at least one output type required")
@@ -47,8 +59,7 @@ func (c *Catalog) Get(name string) (domain.OutputType, bool) {
 	return t, ok
 }
 
-// All returns all known output types. Used by the UI pipeline configurator
-// to populate the output palette.
+// All returns all known output types.
 func (c *Catalog) All() []domain.OutputType {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -60,7 +71,6 @@ func (c *Catalog) All() []domain.OutputType {
 }
 
 // Create instantiates a configured output by name.
-// Returns an error if the name is unknown or the constructor fails.
 func (c *Catalog) Create(name string, cfg map[string]any, deps domain.OutputDeps) (domain.Output, error) {
 	t, ok := c.Get(name)
 	if !ok {

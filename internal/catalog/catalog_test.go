@@ -1,3 +1,19 @@
+// Copyright (C) 2026 The Falco Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 package catalog
 
 import (
@@ -13,11 +29,11 @@ import (
 
 type stubOutput struct{ name string }
 
-func (o *stubOutput) Name() string                                 { return o.name }
-func (o *stubOutput) Init(_ context.Context) error                 { return nil }
-func (o *stubOutput) Send(_ context.Context, _ domain.Event) error { return nil }
-func (o *stubOutput) HealthCheck(_ context.Context) error          { return nil }
-func (o *stubOutput) Close() error                                 { return nil }
+func (o *stubOutput) Name() string                                  { return o.name }
+func (o *stubOutput) Init(_ context.Context) error                  { return nil }
+func (o *stubOutput) Send(_ context.Context, _ *domain.Event) error { return nil }
+func (o *stubOutput) HealthCheck(_ context.Context) error           { return nil }
+func (o *stubOutput) Close() error                                  { return nil }
 
 func stubType(name, category string) domain.OutputType {
 	return domain.OutputType{
@@ -44,9 +60,9 @@ func failingType(name string) domain.OutputType {
 func TestNew(t *testing.T) {
 	tests := []struct {
 		name    string
+		errMsg  string
 		types   []domain.OutputType
 		wantErr bool
-		errMsg  string
 	}{
 		{
 			name:  "valid single type",
@@ -182,12 +198,12 @@ func TestCreate(t *testing.T) {
 	tests := []struct {
 		name    string
 		output  string
-		wantErr bool
 		errMsg  string
+		wantErr bool
 	}{
-		{"existing type", "slack", false, ""},
-		{"unknown type", "nonexistent", true, "unknown"},
-		{"failing constructor", "broken", true, "constructor failed"},
+		{name: "existing type", output: "slack"},
+		{name: "unknown type", output: "nonexistent", wantErr: true, errMsg: "unknown"},
+		{name: "failing constructor", output: "broken", wantErr: true, errMsg: "constructor failed"},
 	}
 
 	for _, tt := range tests {
