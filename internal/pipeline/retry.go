@@ -23,10 +23,10 @@ import (
 
 // RetryConfig holds retry policy settings.
 type RetryConfig struct {
-	InitialInterval time.Duration
-	MaxInterval     time.Duration
-	MaxAttempts     int
-	Multiplier      float64
+	InitialInterval time.Duration `mapstructure:"initial_interval"`
+	MaxInterval     time.Duration `mapstructure:"max_interval"`
+	MaxAttempts     int           `mapstructure:"max_attempts"`
+	Multiplier      float64       `mapstructure:"multiplier"`
 }
 
 // ComputeBackoff returns the wait duration for the given attempt number.

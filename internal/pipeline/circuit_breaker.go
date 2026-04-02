@@ -49,9 +49,9 @@ func (s CircuitState) String() string {
 
 // CircuitBreakerConfig holds circuit breaker thresholds.
 type CircuitBreakerConfig struct {
-	FailureThreshold int
-	SuccessThreshold int
-	ResetTimeout     time.Duration
+	FailureThreshold int           `mapstructure:"failure_threshold"`
+	SuccessThreshold int           `mapstructure:"success_threshold"`
+	ResetTimeout     time.Duration `mapstructure:"reset_timeout"`
 }
 
 // CircuitBreaker implements the circuit breaker pattern per output.

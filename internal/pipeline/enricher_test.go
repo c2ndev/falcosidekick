@@ -214,8 +214,8 @@ func TestEnrichCustomTruncateThresholds(t *testing.T) {
 
 func TestEnrichDefaultTruncateThresholds(t *testing.T) {
 	e, _ := NewEnricher(EnricherConfig{})
-	assert.Equal(t, defaultTruncateEventThreshold, e.truncateEventThreshold)
-	assert.Equal(t, defaultTruncateFieldThreshold, e.truncateFieldThreshold)
+	assert.Equal(t, defaultTruncateEventThreshold, e.cfg.TruncateEventThreshold)
+	assert.Equal(t, defaultTruncateFieldThreshold, e.cfg.TruncateFieldThreshold)
 }
 
 func TestEnrichDoesNotTruncateSmallEvents(t *testing.T) {

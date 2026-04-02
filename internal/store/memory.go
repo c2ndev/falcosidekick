@@ -53,9 +53,9 @@ type MemoryStore struct {
 
 // MemoryConfig holds MemoryStore settings.
 type MemoryConfig struct {
-	Capacity   int
-	TTL        time.Duration
-	GCInterval time.Duration
+	Capacity   int           `mapstructure:"max_events"`
+	TTL        time.Duration `mapstructure:"ttl"`
+	GCInterval time.Duration `mapstructure:"gc_interval"`
 }
 
 // NewMemoryStore creates an in-memory EventStore.

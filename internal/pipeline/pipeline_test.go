@@ -110,10 +110,13 @@ func TestProcessEventStoresAsync(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p.Start(ctx)
+
 	p.ProcessEvent(ctx, newTestEvent())
 
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	count, err := memStore.Count(ctx, &domain.Filters{})
 	require.NoError(t, err)
@@ -179,7 +182,6 @@ func TestNewPipelineRejectsNilDependencies(t *testing.T) {
 		name string
 	}{
 		{name: "nil enricher", cfg: PipelineConfig{Store: memStore, Router: router, Dispatcher: dispatcher}},
-		{name: "nil store", cfg: PipelineConfig{Enricher: enricher, Router: router, Dispatcher: dispatcher}},
 		{name: "nil router", cfg: PipelineConfig{Enricher: enricher, Store: memStore, Dispatcher: dispatcher}},
 		{name: "nil dispatcher", cfg: PipelineConfig{Enricher: enricher, Store: memStore, Router: router}},
 	}
@@ -190,6 +192,37 @@ func TestNewPipelineRejectsNilDependencies(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+func TestProcessEventWithoutStoreDoesNotPanic(t *testing.T) {
+	var received atomic.Int64
+	output := &mockOutput{
+		name: "test",
+		sendFunc: func(_ context.Context, _ *domain.Event) error {
+			received.Add(1)
+			return nil
+		},
+	}
+
+	enricher, err := NewEnricher(EnricherConfig{})
+	require.NoError(t, err)
+	p, err := NewPipeline(PipelineConfig{
+		Enricher: enricher,
+		Router:   NewRouter(map[string]domain.Priority{"test": domain.PriorityDebug}),
+		Dispatcher: NewDispatcher([]domain.Output{output}, OutputWorkerConfig{
+			QueueSize: 100, Workers: 1, Retry: RetryConfig{MaxAttempts: 1},
+		}, nil),
+	})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p.Start(ctx)
+
+	p.ProcessEvent(ctx, newTestEvent())
+	time.Sleep(50 * time.Millisecond)
+
+	assert.Equal(t, int64(1), received.Load())
 }
 
 func TestCollectOutputStatus(t *testing.T) {

@@ -38,8 +38,6 @@ func TestPriorityGTE(t *testing.T) {
 		{"warning >= warning", PriorityWarning, PriorityWarning, true},
 		{"debug >= emergency", PriorityDebug, PriorityEmergency, false},
 		{"debug >= debug", PriorityDebug, PriorityDebug, true},
-		{"empty >= debug", Priority(""), PriorityDebug, false},
-		{"debug >= empty", PriorityDebug, Priority(""), true},
 		{"informational >= notice", PriorityInformational, PriorityNotice, false},
 		{"notice >= informational", PriorityNotice, PriorityInformational, true},
 		{"alert >= critical", PriorityAlert, PriorityCritical, true},
@@ -62,7 +60,7 @@ func TestParsePriority(t *testing.T) {
 		{"lowercase debug", "debug", PriorityDebug, false},
 		{"uppercase Warning", "Warning", PriorityWarning, false},
 		{"mixed case CRITICAL", "CRITICAL", PriorityCritical, false},
-		{"empty string", "", Priority(""), false},
+		{"empty string rejected", "", Priority(""), true},
 		{"with spaces", "  error  ", PriorityError, false},
 		{"informational", "informational", PriorityInformational, false},
 		{"notice", "notice", PriorityNotice, false},
@@ -94,7 +92,7 @@ func TestPriorityString(t *testing.T) {
 		{PriorityWarning, "Warning"},
 		{PriorityEmergency, "Emergency"},
 		{PriorityInformational, "Informational"},
-		{Priority(""), ""},
+		{PriorityNotice, "Notice"},
 	}
 
 	for _, tt := range tests {
@@ -125,22 +123,22 @@ func TestEventValidate(t *testing.T) {
 		},
 		{
 			name:    "missing rule",
-			event:   Event{Time: now, Source: "syscall", OutputFields: map[string]interface{}{"k": "v"}},
+			event:   Event{Time: now, Priority: PriorityWarning, Source: "syscall", OutputFields: map[string]interface{}{"k": "v"}},
 			wantErr: true,
 		},
 		{
 			name:    "missing time",
-			event:   Event{Rule: "Test rule", Source: "syscall", OutputFields: map[string]interface{}{"k": "v"}},
+			event:   Event{Rule: "Test rule", Priority: PriorityWarning, Source: "syscall", OutputFields: map[string]interface{}{"k": "v"}},
 			wantErr: true,
 		},
 		{
 			name:    "nil output fields rejected",
-			event:   Event{Rule: "Test rule", Time: now, Source: "syscall"},
+			event:   Event{Rule: "Test rule", Time: now, Priority: PriorityWarning, Source: "syscall"},
 			wantErr: true,
 		},
 		{
 			name:    "empty output fields rejected",
-			event:   Event{Rule: "Test rule", Time: now, Source: "syscall", OutputFields: map[string]interface{}{}},
+			event:   Event{Rule: "Test rule", Time: now, Priority: PriorityWarning, Source: "syscall", OutputFields: map[string]interface{}{}},
 			wantErr: true,
 		},
 		{
@@ -149,8 +147,13 @@ func TestEventValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "empty priority rejected",
+			event:   Event{Rule: "Test rule", Time: now, Priority: "", OutputFields: map[string]interface{}{"k": "v"}},
+			wantErr: true,
+		},
+		{
 			name:  "empty source defaults to syscall",
-			event: Event{Rule: "Test rule", Time: now, OutputFields: map[string]interface{}{"k": "v"}},
+			event: Event{Rule: "Test rule", Time: now, Priority: PriorityWarning, OutputFields: map[string]interface{}{"k": "v"}},
 		},
 	}
 

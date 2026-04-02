@@ -23,6 +23,8 @@ import (
 )
 
 // EventStore defines event persistence and querying operations.
+// Append must return quickly to avoid blocking the event pipeline.
+// Implementations that require I/O must buffer writes internally.
 type EventStore interface {
 	Append(ctx context.Context, event *Event) error
 	Search(ctx context.Context, query *SearchQuery) (*SearchResult, error)

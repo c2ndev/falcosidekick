@@ -40,10 +40,10 @@ type OutputStatus struct {
 
 // OutputWorkerConfig holds per-output worker pool settings.
 type OutputWorkerConfig struct {
-	CircuitBreaker CircuitBreakerConfig
-	Retry          RetryConfig
-	QueueSize      int
-	Workers        int
+	CircuitBreaker CircuitBreakerConfig `mapstructure:"circuit_breaker"`
+	Retry          RetryConfig          `mapstructure:"retry"`
+	QueueSize      int                  `mapstructure:"queue_size"`
+	Workers        int                  `mapstructure:"workers"`
 }
 
 // OutputWorker manages a per-output queue, worker pool, circuit breaker, and retry.
@@ -58,7 +58,6 @@ type OutputWorker struct {
 	retry          RetryConfig
 	queueCapacity  int
 	workerCount    int
-	queueDepth     atomic.Int64
 	sentTotal      atomic.Int64
 	droppedTotal   atomic.Int64
 	failedTotal    atomic.Int64
@@ -99,7 +98,6 @@ func (w *OutputWorker) Start(ctx context.Context) {
 func (w *OutputWorker) Enqueue(event *domain.Event) {
 	select {
 	case w.queue <- event:
-		w.queueDepth.Add(1)
 	default:
 		w.droppedTotal.Add(1)
 		if w.metrics != nil {
@@ -117,7 +115,7 @@ func (w *OutputWorker) WaitInflight() {
 func (w *OutputWorker) GetStatus() OutputStatus {
 	return OutputStatus{
 		Name:          w.output.Name(),
-		QueueDepth:    int(w.queueDepth.Load()),
+		QueueDepth:    len(w.queue),
 		QueueCapacity: w.queueCapacity,
 		SentTotal:     int(w.sentTotal.Load()),
 		DroppedTotal:  int(w.droppedTotal.Load()),
@@ -135,7 +133,6 @@ func (w *OutputWorker) runWorker(ctx context.Context) {
 			return
 		case event := <-w.queue:
 			w.inflight.Add(1)
-			w.queueDepth.Add(-1)
 			w.sendWithRetry(ctx, event)
 			w.inflight.Done()
 		}
@@ -227,7 +224,7 @@ func (d *Dispatcher) DrainQueues(ctx context.Context) {
 		default:
 			allEmpty := true
 			for _, w := range d.workers {
-				if w.queueDepth.Load() > 0 {
+				if len(w.queue) > 0 {
 					allEmpty = false
 					break
 				}

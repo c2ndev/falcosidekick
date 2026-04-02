@@ -39,7 +39,6 @@ const (
 )
 
 var priorityOrder = map[Priority]int{
-	"":                    -1,
 	PriorityDebug:         0,
 	PriorityInformational: 1,
 	PriorityNotice:        2,
@@ -63,9 +62,6 @@ func (p Priority) GTE(other Priority) bool {
 
 // String returns the priority as a title-cased display string.
 func (p Priority) String() string {
-	if p == "" {
-		return ""
-	}
 	s := string(p)
 	return strings.ToUpper(s[:1]) + s[1:]
 }
@@ -74,7 +70,7 @@ func (p Priority) String() string {
 func ParsePriority(s string) (Priority, error) {
 	p := Priority(strings.ToLower(strings.TrimSpace(s)))
 	if p == "" {
-		return "", nil
+		return "", fmt.Errorf("empty priority")
 	}
 	if !allPriorities[p] {
 		return "", fmt.Errorf("unknown priority: %q", s)
@@ -103,10 +99,8 @@ func (e *Event) Validate() error {
 	if e.Time.IsZero() {
 		return fmt.Errorf("%w: time is required", ErrInvalidEvent)
 	}
-	if e.Priority != "" {
-		if _, err := ParsePriority(string(e.Priority)); err != nil {
-			return fmt.Errorf("%w: %w", ErrInvalidEvent, err)
-		}
+	if _, err := ParsePriority(string(e.Priority)); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidEvent, err)
 	}
 	if len(e.OutputFields) == 0 {
 		return fmt.Errorf("%w: output_fields is required", ErrInvalidEvent)

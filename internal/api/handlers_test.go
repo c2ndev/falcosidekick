@@ -32,7 +32,6 @@ import (
 
 	"github.com/falcosecurity/falcosidekick/internal/domain"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
-	"github.com/falcosecurity/falcosidekick/internal/store"
 )
 
 type testOutput struct {
@@ -54,7 +53,6 @@ func (m *testOutput) Send(ctx context.Context, event *domain.Event) error {
 func buildTestServer(t *testing.T, outputs []domain.Output) *Server {
 	t.Helper()
 	enricher, _ := pipeline.NewEnricher(pipeline.EnricherConfig{})
-	memStore := store.NewMemoryStore(store.MemoryConfig{Capacity: 100})
 	priorities := make(map[string]domain.Priority)
 	for _, o := range outputs {
 		priorities[o.Name()] = domain.PriorityDebug
@@ -68,7 +66,6 @@ func buildTestServer(t *testing.T, outputs []domain.Output) *Server {
 
 	p, err := pipeline.NewPipeline(pipeline.PipelineConfig{
 		Enricher:   enricher,
-		Store:      memStore,
 		Router:     router,
 		Dispatcher: dispatcher,
 	})
@@ -81,7 +78,6 @@ func buildTestServer(t *testing.T, outputs []domain.Output) *Server {
 
 	srv, err := NewServer(ServerConfig{
 		Pipeline: p,
-		Store:    memStore,
 	})
 	if err != nil {
 		t.Fatalf("build server: %v", err)
@@ -164,18 +160,6 @@ func TestHandlePostEventMissingRule(t *testing.T) {
 	assert.Contains(t, string(body), "rule is required")
 }
 
-func TestHandlePostTest(t *testing.T) {
-	srv := buildTestServer(t, nil)
-
-	ctx := context.Background()
-	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/test", http.NoBody)
-
-	resp, err := srv.app.Test(req)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, 200, resp.StatusCode)
-}
-
 func TestHandleGetHealthz(t *testing.T) {
 	srv := buildTestServer(t, nil)
 
@@ -194,10 +178,8 @@ func TestHandleGetHealthz(t *testing.T) {
 func TestServerDefaults(t *testing.T) {
 	enricher, err := pipeline.NewEnricher(pipeline.EnricherConfig{})
 	require.NoError(t, err)
-	memStore := store.NewMemoryStore(store.MemoryConfig{Capacity: 10})
 	p, err := pipeline.NewPipeline(pipeline.PipelineConfig{
 		Enricher:   enricher,
-		Store:      memStore,
 		Router:     pipeline.NewRouter(nil),
 		Dispatcher: pipeline.NewDispatcher(nil, pipeline.OutputWorkerConfig{}, nil),
 	})
