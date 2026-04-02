@@ -68,7 +68,6 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	app.Use(recover.New())
 
 	app.Post("/", s.handlePostEvent)
-	app.Post("/test", s.handlePostTest)
 	app.Get("/healthz", s.handleGetHealthz)
 
 	s.app = app

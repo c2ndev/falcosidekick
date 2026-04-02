@@ -46,15 +46,13 @@ func NewPipeline(cfg PipelineConfig) (*Pipeline, error) {
 	if cfg.Enricher == nil {
 		return nil, fmt.Errorf("pipeline: enricher is required")
 	}
-	if cfg.Store == nil {
-		return nil, fmt.Errorf("pipeline: store is required")
-	}
 	if cfg.Router == nil {
 		return nil, fmt.Errorf("pipeline: router is required")
 	}
 	if cfg.Dispatcher == nil {
 		return nil, fmt.Errorf("pipeline: dispatcher is required")
 	}
+
 	return &Pipeline{
 		enricher:   cfg.Enricher,
 		store:      cfg.Store,
@@ -82,19 +80,19 @@ func (p *Pipeline) ProcessEvent(ctx context.Context, event *domain.Event) {
 		p.metrics.RecordEvent(ctx, event.Rule, event.Priority, event.Source)
 	}
 
-	go func() {
+	targets := p.router.RouteEvent(event)
+	p.dispatcher.DispatchEvent(event, targets)
+
+	if p.store != nil {
 		if err := p.store.Append(ctx, event); err != nil {
 			if p.metrics != nil {
 				p.metrics.RecordError(ctx, "eventstore", err)
 			}
 		}
-	}()
-
-	targets := p.router.RouteEvent(event)
-	p.dispatcher.DispatchEvent(event, targets)
+	}
 }
 
-// DrainQueues waits for all output queues to empty.
+// DrainQueues waits for all output queues to empty and in-flight sends to complete.
 func (p *Pipeline) DrainQueues(ctx context.Context) {
 	p.dispatcher.DrainQueues(ctx)
 }
