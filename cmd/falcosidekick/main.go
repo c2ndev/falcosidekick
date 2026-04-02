@@ -41,14 +41,12 @@ func main() {
 		log.Fatalf("catalog: %v", err)
 	}
 
-	memStore := store.NewMemoryStore(store.MemoryConfig{})
-
 	enricher, err := pipeline.NewEnricher(pipeline.EnricherConfig{})
 	if err != nil {
-		_ = memStore.Close()
 		log.Fatalf("enricher: %v", err)
 	}
 
+	// TO BE REPLACED WITH CONFIG-DRIVEN OUTPUT CREATION
 	outputPriorities := make(map[string]domain.Priority)
 	var activeOutputs []domain.Output
 
@@ -69,9 +67,14 @@ func main() {
 	router := pipeline.NewRouter(outputPriorities)
 	dispatcher := pipeline.NewDispatcher(activeOutputs, pipeline.OutputWorkerConfig{}, nil)
 
+	var eventStore domain.EventStore
+	if os.Getenv("UI_ENABLED") == "true" {
+		eventStore = store.NewMemoryStore(store.MemoryConfig{})
+	}
+
 	pipe, err := pipeline.NewPipeline(pipeline.PipelineConfig{
 		Enricher:   enricher,
-		Store:      memStore,
+		Store:      eventStore,
 		Router:     router,
 		Dispatcher: dispatcher,
 	})
@@ -81,10 +84,17 @@ func main() {
 
 	srv, err := api.NewServer(api.ServerConfig{
 		Pipeline: pipe,
-		Store:    memStore,
 	})
 	if err != nil {
 		log.Fatalf("server: %v", err)
+	}
+
+	if eventStore != nil {
+		defer func() {
+			if closeErr := eventStore.Close(); closeErr != nil {
+				log.Printf("store close: %v", closeErr)
+			}
+		}()
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
@@ -116,6 +126,5 @@ func main() {
 		}
 	}
 
-	_ = memStore.Close()
 	log.Println("stopped")
 }

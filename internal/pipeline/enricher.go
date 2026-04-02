@@ -38,22 +38,18 @@ const (
 
 // EnricherConfig holds enrichment settings.
 type EnricherConfig struct {
-	CustomFields           map[string]string
-	TemplatedFields        map[string]string
-	BracketReplacer        string
-	CustomTags             []string
-	TruncateEventThreshold int
-	TruncateFieldThreshold int
+	CustomFields           map[string]string `mapstructure:"customfields"`
+	TemplatedFields        map[string]string `mapstructure:"templatedfields"`
+	BracketReplacer        string            `mapstructure:"bracketreplacer"`
+	CustomTags             []string          `mapstructure:"customtags"`
+	TruncateEventThreshold int               `mapstructure:"truncate_event_threshold"`
+	TruncateFieldThreshold int               `mapstructure:"truncate_field_threshold"`
 }
 
 // Enricher adds custom fields, tags, UUID, and applies transformations to events.
 type Enricher struct {
-	customFields           map[string]string
-	templatedFields        map[string]*template.Template
-	bracketReplacer        string
-	customTags             []string
-	truncateEventThreshold int
-	truncateFieldThreshold int
+	templatedFields map[string]*template.Template
+	cfg             EnricherConfig
 }
 
 // NewEnricher creates an Enricher from configuration.
@@ -67,25 +63,19 @@ func NewEnricher(cfg EnricherConfig) (*Enricher, error) {
 		templates[k] = tmpl
 	}
 
-	eventThreshold := cfg.TruncateEventThreshold
-	if eventThreshold <= 0 {
-		eventThreshold = defaultTruncateEventThreshold
+	if cfg.TruncateEventThreshold <= 0 {
+		cfg.TruncateEventThreshold = defaultTruncateEventThreshold
 	}
-	fieldThreshold := cfg.TruncateFieldThreshold
-	if fieldThreshold <= 0 {
-		fieldThreshold = defaultTruncateFieldThreshold
+	if cfg.TruncateFieldThreshold <= 0 {
+		cfg.TruncateFieldThreshold = defaultTruncateFieldThreshold
 	}
-	if fieldThreshold <= len(truncateFieldSuffix) {
+	if cfg.TruncateFieldThreshold <= len(truncateFieldSuffix) {
 		return nil, fmt.Errorf("enricher: truncate_field_threshold must be > %d", len(truncateFieldSuffix))
 	}
 
 	return &Enricher{
-		customFields:           cfg.CustomFields,
-		customTags:             cfg.CustomTags,
-		templatedFields:        templates,
-		bracketReplacer:        cfg.BracketReplacer,
-		truncateEventThreshold: eventThreshold,
-		truncateFieldThreshold: fieldThreshold,
+		cfg:             cfg,
+		templatedFields: templates,
 	}, nil
 }
 
@@ -104,7 +94,7 @@ func (e *Enricher) Enrich(event *domain.Event) error {
 }
 
 func (e *Enricher) injectCustomFields(event *domain.Event) {
-	for k, v := range e.customFields {
+	for k, v := range e.cfg.CustomFields {
 		event.OutputFields[k] = v
 	}
 }
@@ -120,10 +110,10 @@ func (e *Enricher) evaluateTemplatedFields(event *domain.Event) {
 }
 
 func (e *Enricher) injectCustomTags(event *domain.Event) {
-	if len(e.customTags) == 0 {
+	if len(e.cfg.CustomTags) == 0 {
 		return
 	}
-	event.Tags = append(event.Tags, e.customTags...)
+	event.Tags = append(event.Tags, e.cfg.CustomTags...)
 	sort.Strings(event.Tags)
 }
 
@@ -134,10 +124,10 @@ func (e *Enricher) applyDefaultHostname(event *domain.Event) {
 }
 
 func (e *Enricher) replaceBrackets(event *domain.Event) {
-	if e.bracketReplacer == "" {
+	if e.cfg.BracketReplacer == "" {
 		return
 	}
-	replacer := strings.NewReplacer("[", e.bracketReplacer, "]", e.bracketReplacer)
+	replacer := strings.NewReplacer("[", e.cfg.BracketReplacer, "]", e.cfg.BracketReplacer)
 	replaced := make(map[string]interface{}, len(event.OutputFields))
 	for k, v := range event.OutputFields {
 		replaced[replacer.Replace(k)] = v
@@ -147,7 +137,7 @@ func (e *Enricher) replaceBrackets(event *domain.Event) {
 
 func (e *Enricher) truncateIfNeeded(event *domain.Event) {
 	data, err := json.Marshal(event)
-	if err != nil || len(data) <= e.truncateEventThreshold {
+	if err != nil || len(data) <= e.cfg.TruncateEventThreshold {
 		return
 	}
 	for k, v := range event.OutputFields {
@@ -155,8 +145,8 @@ func (e *Enricher) truncateIfNeeded(event *domain.Event) {
 		if !ok {
 			continue
 		}
-		if len(s) > e.truncateFieldThreshold {
-			event.OutputFields[k] = s[:e.truncateFieldThreshold-len(truncateFieldSuffix)] + truncateFieldSuffix
+		if len(s) > e.cfg.TruncateFieldThreshold {
+			event.OutputFields[k] = s[:e.cfg.TruncateFieldThreshold-len(truncateFieldSuffix)] + truncateFieldSuffix
 		}
 	}
 }

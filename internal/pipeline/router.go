@@ -31,9 +31,9 @@ func NewRouter(outputPriorities map[string]domain.Priority) *Router {
 // RouteEvent returns the names of outputs that should receive the event.
 func (r *Router) RouteEvent(event *domain.Event) []string {
 	var targets []string
-	for name, minPriority := range r.outputPriorities {
+	for outputName, minPriority := range r.outputPriorities {
 		if event.Priority.GTE(minPriority) {
-			targets = append(targets, name)
+			targets = append(targets, outputName)
 		}
 	}
 	return targets

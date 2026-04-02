@@ -18,7 +18,6 @@ package api
 
 import (
 	"context"
-	"time"
 
 	"github.com/gofiber/fiber/v3"
 
@@ -41,22 +40,6 @@ func (s *Server) handlePostEvent(c fiber.Ctx) error {
 
 	if s.metrics != nil {
 		s.metrics.RecordInput(context.Background(), event.Source, "accepted")
-	}
-
-	s.pipeline.ProcessEvent(context.Background(), &event)
-	return c.SendStatus(fiber.StatusOK)
-}
-
-func (s *Server) handlePostTest(c fiber.Ctx) error {
-	event := domain.Event{
-		Time:         time.Now().UTC(),
-		OutputFields: map[string]interface{}{"source": "falcosidekick-test"},
-		Tags:         []string{"test"},
-		Rule:         "Test event",
-		Output:       "This is a test event from falcosidekick",
-		Source:       "internal",
-		Hostname:     "falcosidekick",
-		Priority:     domain.PriorityInformational,
 	}
 
 	s.pipeline.ProcessEvent(context.Background(), &event)
