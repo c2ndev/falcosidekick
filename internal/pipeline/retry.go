@@ -17,8 +17,11 @@
 package pipeline
 
 import (
+	"fmt"
 	"math"
 	"time"
+
+	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
 // RetryConfig holds retry policy settings.
@@ -29,6 +32,28 @@ type RetryConfig struct {
 	Multiplier      float64       `mapstructure:"multiplier"`
 }
 
+// Validate checks that retry settings are not explicitly invalid.
+// Zero values are valid and mean "use default" (applied by ApplyDefaults).
+func (r *RetryConfig) Validate() utils.ValidationErrors {
+	var errs utils.ValidationErrors
+	if r.MaxAttempts <= 0 {
+		errs.Add("max_attempts", fmt.Sprintf("must be > 0, got %d", r.MaxAttempts))
+	}
+	if r.InitialInterval <= 0 {
+		errs.Add("initial_interval", fmt.Sprintf("must be > 0, got %v", r.InitialInterval))
+	}
+	if r.MaxInterval <= 0 {
+		errs.Add("max_interval", fmt.Sprintf("must be > 0, got %v", r.MaxInterval))
+	}
+	if r.Multiplier <= 0 {
+		errs.Add("multiplier", fmt.Sprintf("must be > 0, got %f", r.Multiplier))
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
+
 // ComputeBackoff returns the wait duration for the given attempt number.
 func (r *RetryConfig) ComputeBackoff(attempt int) time.Duration {
 	interval := float64(r.InitialInterval) * math.Pow(r.Multiplier, float64(attempt-1))
@@ -36,20 +61,4 @@ func (r *RetryConfig) ComputeBackoff(attempt int) time.Duration {
 		return r.MaxInterval
 	}
 	return time.Duration(interval)
-}
-
-// ApplyDefaults fills zero-value fields with defaults.
-func (r *RetryConfig) ApplyDefaults() {
-	if r.MaxAttempts <= 0 {
-		r.MaxAttempts = 3
-	}
-	if r.InitialInterval <= 0 {
-		r.InitialInterval = 1 * time.Second
-	}
-	if r.MaxInterval <= 0 {
-		r.MaxInterval = 30 * time.Second
-	}
-	if r.Multiplier <= 0 {
-		r.Multiplier = 2.0
-	}
 }

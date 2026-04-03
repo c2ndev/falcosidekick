@@ -43,25 +43,10 @@ func testEvent(rule string, priority domain.Priority, source string, t time.Time
 }
 
 func newTestStore(capacity int) *MemoryStore {
-	return NewMemoryStore(MemoryConfig{Capacity: capacity})
-}
-
-func TestNewMemoryStoreDefaults(t *testing.T) {
-	s := NewMemoryStore(MemoryConfig{})
-	defer s.Close()
-
-	assert.Equal(t, 10000, s.capacity, "default capacity")
-	assert.Equal(t, time.Duration(0), s.ttl, "default TTL is no expiry")
-
-	ctx := context.Background()
-	for i := 0; i < 5; i++ {
-		require.NoError(t, s.Append(ctx, testEvent(
-			fmt.Sprintf("r%d", i), domain.PriorityWarning, "syscall", time.Now(),
-		)))
-	}
-	count, err := s.Count(ctx, &domain.Filters{})
-	require.NoError(t, err)
-	assert.Equal(t, int64(5), count)
+	return NewMemoryStore(&MemoryConfig{
+		Capacity:   capacity,
+		GCInterval: 10 * time.Second,
+	})
 }
 
 func TestAppendAndSearch(t *testing.T) {
@@ -458,7 +443,7 @@ func TestEmptyStoreReturnsZero(t *testing.T) {
 
 func TestTTLExpiry(t *testing.T) {
 	ctx := context.Background()
-	s := NewMemoryStore(MemoryConfig{
+	s := NewMemoryStore(&MemoryConfig{
 		Capacity:   100,
 		TTL:        100 * time.Millisecond,
 		GCInterval: 50 * time.Millisecond,
@@ -484,6 +469,29 @@ func TestCloseIsIdempotent(t *testing.T) {
 	s := newTestStore(100)
 	assert.NoError(t, s.Close())
 	assert.NoError(t, s.Close(), "second Close must not panic or error")
+}
+
+func TestMemoryConfigValidateValid(t *testing.T) {
+	cfg := &MemoryConfig{Capacity: 1000, TTL: time.Hour, GCInterval: 10 * time.Second}
+	assert.Empty(t, cfg.Validate())
+}
+
+func TestMemoryConfigValidateInvalid(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  MemoryConfig
+	}{
+		{"zero capacity", MemoryConfig{Capacity: 0}},
+		{"negative capacity", MemoryConfig{Capacity: -1}},
+		{"negative ttl", MemoryConfig{Capacity: 100, TTL: -1}},
+		{"negative gc_interval", MemoryConfig{Capacity: 100, GCInterval: -1}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.NotEmpty(t, tt.cfg.Validate())
+		})
+	}
 }
 
 func TestConcurrentAccess(t *testing.T) {

@@ -14,7 +14,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Package main is the entry point for falcosidekick v3.
 package main
 
 import (
@@ -29,6 +28,7 @@ import (
 
 	"github.com/falcosecurity/falcosidekick/internal/api"
 	"github.com/falcosecurity/falcosidekick/internal/catalog"
+	"github.com/falcosecurity/falcosidekick/internal/config"
 	"github.com/falcosecurity/falcosidekick/internal/domain"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/all"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
@@ -36,54 +36,68 @@ import (
 )
 
 func main() {
+	cfg, err := config.Load(os.Getenv("CONFIG_FILE"))
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+
+	if errs := cfg.Validate(); len(errs) > 0 {
+		log.Fatalf("config validation failed: %s", errs.Error()) //nolint:gosec // G706: validation errors contain only our field names and messages
+	}
+
 	cat, err := catalog.New(all.Types())
 	if err != nil {
 		log.Fatalf("catalog: %v", err)
 	}
 
-	enricher, err := pipeline.NewEnricher(pipeline.EnricherConfig{})
+	enricher, err := pipeline.NewEnricher(cfg.Pipeline.Enricher)
 	if err != nil {
 		log.Fatalf("enricher: %v", err)
 	}
 
-	// TO BE REPLACED WITH CONFIG-DRIVEN OUTPUT CREATION
 	outputPriorities := make(map[string]domain.Priority)
-	var activeOutputs []domain.Output
+	activeOutputs := make([]domain.Output, 0, len(cfg.Pipeline.Outputs))
 
-	webhookURL := os.Getenv("WEBHOOK_ADDRESS")
-	if webhookURL != "" {
-		cfg := map[string]any{"address": webhookURL}
-		output, createErr := cat.Create("webhook", cfg, domain.OutputDeps{})
+	for name, outputCfg := range cfg.Pipeline.Outputs {
+		output, createErr := cat.Create(name, outputCfg, domain.OutputDeps{})
 		if createErr != nil {
-			log.Fatalf("webhook output: %v", createErr)
+			log.Fatalf("output %q: %v", name, createErr)
 		}
 		if initErr := output.Init(context.Background()); initErr != nil {
-			log.Fatalf("webhook init: %v", initErr)
+			log.Fatalf("output %q init: %v", name, initErr)
 		}
 		activeOutputs = append(activeOutputs, output)
-		outputPriorities["webhook"] = domain.PriorityDebug
+
+		if mp, ok := outputCfg["minimumpriority"]; ok {
+			if s, ok := mp.(string); ok && s != "" {
+				outputPriorities[name] = domain.Priority(s)
+			}
+		}
 	}
 
 	router := pipeline.NewRouter(outputPriorities)
-	dispatcher := pipeline.NewDispatcher(activeOutputs, pipeline.OutputWorkerConfig{}, nil)
+	dispatcher := pipeline.NewDispatcher(activeOutputs, cfg.Pipeline.OutputWorkerConfig, nil)
 
 	var eventStore domain.EventStore
-	if os.Getenv("UI_ENABLED") == "true" {
-		eventStore = store.NewMemoryStore(store.MemoryConfig{})
+	if cfg.UI.Enabled {
+		eventStore = store.NewMemoryStore(cfg.EventStore.Memory)
 	}
 
-	pipe, err := pipeline.NewPipeline(pipeline.PipelineConfig{
-		Enricher:   enricher,
-		Store:      eventStore,
-		Router:     router,
-		Dispatcher: dispatcher,
-	})
+	pipe, err := pipeline.NewPipeline(
+		enricher,
+		eventStore,
+		router,
+		dispatcher,
+		nil,
+	)
 	if err != nil {
 		log.Fatalf("pipeline: %v", err)
 	}
 
 	srv, err := api.NewServer(api.ServerConfig{
 		Pipeline: pipe,
+		Address:  cfg.ListenAddress,
+		Port:     cfg.ListenPort,
 	})
 	if err != nil {
 		log.Fatalf("server: %v", err)
@@ -103,7 +117,7 @@ func main() {
 	pipe.Start(ctx)
 
 	go func() {
-		log.Printf("falcosidekick v3 listening on %s", "0.0.0.0:2801")
+		log.Printf("falcosidekick v3 listening on %s:%d", cfg.ListenAddress, cfg.ListenPort) //nolint:gosec // config values are validated
 		if listenErr := srv.Start(); listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
 			log.Fatalf("server: %v", listenErr)
 		}

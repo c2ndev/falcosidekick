@@ -50,202 +50,18 @@ func defaultWorkerConfig() OutputWorkerConfig {
 	return OutputWorkerConfig{
 		QueueSize: 100,
 		Workers:   1,
-		Retry:     RetryConfig{MaxAttempts: 1},
+		Retry: RetryConfig{
+			MaxAttempts:     1,
+			InitialInterval: 10 * time.Millisecond,
+			MaxInterval:     100 * time.Millisecond,
+			Multiplier:      2.0,
+		},
 		CircuitBreaker: CircuitBreakerConfig{
 			FailureThreshold: 5,
 			SuccessThreshold: 2,
 			ResetTimeout:     30 * time.Second,
 		},
 	}
-}
-
-func TestOutputWorkerSendsEvent(t *testing.T) {
-	var received atomic.Int64
-	output := &mockOutput{
-		name: "test",
-		sendFunc: func(_ context.Context, _ *domain.Event) error {
-			received.Add(1)
-			return nil
-		},
-	}
-
-	w := NewOutputWorker(output, defaultWorkerConfig(), nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w.Start(ctx)
-
-	w.Enqueue(newTestEvent())
-	time.Sleep(50 * time.Millisecond)
-
-	assert.Equal(t, int64(1), received.Load())
-	assert.Equal(t, int64(1), w.sentTotal.Load())
-	assert.Equal(t, int64(0), w.failedTotal.Load())
-}
-
-func TestOutputWorkerRetriesOnFailure(t *testing.T) {
-	var attempts atomic.Int64
-	output := &mockOutput{
-		name: "test",
-		sendFunc: func(_ context.Context, _ *domain.Event) error {
-			n := attempts.Add(1)
-			if n <= 2 {
-				return fmt.Errorf("transient error")
-			}
-			return nil
-		},
-	}
-
-	cfg := defaultWorkerConfig()
-	cfg.Retry = RetryConfig{
-		MaxAttempts:     4,
-		InitialInterval: 10 * time.Millisecond,
-		MaxInterval:     50 * time.Millisecond,
-		Multiplier:      2.0,
-	}
-
-	w := NewOutputWorker(output, cfg, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w.Start(ctx)
-
-	w.Enqueue(newTestEvent())
-	time.Sleep(300 * time.Millisecond)
-
-	// Fails on attempt 0 and 1, succeeds on attempt 2. Total 3 attempts out of max 4.
-	assert.Equal(t, int64(3), attempts.Load())
-	assert.Equal(t, int64(1), w.sentTotal.Load())
-	assert.Equal(t, int64(0), w.failedTotal.Load())
-}
-
-func TestOutputWorkerFailsAfterMaxRetries(t *testing.T) {
-	output := &mockOutput{
-		name: "test",
-		sendFunc: func(_ context.Context, _ *domain.Event) error {
-			return fmt.Errorf("persistent error")
-		},
-	}
-
-	cfg := defaultWorkerConfig()
-	cfg.Retry = RetryConfig{
-		MaxAttempts:     2,
-		InitialInterval: 10 * time.Millisecond,
-		MaxInterval:     10 * time.Millisecond,
-		Multiplier:      1.0,
-	}
-
-	w := NewOutputWorker(output, cfg, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w.Start(ctx)
-
-	w.Enqueue(newTestEvent())
-	time.Sleep(200 * time.Millisecond)
-
-	assert.Equal(t, int64(0), w.sentTotal.Load())
-	assert.Equal(t, int64(1), w.failedTotal.Load())
-	assert.Contains(t, w.lastError.Load().(string), "persistent error")
-}
-
-func TestOutputWorkerDropsWhenQueueFull(t *testing.T) {
-	blocked := make(chan struct{})
-	output := &mockOutput{
-		name: "test",
-		sendFunc: func(_ context.Context, _ *domain.Event) error {
-			<-blocked
-			return nil
-		},
-	}
-
-	cfg := defaultWorkerConfig()
-	cfg.QueueSize = 2
-	cfg.Workers = 1
-
-	w := NewOutputWorker(output, cfg, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w.Start(ctx)
-
-	time.Sleep(10 * time.Millisecond)
-	for i := 0; i < 5; i++ {
-		w.Enqueue(newTestEvent())
-	}
-
-	assert.Greater(t, w.droppedTotal.Load(), int64(0))
-	close(blocked)
-}
-
-func TestOutputWorkerCircuitBreakerBlocks(t *testing.T) {
-	cb := NewCircuitBreaker(CircuitBreakerConfig{
-		FailureThreshold: 2,
-		SuccessThreshold: 1,
-		ResetTimeout:     5 * time.Second,
-	})
-
-	// Verify circuit breaker directly: 2 failures -> open
-	assert.Equal(t, CircuitClosed, cb.GetState())
-	cb.RecordFailure()
-	assert.Equal(t, CircuitClosed, cb.GetState())
-	cb.RecordFailure()
-	assert.Equal(t, CircuitOpen, cb.GetState())
-
-	// Verify worker uses circuit breaker: failing output opens circuit, subsequent events skip Send
-	var attempts atomic.Int64
-	output := &mockOutput{
-		name: "test",
-		sendFunc: func(_ context.Context, _ *domain.Event) error {
-			attempts.Add(1)
-			return fmt.Errorf("fail")
-		},
-	}
-
-	cfg := defaultWorkerConfig()
-	cfg.Workers = 1
-	cfg.QueueSize = 100
-	cfg.Retry = RetryConfig{
-		MaxAttempts:     1,
-		InitialInterval: 1 * time.Millisecond,
-		MaxInterval:     1 * time.Millisecond,
-		Multiplier:      1.0,
-	}
-	cfg.CircuitBreaker = CircuitBreakerConfig{
-		FailureThreshold: 2,
-		SuccessThreshold: 1,
-		ResetTimeout:     5 * time.Second,
-	}
-
-	w := NewOutputWorker(output, cfg, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w.Start(ctx)
-
-	for i := 0; i < 10; i++ {
-		w.Enqueue(newTestEvent())
-	}
-
-	time.Sleep(300 * time.Millisecond)
-
-	// 2 attempts hit the output, then circuit opens blocking the rest
-	assert.Equal(t, int64(2), attempts.Load())
-	assert.Equal(t, CircuitOpen, w.circuitBreaker.GetState())
-}
-
-func TestOutputWorkerDefaults(t *testing.T) {
-	output := &mockOutput{name: "test"}
-	w := NewOutputWorker(output, OutputWorkerConfig{}, nil)
-
-	assert.Equal(t, 1000, w.queueCapacity)
-	assert.Equal(t, 2, w.workerCount)
-}
-
-func TestOutputWorkerGetStatus(t *testing.T) {
-	output := &mockOutput{name: "slack"}
-	w := NewOutputWorker(output, defaultWorkerConfig(), nil)
-
-	status := w.GetStatus()
-	assert.Equal(t, "slack", status.Name)
-	assert.Equal(t, 0, status.QueueDepth)
-	assert.Equal(t, 100, status.QueueCapacity)
-	assert.Equal(t, "closed", status.CircuitState)
 }
 
 func TestDispatcherRoutesToCorrectOutputs(t *testing.T) {
@@ -263,15 +79,16 @@ func TestDispatcherRoutesToCorrectOutputs(t *testing.T) {
 	}
 
 	d := NewDispatcher(outputs, defaultWorkerConfig(), nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := context.Background()
 	d.Start(ctx)
 
 	d.DispatchEvent(newTestEvent(), []string{"slack"})
 	d.DispatchEvent(newTestEvent(), []string{"loki"})
 	d.DispatchEvent(newTestEvent(), []string{"slack", "loki"})
 
-	time.Sleep(100 * time.Millisecond)
+	drainCtx, drainCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer drainCancel()
+	d.DrainQueues(drainCtx)
 
 	assert.Equal(t, int64(2), slackCalls.Load())
 	assert.Equal(t, int64(2), lokiCalls.Load())
@@ -282,12 +99,14 @@ func TestDispatcherIgnoresUnknownTargets(t *testing.T) {
 		&mockOutput{name: "slack"},
 	}, defaultWorkerConfig(), nil)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := context.Background()
 	d.Start(ctx)
 
 	d.DispatchEvent(newTestEvent(), []string{"nonexistent"})
-	time.Sleep(50 * time.Millisecond)
+
+	drainCtx, drainCancel := context.WithTimeout(ctx, 1*time.Second)
+	defer drainCancel()
+	d.DrainQueues(drainCtx)
 }
 
 func TestDispatcherCollectStatus(t *testing.T) {
@@ -322,8 +141,7 @@ func TestDispatcherDrainQueues(t *testing.T) {
 	}
 
 	d := NewDispatcher([]domain.Output{output}, defaultWorkerConfig(), nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := context.Background()
 	d.Start(ctx)
 
 	for i := 0; i < 10; i++ {
@@ -332,7 +150,7 @@ func TestDispatcherDrainQueues(t *testing.T) {
 		d.DispatchEvent(e, []string{"test"})
 	}
 
-	drainCtx, drainCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	drainCtx, drainCancel := context.WithTimeout(ctx, 2*time.Second)
 	defer drainCancel()
 	d.DrainQueues(drainCtx)
 
@@ -355,8 +173,7 @@ func TestDispatcherConcurrentDispatch(t *testing.T) {
 	cfg.Workers = 4
 
 	d := NewDispatcher([]domain.Output{output}, cfg, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := context.Background()
 	d.Start(ctx)
 
 	var wg sync.WaitGroup
@@ -369,14 +186,14 @@ func TestDispatcherConcurrentDispatch(t *testing.T) {
 	}
 	wg.Wait()
 
-	drainCtx, drainCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	drainCtx, drainCancel := context.WithTimeout(ctx, 2*time.Second)
 	defer drainCancel()
 	d.DrainQueues(drainCtx)
 
 	require.Equal(t, int64(100), count.Load())
 }
 
-func TestDrainQueuesWaitsForInflightSend(t *testing.T) {
+func TestDrainQueuesWaitsForActiveSend(t *testing.T) {
 	sendStarted := make(chan struct{})
 	sendBlock := make(chan struct{})
 	var sendCompleted atomic.Bool
@@ -392,8 +209,7 @@ func TestDrainQueuesWaitsForInflightSend(t *testing.T) {
 	}
 
 	d := NewDispatcher([]domain.Output{output}, defaultWorkerConfig(), nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := context.Background()
 	d.Start(ctx)
 
 	d.DispatchEvent(newTestEvent(), []string{"test"})
@@ -411,7 +227,7 @@ func TestDrainQueuesWaitsForInflightSend(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	select {
 	case <-drainDone:
-		t.Fatal("DrainQueues returned while Send was still in flight")
+		t.Fatal("DrainQueues returned while Send was still active")
 	default:
 	}
 

@@ -23,29 +23,36 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestRetryConfigDefaults(t *testing.T) {
-	cfg := RetryConfig{}
-	cfg.ApplyDefaults()
-
-	assert.Equal(t, 3, cfg.MaxAttempts)
-	assert.Equal(t, 1*time.Second, cfg.InitialInterval)
-	assert.Equal(t, 30*time.Second, cfg.MaxInterval)
-	assert.Equal(t, 2.0, cfg.Multiplier)
+func TestRetryConfigValidateValid(t *testing.T) {
+	cfg := RetryConfig{
+		MaxAttempts:     3,
+		InitialInterval: 1 * time.Second,
+		MaxInterval:     30 * time.Second,
+		Multiplier:      2.0,
+	}
+	assert.Empty(t, cfg.Validate())
 }
 
-func TestRetryConfigPreservesValues(t *testing.T) {
-	cfg := RetryConfig{
-		MaxAttempts:     5,
-		InitialInterval: 500 * time.Millisecond,
-		MaxInterval:     10 * time.Second,
-		Multiplier:      3.0,
-	}
-	cfg.ApplyDefaults()
+func TestRetryConfigValidateZeroValues(t *testing.T) {
+	cfg := RetryConfig{}
+	assert.NotEmpty(t, cfg.Validate())
+}
 
-	assert.Equal(t, 5, cfg.MaxAttempts)
-	assert.Equal(t, 500*time.Millisecond, cfg.InitialInterval)
-	assert.Equal(t, 10*time.Second, cfg.MaxInterval)
-	assert.Equal(t, 3.0, cfg.Multiplier)
+func TestRetryConfigValidateNegative(t *testing.T) {
+	cfg := RetryConfig{MaxAttempts: -1}
+	assert.NotEmpty(t, cfg.Validate())
+}
+
+func TestRetryConfigValidatePartialInvalid(t *testing.T) {
+	cfg := RetryConfig{
+		MaxAttempts:     3,
+		InitialInterval: 1 * time.Second,
+		MaxInterval:     0,
+		Multiplier:      2.0,
+	}
+	errs := cfg.Validate()
+	assert.NotEmpty(t, errs)
+	assert.Len(t, errs, 1)
 }
 
 func TestComputeBackoffExponential(t *testing.T) {

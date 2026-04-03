@@ -17,8 +17,11 @@
 package pipeline
 
 import (
+	"fmt"
 	"sync"
 	"time"
+
+	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
 // CircuitState represents the state of a circuit breaker.
@@ -54,6 +57,24 @@ type CircuitBreakerConfig struct {
 	ResetTimeout     time.Duration `mapstructure:"reset_timeout"`
 }
 
+// Validate checks that circuit breaker settings are not explicitly invalid.
+func (c *CircuitBreakerConfig) Validate() utils.ValidationErrors {
+	var errs utils.ValidationErrors
+	if c.FailureThreshold <= 0 {
+		errs.Add("failure_threshold", fmt.Sprintf("must be > 0, got %d", c.FailureThreshold))
+	}
+	if c.SuccessThreshold <= 0 {
+		errs.Add("success_threshold", fmt.Sprintf("must be > 0, got %d", c.SuccessThreshold))
+	}
+	if c.ResetTimeout <= 0 {
+		errs.Add("reset_timeout", fmt.Sprintf("must be > 0, got %v", c.ResetTimeout))
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
+
 // CircuitBreaker implements the circuit breaker pattern per output.
 type CircuitBreaker struct {
 	lastFailure  time.Time
@@ -67,15 +88,6 @@ type CircuitBreaker struct {
 
 // NewCircuitBreaker creates a CircuitBreaker with the given thresholds.
 func NewCircuitBreaker(cfg CircuitBreakerConfig) *CircuitBreaker {
-	if cfg.FailureThreshold <= 0 {
-		cfg.FailureThreshold = 5
-	}
-	if cfg.SuccessThreshold <= 0 {
-		cfg.SuccessThreshold = 2
-	}
-	if cfg.ResetTimeout <= 0 {
-		cfg.ResetTimeout = 30 * time.Second
-	}
 	return &CircuitBreaker{cfg: cfg}
 }
 

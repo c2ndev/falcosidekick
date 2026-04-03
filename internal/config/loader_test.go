@@ -1,0 +1,132 @@
+// Copyright (C) 2026 The Falco Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestLoadDefaults(t *testing.T) {
+	cfg, err := Load("")
+	require.NoError(t, err)
+
+	assert.Equal(t, "0.0.0.0", cfg.ListenAddress)
+	assert.Equal(t, 2801, cfg.ListenPort)
+	assert.False(t, cfg.Debug)
+	assert.Equal(t, "info", cfg.LogLevel)
+	assert.Equal(t, "text", cfg.LogFormat)
+	assert.Equal(t, MemoryStore, cfg.EventStore.Backend)
+	require.NotNil(t, cfg.EventStore.Memory)
+	assert.Equal(t, 10000, cfg.EventStore.Memory.Capacity)
+	assert.False(t, cfg.UI.Enabled)
+	assert.Equal(t, 1000, cfg.Pipeline.QueueSize)
+	assert.Equal(t, 2, cfg.Pipeline.Workers)
+}
+
+func TestLoadFromFile(t *testing.T) {
+	cfgFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(cfgFile, []byte(`
+listen_port: 3000
+log_level: debug
+ui:
+  enabled: true
+pipeline:
+  queue_size: 5000
+  outputs:
+    webhook:
+      address: "http://example.com"
+`), 0o600))
+
+	cfg, err := Load(cfgFile)
+	require.NoError(t, err)
+
+	assert.Equal(t, 3000, cfg.ListenPort)
+	assert.Equal(t, "debug", cfg.LogLevel)
+	assert.True(t, cfg.UI.Enabled)
+	assert.Equal(t, 5000, cfg.Pipeline.QueueSize)
+	assert.Equal(t, "0.0.0.0", cfg.ListenAddress)
+
+	webhookCfg, ok := cfg.Pipeline.Outputs["webhook"]
+	require.True(t, ok)
+	assert.Equal(t, "http://example.com", webhookCfg["address"])
+}
+
+func TestLoadEnvOverride(t *testing.T) {
+	t.Setenv("FALCOSIDEKICK_LISTEN_PORT", "9999")
+	t.Setenv("FALCOSIDEKICK_LOG_LEVEL", "error")
+
+	cfg, err := Load("")
+	require.NoError(t, err)
+
+	assert.Equal(t, 9999, cfg.ListenPort)
+	assert.Equal(t, "error", cfg.LogLevel)
+}
+
+func TestLoadEnvOverridesFile(t *testing.T) {
+	cfgFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(cfgFile, []byte(`listen_port: 3000`), 0o600))
+
+	t.Setenv("FALCOSIDEKICK_LISTEN_PORT", "4000")
+
+	cfg, err := Load(cfgFile)
+	require.NoError(t, err)
+
+	assert.Equal(t, 4000, cfg.ListenPort)
+}
+
+func TestLoadInvalidFilePath(t *testing.T) {
+	_, err := Load("/nonexistent/config.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config read")
+}
+
+func TestLoadOutputsAsRawMap(t *testing.T) {
+	cfgFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(cfgFile, []byte(`
+pipeline:
+  outputs:
+    slack:
+      webhookurl: "https://hooks.slack.com/xxx"
+      channel: "#alerts"
+    elasticsearch:
+      hostport: "https://es:9200"
+`), 0o600))
+
+	cfg, err := Load(cfgFile)
+	require.NoError(t, err)
+
+	require.Len(t, cfg.Pipeline.Outputs, 2)
+
+	slack := cfg.Pipeline.Outputs["slack"]
+	assert.Equal(t, "https://hooks.slack.com/xxx", slack["webhookurl"])
+
+	es := cfg.Pipeline.Outputs["elasticsearch"]
+	assert.Equal(t, "https://es:9200", es["hostport"])
+}
+
+func TestLoadValidatesWithDefaults(t *testing.T) {
+	cfg, err := Load("")
+	require.NoError(t, err)
+
+	errs := cfg.Validate()
+	assert.Empty(t, errs)
+}

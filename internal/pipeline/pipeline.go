@@ -23,15 +23,6 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/domain"
 )
 
-// PipelineConfig holds pipeline dependencies.
-type PipelineConfig struct {
-	Enricher   *Enricher
-	Store      domain.EventStore
-	Router     *Router
-	Dispatcher *Dispatcher
-	Metrics    domain.MetricsCollector
-}
-
 // Pipeline orchestrates event processing: enrich, store, route, dispatch.
 type Pipeline struct {
 	enricher   *Enricher
@@ -42,23 +33,29 @@ type Pipeline struct {
 }
 
 // NewPipeline creates a Pipeline from its dependencies.
-func NewPipeline(cfg PipelineConfig) (*Pipeline, error) {
-	if cfg.Enricher == nil {
+func NewPipeline(
+	enricher *Enricher,
+	eventStore domain.EventStore,
+	router *Router,
+	dispatcher *Dispatcher,
+	metrics domain.MetricsCollector,
+) (*Pipeline, error) {
+	if enricher == nil {
 		return nil, fmt.Errorf("pipeline: enricher is required")
 	}
-	if cfg.Router == nil {
+	if router == nil {
 		return nil, fmt.Errorf("pipeline: router is required")
 	}
-	if cfg.Dispatcher == nil {
+	if dispatcher == nil {
 		return nil, fmt.Errorf("pipeline: dispatcher is required")
 	}
 
 	return &Pipeline{
-		enricher:   cfg.Enricher,
-		store:      cfg.Store,
-		router:     cfg.Router,
-		dispatcher: cfg.Dispatcher,
-		metrics:    cfg.Metrics,
+		enricher:   enricher,
+		store:      eventStore,
+		router:     router,
+		dispatcher: dispatcher,
+		metrics:    metrics,
 	}, nil
 }
 
