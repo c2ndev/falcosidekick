@@ -27,13 +27,12 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
 const (
-	defaultTruncateEventThreshold = 4096
-	defaultTruncateFieldThreshold = 512
-	truncateFieldSuffix           = "[...]"
-	defaultHostname               = "unknown"
+	truncateFieldSuffix = "[...]"
+	defaultHostname     = "unknown"
 )
 
 // EnricherConfig holds enrichment settings.
@@ -44,6 +43,25 @@ type EnricherConfig struct {
 	CustomTags             []string          `mapstructure:"customtags"`
 	TruncateEventThreshold int               `mapstructure:"truncate_event_threshold"`
 	TruncateFieldThreshold int               `mapstructure:"truncate_field_threshold"`
+}
+
+// Validate checks enricher settings for errors.
+func (c *EnricherConfig) Validate() utils.ValidationErrors {
+	var errs utils.ValidationErrors
+	if c.TruncateEventThreshold < 0 {
+		errs.Add("truncate_event_threshold", fmt.Sprintf("must be >= 0, got %d", c.TruncateEventThreshold))
+	}
+	if c.TruncateFieldThreshold < 0 {
+		errs.Add("truncate_field_threshold", fmt.Sprintf("must be >= 0, got %d", c.TruncateFieldThreshold))
+	}
+	// TODO: consider allowing custom suffix
+	if c.TruncateEventThreshold > 0 && c.TruncateFieldThreshold <= len(truncateFieldSuffix) {
+		errs.Add("truncate_field_threshold", fmt.Sprintf("must be > %d when event truncation is enabled, got %d", len(truncateFieldSuffix), c.TruncateFieldThreshold))
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
 }
 
 // Enricher adds custom fields, tags, UUID, and applies transformations to events.
@@ -61,16 +79,6 @@ func NewEnricher(cfg EnricherConfig) (*Enricher, error) {
 			return nil, fmt.Errorf("enricher: parse template %q: %w", k, err)
 		}
 		templates[k] = tmpl
-	}
-
-	if cfg.TruncateEventThreshold <= 0 {
-		cfg.TruncateEventThreshold = defaultTruncateEventThreshold
-	}
-	if cfg.TruncateFieldThreshold <= 0 {
-		cfg.TruncateFieldThreshold = defaultTruncateFieldThreshold
-	}
-	if cfg.TruncateFieldThreshold <= len(truncateFieldSuffix) {
-		return nil, fmt.Errorf("enricher: truncate_field_threshold must be > %d", len(truncateFieldSuffix))
 	}
 
 	return &Enricher{
@@ -136,6 +144,9 @@ func (e *Enricher) replaceBrackets(event *domain.Event) {
 }
 
 func (e *Enricher) truncateIfNeeded(event *domain.Event) {
+	if e.cfg.TruncateEventThreshold <= 0 || e.cfg.TruncateFieldThreshold <= len(truncateFieldSuffix) {
+		return
+	}
 	data, err := json.Marshal(event)
 	if err != nil || len(data) <= e.cfg.TruncateEventThreshold {
 		return
