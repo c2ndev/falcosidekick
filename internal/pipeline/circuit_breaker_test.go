@@ -23,20 +23,40 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestCircuitBreakerConfigValidateValid(t *testing.T) {
+	cfg := CircuitBreakerConfig{
+		FailureThreshold: 5,
+		SuccessThreshold: 2,
+		ResetTimeout:     30 * time.Second,
+	}
+	assert.Empty(t, cfg.Validate())
+}
+
+func TestCircuitBreakerConfigValidateZeroValues(t *testing.T) {
+	cfg := CircuitBreakerConfig{}
+	assert.NotEmpty(t, cfg.Validate())
+}
+
+func TestCircuitBreakerConfigValidateNegative(t *testing.T) {
+	cfg := CircuitBreakerConfig{FailureThreshold: -1, SuccessThreshold: 2, ResetTimeout: 30 * time.Second}
+	errs := cfg.Validate()
+	assert.NotEmpty(t, errs)
+	assert.Len(t, errs, 1)
+}
+
 func TestCircuitBreakerStartsClosed(t *testing.T) {
 	cb := NewCircuitBreaker(CircuitBreakerConfig{})
 	assert.Equal(t, CircuitClosed, cb.GetState())
 }
 
-func TestCircuitBreakerDefaults(t *testing.T) {
-	cb := NewCircuitBreaker(CircuitBreakerConfig{})
-	assert.Equal(t, 5, cb.cfg.FailureThreshold)
-	assert.Equal(t, 2, cb.cfg.SuccessThreshold)
-	assert.Equal(t, 30*time.Second, cb.cfg.ResetTimeout)
-}
-
 func TestCircuitBreakerOpensAfterThreshold(t *testing.T) {
-	cb := NewCircuitBreaker(CircuitBreakerConfig{FailureThreshold: 3})
+	cb := NewCircuitBreaker(
+		CircuitBreakerConfig{
+			FailureThreshold: 3,
+			SuccessThreshold: 2,
+			ResetTimeout:     30 * time.Second,
+		},
+	)
 
 	cb.RecordFailure()
 	assert.Equal(t, CircuitClosed, cb.GetState())

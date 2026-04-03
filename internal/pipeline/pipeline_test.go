@@ -31,22 +31,13 @@ import (
 
 func buildTestPipeline(t *testing.T, outputs []domain.Output) *Pipeline {
 	t.Helper()
-	enricher, err := NewEnricher(EnricherConfig{})
+	enricher, err := NewEnricher(EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
 	require.NoError(t, err)
-	memStore := store.NewMemoryStore(store.MemoryConfig{Capacity: 100})
+	memStore := store.NewMemoryStore(&store.MemoryConfig{Capacity: 100, GCInterval: 10 * time.Second})
 	router := NewRouter(map[string]domain.Priority{})
-	dispatcher := NewDispatcher(outputs, OutputWorkerConfig{
-		QueueSize: 100,
-		Workers:   1,
-		Retry:     RetryConfig{MaxAttempts: 1},
-	}, nil)
+	dispatcher := NewDispatcher(outputs, defaultWorkerConfig(), nil)
 
-	p, err := NewPipeline(PipelineConfig{
-		Enricher:   enricher,
-		Store:      memStore,
-		Router:     router,
-		Dispatcher: dispatcher,
-	})
+	p, err := NewPipeline(enricher, memStore, router, dispatcher, nil)
 	require.NoError(t, err)
 	return p
 }
@@ -55,41 +46,33 @@ func TestProcessEventEnrichesAndDispatches(t *testing.T) {
 	var received atomic.Int64
 	output := &mockOutput{
 		name: "test",
-		sendFunc: func(_ context.Context, event *domain.Event) error {
+		sendFunc: func(_ context.Context, _ *domain.Event) error {
 			received.Add(1)
 			return nil
 		},
 	}
 
-	router := NewRouter(map[string]domain.Priority{
-		"test": domain.PriorityDebug,
-	})
+	router := NewRouter(map[string]domain.Priority{"test": domain.PriorityDebug})
 	enricher, _ := NewEnricher(EnricherConfig{
-		CustomFields: map[string]string{"env": "test"},
+		CustomFields:           map[string]string{"env": "test"},
+		TruncateEventThreshold: 4096,
+		TruncateFieldThreshold: 512,
 	})
-	memStore := store.NewMemoryStore(store.MemoryConfig{Capacity: 100})
-	dispatcher := NewDispatcher([]domain.Output{output}, OutputWorkerConfig{
-		QueueSize: 100,
-		Workers:   1,
-		Retry:     RetryConfig{MaxAttempts: 1},
-	}, nil)
+	memStore := store.NewMemoryStore(&store.MemoryConfig{Capacity: 100, GCInterval: 10 * time.Second})
+	dispatcher := NewDispatcher([]domain.Output{output}, defaultWorkerConfig(), nil)
 
-	p, err := NewPipeline(PipelineConfig{
-		Enricher:   enricher,
-		Store:      memStore,
-		Router:     router,
-		Dispatcher: dispatcher,
-	})
+	p, err := NewPipeline(enricher, memStore, router, dispatcher, nil)
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := context.Background()
 	p.Start(ctx)
 
 	event := newTestEvent()
 	p.ProcessEvent(ctx, event)
 
-	time.Sleep(100 * time.Millisecond)
+	drainCtx, drainCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer drainCancel()
+	p.DrainQueues(drainCtx)
 
 	assert.Equal(t, int64(1), received.Load())
 	assert.NotEmpty(t, event.UUID)
@@ -97,33 +80,29 @@ func TestProcessEventEnrichesAndDispatches(t *testing.T) {
 }
 
 func TestProcessEventStoresAsync(t *testing.T) {
-	enricher, _ := NewEnricher(EnricherConfig{})
-	memStore := store.NewMemoryStore(store.MemoryConfig{Capacity: 100})
+	enricher, _ := NewEnricher(EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
+	memStore := store.NewMemoryStore(&store.MemoryConfig{Capacity: 100, GCInterval: 10 * time.Second})
 	router := NewRouter(map[string]domain.Priority{})
-	dispatcher := NewDispatcher(nil, OutputWorkerConfig{}, nil)
+	dispatcher := NewDispatcher(nil, defaultWorkerConfig(), nil)
 
-	p, err := NewPipeline(PipelineConfig{
-		Enricher:   enricher,
-		Store:      memStore,
-		Router:     router,
-		Dispatcher: dispatcher,
-	})
+	p, err := NewPipeline(enricher, memStore, router, dispatcher, nil)
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := context.Background()
 	p.Start(ctx)
 
 	p.ProcessEvent(ctx, newTestEvent())
 
-	time.Sleep(100 * time.Millisecond)
+	drainCtx, drainCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer drainCancel()
+	p.DrainQueues(drainCtx)
 
 	count, err := memStore.Count(ctx, &domain.Filters{})
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), count)
 }
 
-func TestProcessEventRoutesbyPriority(t *testing.T) {
+func TestProcessEventRoutesByPriority(t *testing.T) {
 	var slackCalls, lokiCalls atomic.Int64
 
 	outputs := []domain.Output{
@@ -141,54 +120,49 @@ func TestProcessEventRoutesbyPriority(t *testing.T) {
 		"slack": domain.PriorityCritical,
 		"loki":  domain.PriorityDebug,
 	})
-	enricher, _ := NewEnricher(EnricherConfig{})
-	memStore := store.NewMemoryStore(store.MemoryConfig{Capacity: 100})
-	dispatcher := NewDispatcher(outputs, OutputWorkerConfig{
-		QueueSize: 100,
-		Workers:   1,
-		Retry:     RetryConfig{MaxAttempts: 1},
-	}, nil)
+	enricher, _ := NewEnricher(EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
+	memStore := store.NewMemoryStore(&store.MemoryConfig{Capacity: 100, GCInterval: 10 * time.Second})
+	dispatcher := NewDispatcher(outputs, defaultWorkerConfig(), nil)
 
-	p, err := NewPipeline(PipelineConfig{
-		Enricher:   enricher,
-		Store:      memStore,
-		Router:     router,
-		Dispatcher: dispatcher,
-	})
+	p, err := NewPipeline(enricher, memStore, router, dispatcher, nil)
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := context.Background()
 	p.Start(ctx)
 
 	event := newTestEvent()
 	event.Priority = domain.PriorityWarning
 	p.ProcessEvent(ctx, event)
 
-	time.Sleep(100 * time.Millisecond)
+	drainCtx, drainCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer drainCancel()
+	p.DrainQueues(drainCtx)
 
 	assert.Equal(t, int64(0), slackCalls.Load(), "warning should not reach critical-only slack")
 	assert.Equal(t, int64(1), lokiCalls.Load(), "warning should reach debug-level loki")
 }
 
 func TestNewPipelineRejectsNilDependencies(t *testing.T) {
-	enricher, _ := NewEnricher(EnricherConfig{})
-	memStore := store.NewMemoryStore(store.MemoryConfig{Capacity: 10})
+	enricher, _ := NewEnricher(EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
+	memStore := store.NewMemoryStore(&store.MemoryConfig{Capacity: 10, GCInterval: 10 * time.Second})
 	router := NewRouter(nil)
-	dispatcher := NewDispatcher(nil, OutputWorkerConfig{}, nil)
+	dispatcher := NewDispatcher(nil, defaultWorkerConfig(), nil)
 
 	tests := []struct {
-		cfg  PipelineConfig
-		name string
+		enricher   *Enricher
+		store      domain.EventStore
+		router     *Router
+		dispatcher *Dispatcher
+		name       string
 	}{
-		{name: "nil enricher", cfg: PipelineConfig{Store: memStore, Router: router, Dispatcher: dispatcher}},
-		{name: "nil router", cfg: PipelineConfig{Enricher: enricher, Store: memStore, Dispatcher: dispatcher}},
-		{name: "nil dispatcher", cfg: PipelineConfig{Enricher: enricher, Store: memStore, Router: router}},
+		{name: "nil enricher", enricher: nil, store: memStore, router: router, dispatcher: dispatcher},
+		{name: "nil router", enricher: enricher, store: memStore, router: nil, dispatcher: dispatcher},
+		{name: "nil dispatcher", enricher: enricher, store: memStore, router: router, dispatcher: nil},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewPipeline(tt.cfg)
+			_, err := NewPipeline(tt.enricher, tt.store, tt.router, tt.dispatcher, nil)
 			require.Error(t, err)
 		})
 	}
@@ -204,23 +178,25 @@ func TestProcessEventWithoutStoreDoesNotPanic(t *testing.T) {
 		},
 	}
 
-	enricher, err := NewEnricher(EnricherConfig{})
+	enricher, err := NewEnricher(EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
 	require.NoError(t, err)
-	p, err := NewPipeline(PipelineConfig{
-		Enricher: enricher,
-		Router:   NewRouter(map[string]domain.Priority{"test": domain.PriorityDebug}),
-		Dispatcher: NewDispatcher([]domain.Output{output}, OutputWorkerConfig{
-			QueueSize: 100, Workers: 1, Retry: RetryConfig{MaxAttempts: 1},
-		}, nil),
-	})
+	p, err := NewPipeline(
+		enricher,
+		nil,
+		NewRouter(map[string]domain.Priority{"test": domain.PriorityDebug}),
+		NewDispatcher([]domain.Output{output}, defaultWorkerConfig(), nil),
+		nil,
+	)
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := context.Background()
 	p.Start(ctx)
 
 	p.ProcessEvent(ctx, newTestEvent())
-	time.Sleep(50 * time.Millisecond)
+
+	drainCtx, drainCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer drainCancel()
+	p.DrainQueues(drainCtx)
 
 	assert.Equal(t, int64(1), received.Load())
 }
@@ -237,9 +213,10 @@ func TestCollectOutputStatus(t *testing.T) {
 
 func TestDrainQueuesCompletesWhenEmpty(t *testing.T) {
 	p := buildTestPipeline(t, nil)
+	ctx := context.Background()
+	p.Start(ctx)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-
-	p.DrainQueues(ctx)
+	drainCtx, drainCancel := context.WithTimeout(ctx, 1*time.Second)
+	defer drainCancel()
+	p.DrainQueues(drainCtx)
 }

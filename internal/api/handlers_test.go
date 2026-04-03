@@ -34,6 +34,20 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
 )
 
+var (
+	enricherConfig = pipeline.EnricherConfig{
+		TruncateEventThreshold: 4096,
+		TruncateFieldThreshold: 512,
+	}
+	outputWorkerConfig = pipeline.OutputWorkerConfig{
+		QueueSize: 100,
+		Workers:   1,
+		Retry: pipeline.RetryConfig{
+			MaxAttempts: 1,
+		},
+	}
+)
+
 type testOutput struct {
 	sendFunc func(ctx context.Context, event *domain.Event) error
 	name     string
@@ -52,7 +66,7 @@ func (m *testOutput) Send(ctx context.Context, event *domain.Event) error {
 
 func buildTestServer(t *testing.T, outputs []domain.Output) *Server {
 	t.Helper()
-	enricher, _ := pipeline.NewEnricher(pipeline.EnricherConfig{})
+	enricher, _ := pipeline.NewEnricher(enricherConfig)
 	priorities := make(map[string]domain.Priority)
 	for _, o := range outputs {
 		priorities[o.Name()] = domain.PriorityDebug
@@ -64,11 +78,13 @@ func buildTestServer(t *testing.T, outputs []domain.Output) *Server {
 		Retry:     pipeline.RetryConfig{MaxAttempts: 1},
 	}, nil)
 
-	p, err := pipeline.NewPipeline(pipeline.PipelineConfig{
-		Enricher:   enricher,
-		Router:     router,
-		Dispatcher: dispatcher,
-	})
+	p, err := pipeline.NewPipeline(
+		enricher,
+		nil,
+		router,
+		dispatcher,
+		nil,
+	)
 	if err != nil {
 		t.Fatalf("build pipeline: %v", err)
 	}
@@ -176,13 +192,15 @@ func TestHandleGetHealthz(t *testing.T) {
 }
 
 func TestServerDefaults(t *testing.T) {
-	enricher, err := pipeline.NewEnricher(pipeline.EnricherConfig{})
+	enricher, err := pipeline.NewEnricher(enricherConfig)
 	require.NoError(t, err)
-	p, err := pipeline.NewPipeline(pipeline.PipelineConfig{
-		Enricher:   enricher,
-		Router:     pipeline.NewRouter(nil),
-		Dispatcher: pipeline.NewDispatcher(nil, pipeline.OutputWorkerConfig{}, nil),
-	})
+	p, err := pipeline.NewPipeline(
+		enricher,
+		nil,
+		pipeline.NewRouter(nil),
+		pipeline.NewDispatcher(nil, outputWorkerConfig, nil),
+		nil,
+	)
 	require.NoError(t, err)
 
 	srv, err := NewServer(ServerConfig{Pipeline: p})

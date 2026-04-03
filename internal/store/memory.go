@@ -18,12 +18,14 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
 const (
@@ -53,20 +55,31 @@ type MemoryStore struct {
 
 // MemoryConfig holds MemoryStore settings.
 type MemoryConfig struct {
-	Capacity   int           `mapstructure:"max_events"`
+	Capacity   int           `mapstructure:"capacity"`
 	TTL        time.Duration `mapstructure:"ttl"`
 	GCInterval time.Duration `mapstructure:"gc_interval"`
 }
 
-// NewMemoryStore creates an in-memory EventStore.
-func NewMemoryStore(cfg MemoryConfig) *MemoryStore {
-	if cfg.Capacity <= 0 {
-		cfg.Capacity = 10000
+// Validate checks that memory store settings are valid.
+func (c *MemoryConfig) Validate() utils.ValidationErrors {
+	var errs utils.ValidationErrors
+	if c.Capacity <= 0 {
+		errs.Add("capacity", fmt.Sprintf("must be > 0, got %d", c.Capacity))
 	}
-	if cfg.GCInterval <= 0 {
-		cfg.GCInterval = 10 * time.Second
+	if c.TTL < 0 {
+		errs.Add("ttl", fmt.Sprintf("must be >= 0, got %v", c.TTL))
 	}
+	if c.GCInterval <= 0 {
+		errs.Add("gc_interval", fmt.Sprintf("must be > 0, got %v", c.GCInterval))
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
 
+// NewMemoryStore creates an in-memory EventStore.
+func NewMemoryStore(cfg *MemoryConfig) *MemoryStore {
 	s := &MemoryStore{
 		events:     make([]*domain.Event, cfg.Capacity),
 		capacity:   cfg.Capacity,
