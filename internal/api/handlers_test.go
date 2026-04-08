@@ -34,19 +34,21 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
 )
 
-var (
-	enricherConfig = pipeline.EnricherConfig{
-		TruncateEventThreshold: 4096,
-		TruncateFieldThreshold: 512,
-	}
-	outputWorkerConfig = pipeline.OutputWorkerConfig{
-		QueueSize: 100,
-		Workers:   1,
-		Retry: pipeline.RetryConfig{
-			MaxAttempts: 1,
-		},
-	}
-)
+var defaultTestOutputConfig = pipeline.OutputConfig{
+	QueueSize: 100,
+	Workers:   1,
+	Retry: pipeline.RetryConfig{
+		MaxAttempts:     1,
+		InitialInterval: 10 * time.Millisecond,
+		MaxInterval:     100 * time.Millisecond,
+		Multiplier:      2.0,
+	},
+	CircuitBreaker: pipeline.CircuitBreakerConfig{
+		FailureThreshold: 5,
+		SuccessThreshold: 2,
+		ResetTimeout:     30 * time.Second,
+	},
+}
 
 type testOutput struct {
 	sendFunc func(ctx context.Context, event *domain.Event) error
@@ -64,27 +66,15 @@ func (m *testOutput) Send(ctx context.Context, event *domain.Event) error {
 	return nil
 }
 
-func buildTestServer(t *testing.T, outputs []domain.Output) *Server {
+func buildTestServer(t *testing.T, outputs []*pipeline.Output) *Server {
 	t.Helper()
-	enricher, _ := pipeline.NewEnricher(enricherConfig)
-	priorities := make(map[string]domain.Priority)
-	for _, o := range outputs {
-		priorities[o.Name()] = domain.PriorityDebug
-	}
-	router := pipeline.NewRouter(priorities)
-	dispatcher := pipeline.NewDispatcher(outputs, pipeline.OutputWorkerConfig{
-		QueueSize: 100,
-		Workers:   1,
-		Retry:     pipeline.RetryConfig{MaxAttempts: 1},
-	}, nil)
+	enricher, _ := pipeline.NewEnricher(pipeline.EnricherConfig{
+		TruncateEventThreshold: 4096,
+		TruncateFieldThreshold: 512,
+	})
+	dispatcher := pipeline.NewDispatcher(outputs)
 
-	p, err := pipeline.NewPipeline(
-		enricher,
-		nil,
-		router,
-		dispatcher,
-		nil,
-	)
+	p, err := pipeline.NewPipeline(enricher, nil, dispatcher, nil)
 	if err != nil {
 		t.Fatalf("build pipeline: %v", err)
 	}
@@ -92,9 +82,7 @@ func buildTestServer(t *testing.T, outputs []domain.Output) *Server {
 	ctx := context.Background()
 	p.Start(ctx)
 
-	srv, err := NewServer(ServerConfig{
-		Pipeline: p,
-	})
+	srv, err := NewServer(ServerConfig{Pipeline: p})
 	if err != nil {
 		t.Fatalf("build server: %v", err)
 	}
@@ -118,12 +106,14 @@ func createValidEventJSON() []byte {
 
 func TestHandlePostEventValid(t *testing.T) {
 	var received atomic.Int64
-	srv := buildTestServer(t, []domain.Output{
-		&testOutput{name: "test", sendFunc: func(_ context.Context, _ *domain.Event) error {
-			received.Add(1)
-			return nil
-		}},
-	})
+	cfg := defaultTestOutputConfig
+	cfg.MinPriority = domain.PriorityDebug
+	out := pipeline.NewOutput(&testOutput{name: "test", sendFunc: func(_ context.Context, _ *domain.Event) error {
+		received.Add(1)
+		return nil
+	}}, &cfg, nil)
+
+	srv := buildTestServer(t, []*pipeline.Output{out})
 
 	ctx := context.Background()
 	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/", bytes.NewReader(createValidEventJSON()))
@@ -192,15 +182,12 @@ func TestHandleGetHealthz(t *testing.T) {
 }
 
 func TestServerDefaults(t *testing.T) {
-	enricher, err := pipeline.NewEnricher(enricherConfig)
+	enricher, err := pipeline.NewEnricher(pipeline.EnricherConfig{
+		TruncateEventThreshold: 4096,
+		TruncateFieldThreshold: 512,
+	})
 	require.NoError(t, err)
-	p, err := pipeline.NewPipeline(
-		enricher,
-		nil,
-		pipeline.NewRouter(nil),
-		pipeline.NewDispatcher(nil, outputWorkerConfig, nil),
-		nil,
-	)
+	p, err := pipeline.NewPipeline(enricher, nil, pipeline.NewDispatcher(nil), nil)
 	require.NoError(t, err)
 
 	srv, err := NewServer(ServerConfig{Pipeline: p})

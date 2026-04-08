@@ -23,11 +23,10 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/domain"
 )
 
-// Pipeline orchestrates event processing: enrich, store, route, dispatch.
+// Pipeline orchestrates event processing: enrich, store, dispatch.
 type Pipeline struct {
 	enricher   *Enricher
 	store      domain.EventStore
-	router     *Router
 	dispatcher *Dispatcher
 	metrics    domain.MetricsCollector
 }
@@ -36,15 +35,11 @@ type Pipeline struct {
 func NewPipeline(
 	enricher *Enricher,
 	eventStore domain.EventStore,
-	router *Router,
 	dispatcher *Dispatcher,
 	metrics domain.MetricsCollector,
 ) (*Pipeline, error) {
 	if enricher == nil {
 		return nil, fmt.Errorf("pipeline: enricher is required")
-	}
-	if router == nil {
-		return nil, fmt.Errorf("pipeline: router is required")
 	}
 	if dispatcher == nil {
 		return nil, fmt.Errorf("pipeline: dispatcher is required")
@@ -53,7 +48,6 @@ func NewPipeline(
 	return &Pipeline{
 		enricher:   enricher,
 		store:      eventStore,
-		router:     router,
 		dispatcher: dispatcher,
 		metrics:    metrics,
 	}, nil
@@ -64,7 +58,7 @@ func (p *Pipeline) Start(ctx context.Context) {
 	p.dispatcher.Start(ctx)
 }
 
-// ProcessEvent enriches, stores, routes, and dispatches an event.
+// ProcessEvent enriches, stores, and dispatches an event.
 func (p *Pipeline) ProcessEvent(ctx context.Context, event *domain.Event) {
 	if err := p.enricher.Enrich(event); err != nil {
 		if p.metrics != nil {
@@ -77,8 +71,7 @@ func (p *Pipeline) ProcessEvent(ctx context.Context, event *domain.Event) {
 		p.metrics.RecordEvent(ctx, event.Rule, event.Priority, event.Source)
 	}
 
-	targets := p.router.RouteEvent(event)
-	p.dispatcher.DispatchEvent(event, targets)
+	p.dispatcher.DispatchEvent(event)
 
 	if p.store != nil {
 		if err := p.store.Append(ctx, event); err != nil {
@@ -89,7 +82,7 @@ func (p *Pipeline) ProcessEvent(ctx context.Context, event *domain.Event) {
 	}
 }
 
-// DrainQueues waits for all output queues to empty and in-flight sends to complete.
+// DrainQueues waits for all output queues to empty and workers to exit.
 func (p *Pipeline) DrainQueues(ctx context.Context) {
 	p.dispatcher.DrainQueues(ctx)
 }

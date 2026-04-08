@@ -18,8 +18,8 @@ package domain
 
 import "context"
 
-// Output represents a running, configured output instance.
-type Output interface {
+// OutputDriver represents the send implementation for one output type.
+type OutputDriver interface {
 	Name() string
 	Init(ctx context.Context) error
 	Send(ctx context.Context, event *Event) error
@@ -29,7 +29,7 @@ type Output interface {
 
 // OutputType describes an available output kind.
 type OutputType struct {
-	New      func(cfg map[string]any, deps OutputDeps) (Output, error) `json:"-"`
+	New      func(cfg map[string]any, deps OutputDeps) (OutputDriver, error) `json:"-"`
 	Name     string                                                    `json:"name"`
 	Category string                                                    `json:"category"`
 	Schema   OutputSchema                                              `json:"schema"`
