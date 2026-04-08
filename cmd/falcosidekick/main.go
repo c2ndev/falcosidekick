@@ -19,7 +19,9 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
+	"flag"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -30,68 +32,76 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/catalog"
 	"github.com/falcosecurity/falcosidekick/internal/config"
 	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/logging"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/all"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
 	"github.com/falcosecurity/falcosidekick/internal/store"
 )
 
 func main() {
-	cfg, err := config.Load(os.Getenv("CONFIG_FILE"))
+	configPath := flag.String("c", "", "config file path")
+	showVersion := flag.Bool("v", false, "print version and exit")
+	flag.Parse()
+
+	if *showVersion {
+		v := GetVersionInfo()
+		fmt.Printf("falcosidekick %s (commit: %s, built: %s, go: %s)\n",
+			v.Version, v.Commit, v.BuildDate, v.GoVersion)
+		return
+	}
+
+	if err := run(*configPath); err != nil {
+		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run(configPath string) error {
+	cfg, err := config.Load(configPath)
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		return fmt.Errorf("config load: %w", err)
 	}
 
 	if errs := cfg.Validate(); len(errs) > 0 {
-		log.Fatalf("config validation failed: %s", errs.Error()) //nolint:gosec // G706: validation errors contain only our field names and messages
+		return fmt.Errorf("config validation: %s", errs.Error())
 	}
+
+	logger, err := logging.NewLogger(cfg.LogLevel, cfg.LogFormat)
+	if err != nil {
+		return fmt.Errorf("logger: %w", err)
+	}
+	slog.SetDefault(logger)
+
+	v := GetVersionInfo()
+	slog.Info("starting falcosidekick",
+		"version", v.Version,
+		"commit", v.Commit,
+		"build_date", v.BuildDate,
+		"go_version", v.GoVersion,
+	)
 
 	cat, err := catalog.New(all.Types())
 	if err != nil {
-		log.Fatalf("catalog: %v", err)
+		return fmt.Errorf("catalog: %w", err)
 	}
+
+	eventStore := createEventStore(cfg)
 
 	enricher, err := pipeline.NewEnricher(cfg.Pipeline.Enricher)
 	if err != nil {
-		log.Fatalf("enricher: %v", err)
+		return fmt.Errorf("enricher: %w", err)
 	}
 
-	outputPriorities := make(map[string]domain.Priority)
-	activeOutputs := make([]domain.Output, 0, len(cfg.Pipeline.Outputs))
-
-	for name, outputCfg := range cfg.Pipeline.Outputs {
-		output, createErr := cat.Create(name, outputCfg, domain.OutputDeps{})
-		if createErr != nil {
-			log.Fatalf("output %q: %v", name, createErr)
-		}
-		if initErr := output.Init(context.Background()); initErr != nil {
-			log.Fatalf("output %q init: %v", name, initErr)
-		}
-		activeOutputs = append(activeOutputs, output)
-
-		if mp, ok := outputCfg["minimumpriority"]; ok {
-			if s, ok := mp.(string); ok && s != "" {
-				outputPriorities[name] = domain.Priority(s)
-			}
-		}
-	}
-
-	router := pipeline.NewRouter(outputPriorities)
-	dispatcher := pipeline.NewDispatcher(activeOutputs, cfg.Pipeline.OutputWorkerConfig, nil)
-
-	var eventStore domain.EventStore
-	if cfg.UI.Enabled {
-		eventStore = store.NewMemoryStore(cfg.EventStore.Memory)
-	}
-
-	pipe, err := pipeline.NewPipeline(
-		enricher,
-		eventStore,
-		router,
-		dispatcher,
-		nil,
-	)
+	outputs, err := createOutputs(cfg, cat)
 	if err != nil {
-		log.Fatalf("pipeline: %v", err)
+		return fmt.Errorf("outputs: %w", err)
+	}
+
+	dispatcher := pipeline.NewDispatcher(outputs)
+
+	pipe, err := pipeline.NewPipeline(enricher, eventStore, dispatcher, nil)
+	if err != nil {
+		return fmt.Errorf("pipeline: %w", err)
 	}
 
 	srv, err := api.NewServer(api.ServerConfig{
@@ -100,45 +110,94 @@ func main() {
 		Port:     cfg.ListenPort,
 	})
 	if err != nil {
-		log.Fatalf("server: %v", err)
+		return fmt.Errorf("server: %w", err)
 	}
 
-	if eventStore != nil {
-		defer func() {
-			if closeErr := eventStore.Close(); closeErr != nil {
-				log.Printf("store close: %v", closeErr)
-			}
-		}()
-	}
+	// Two-context shutdown: drainCtx is parent, workerCtx is child.
+	// SIGTERM -> shutdown server -> close queues (drain)
+	// -> if drain timeout fires -> drainCtx canceled -> workerCtx canceled -> workers force-stop
+	drainCtx, drainCancel := context.WithCancel(context.Background())
+	defer drainCancel()
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer cancel()
+	workerCtx, workerCancel := context.WithCancel(drainCtx)
+	defer workerCancel()
 
-	pipe.Start(ctx)
+	pipe.Start(workerCtx)
 
 	go func() {
-		log.Printf("falcosidekick v3 listening on %s:%d", cfg.ListenAddress, cfg.ListenPort) //nolint:gosec // config values are validated
+		slog.Info("listening", "address", cfg.ListenAddress, "port", cfg.ListenPort, "outputs", len(outputs))
 		if listenErr := srv.Start(); listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
-			log.Fatalf("server: %v", listenErr)
+			slog.Error("server failed", "error", listenErr)
+			os.Exit(1)
 		}
 	}()
 
-	<-ctx.Done()
-	log.Println("shutting down")
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	<-sigCh
+
+	slog.Info("shutting down")
 
 	if shutdownErr := srv.Shutdown(); shutdownErr != nil {
-		log.Printf("server shutdown: %v", shutdownErr)
+		slog.Error("server shutdown", "error", shutdownErr)
 	}
 
-	drainCtx, drainCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer drainCancel()
-	pipe.DrainQueues(drainCtx)
+	drainTimeout, drainTimeoutCancel := context.WithTimeout(drainCtx, 10*time.Second)
+	defer drainTimeoutCancel()
+	pipe.DrainQueues(drainTimeout)
 
-	for _, o := range activeOutputs {
-		if closeErr := o.Close(); closeErr != nil {
-			log.Printf("output %s close: %v", o.Name(), closeErr)
+	for _, out := range outputs {
+		if closeErr := out.Close(); closeErr != nil {
+			slog.Error("output close", "output", out.Name(), "error", closeErr)
 		}
 	}
 
-	log.Println("stopped")
+	if eventStore != nil {
+		if closeErr := eventStore.Close(); closeErr != nil {
+			slog.Error("store close", "error", closeErr)
+		}
+	}
+
+	slog.Info("stopped")
+	return nil
+}
+
+func createEventStore(cfg *config.Config) domain.EventStore {
+	switch cfg.EventStore.Backend {
+	case config.MemoryStore:
+		if cfg.EventStore.Memory == nil {
+			slog.Warn("memory store config missing, using defaults")
+			return store.NewMemoryStore(&store.MemoryConfig{
+				Capacity:   10000,
+				TTL:        24 * time.Hour,
+				GCInterval: 10 * time.Second,
+			})
+		}
+		return store.NewMemoryStore(cfg.EventStore.Memory)
+	default:
+		slog.Warn("event store backend not implemented, store disabled", "backend", cfg.EventStore.Backend)
+		return nil
+	}
+}
+
+func createOutputs(cfg *config.Config, cat *catalog.Catalog) ([]*pipeline.Output, error) {
+	outputs := make([]*pipeline.Output, 0, len(cfg.Pipeline.Outputs))
+
+	for name, outputCfg := range cfg.Pipeline.Outputs {
+		driver, err := cat.Create(name, outputCfg, domain.OutputDeps{})
+		if err != nil {
+			return nil, fmt.Errorf("output %q: %w", name, err)
+		}
+		if err := driver.Init(context.Background()); err != nil {
+			return nil, fmt.Errorf("output %q init: %w", name, err)
+		}
+
+		outCfg := cfg.Pipeline.ResolveOutputConfig(name)
+
+		out := pipeline.NewOutput(driver, &outCfg, nil)
+		outputs = append(outputs, out)
+		slog.Info("output enabled", "output", name, "min_priority", outCfg.MinPriority)
+	}
+
+	return outputs, nil
 }

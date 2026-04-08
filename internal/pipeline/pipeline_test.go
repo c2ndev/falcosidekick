@@ -29,39 +29,40 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/store"
 )
 
-func buildTestPipeline(t *testing.T, outputs []domain.Output) *Pipeline {
+func buildTestPipeline(t *testing.T, outputs []*Output) *Pipeline {
 	t.Helper()
 	enricher, err := NewEnricher(EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
 	require.NoError(t, err)
 	memStore := store.NewMemoryStore(&store.MemoryConfig{Capacity: 100, GCInterval: 10 * time.Second})
-	router := NewRouter(map[string]domain.Priority{})
-	dispatcher := NewDispatcher(outputs, defaultWorkerConfig(), nil)
+	dispatcher := NewDispatcher(outputs)
 
-	p, err := NewPipeline(enricher, memStore, router, dispatcher, nil)
+	p, err := NewPipeline(enricher, memStore, dispatcher, nil)
 	require.NoError(t, err)
 	return p
 }
 
 func TestProcessEventEnrichesAndDispatches(t *testing.T) {
 	var received atomic.Int64
-	output := &mockOutput{
+
+	cfg := defaultOutputConfig()
+	cfg.MinPriority = domain.PriorityDebug
+	out := NewOutput(&mockOutput{
 		name: "test",
 		sendFunc: func(_ context.Context, _ *domain.Event) error {
 			received.Add(1)
 			return nil
 		},
-	}
+	}, cfg, nil)
 
-	router := NewRouter(map[string]domain.Priority{"test": domain.PriorityDebug})
 	enricher, _ := NewEnricher(EnricherConfig{
 		CustomFields:           map[string]string{"env": "test"},
 		TruncateEventThreshold: 4096,
 		TruncateFieldThreshold: 512,
 	})
 	memStore := store.NewMemoryStore(&store.MemoryConfig{Capacity: 100, GCInterval: 10 * time.Second})
-	dispatcher := NewDispatcher([]domain.Output{output}, defaultWorkerConfig(), nil)
+	dispatcher := NewDispatcher([]*Output{out})
 
-	p, err := NewPipeline(enricher, memStore, router, dispatcher, nil)
+	p, err := NewPipeline(enricher, memStore, dispatcher, nil)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -82,10 +83,9 @@ func TestProcessEventEnrichesAndDispatches(t *testing.T) {
 func TestProcessEventStoresAsync(t *testing.T) {
 	enricher, _ := NewEnricher(EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
 	memStore := store.NewMemoryStore(&store.MemoryConfig{Capacity: 100, GCInterval: 10 * time.Second})
-	router := NewRouter(map[string]domain.Priority{})
-	dispatcher := NewDispatcher(nil, defaultWorkerConfig(), nil)
+	dispatcher := NewDispatcher(nil)
 
-	p, err := NewPipeline(enricher, memStore, router, dispatcher, nil)
+	p, err := NewPipeline(enricher, memStore, dispatcher, nil)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -105,26 +105,25 @@ func TestProcessEventStoresAsync(t *testing.T) {
 func TestProcessEventRoutesByPriority(t *testing.T) {
 	var slackCalls, lokiCalls atomic.Int64
 
-	outputs := []domain.Output{
-		&mockOutput{name: "slack", sendFunc: func(_ context.Context, _ *domain.Event) error {
-			slackCalls.Add(1)
-			return nil
-		}},
-		&mockOutput{name: "loki", sendFunc: func(_ context.Context, _ *domain.Event) error {
-			lokiCalls.Add(1)
-			return nil
-		}},
-	}
+	slackCfg := defaultOutputConfig()
+	slackCfg.MinPriority = domain.PriorityCritical
+	slackOut := NewOutput(&mockOutput{name: "slack", sendFunc: func(_ context.Context, _ *domain.Event) error {
+		slackCalls.Add(1)
+		return nil
+	}}, slackCfg, nil)
 
-	router := NewRouter(map[string]domain.Priority{
-		"slack": domain.PriorityCritical,
-		"loki":  domain.PriorityDebug,
-	})
+	lokiCfg := defaultOutputConfig()
+	lokiCfg.MinPriority = domain.PriorityDebug
+	lokiOut := NewOutput(&mockOutput{name: "loki", sendFunc: func(_ context.Context, _ *domain.Event) error {
+		lokiCalls.Add(1)
+		return nil
+	}}, lokiCfg, nil)
+
 	enricher, _ := NewEnricher(EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
 	memStore := store.NewMemoryStore(&store.MemoryConfig{Capacity: 100, GCInterval: 10 * time.Second})
-	dispatcher := NewDispatcher(outputs, defaultWorkerConfig(), nil)
+	dispatcher := NewDispatcher([]*Output{slackOut, lokiOut})
 
-	p, err := NewPipeline(enricher, memStore, router, dispatcher, nil)
+	p, err := NewPipeline(enricher, memStore, dispatcher, nil)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -145,24 +144,21 @@ func TestProcessEventRoutesByPriority(t *testing.T) {
 func TestNewPipelineRejectsNilDependencies(t *testing.T) {
 	enricher, _ := NewEnricher(EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
 	memStore := store.NewMemoryStore(&store.MemoryConfig{Capacity: 10, GCInterval: 10 * time.Second})
-	router := NewRouter(nil)
-	dispatcher := NewDispatcher(nil, defaultWorkerConfig(), nil)
+	dispatcher := NewDispatcher(nil)
 
 	tests := []struct {
 		enricher   *Enricher
 		store      domain.EventStore
-		router     *Router
 		dispatcher *Dispatcher
 		name       string
 	}{
-		{name: "nil enricher", enricher: nil, store: memStore, router: router, dispatcher: dispatcher},
-		{name: "nil router", enricher: enricher, store: memStore, router: nil, dispatcher: dispatcher},
-		{name: "nil dispatcher", enricher: enricher, store: memStore, router: router, dispatcher: nil},
+		{name: "nil enricher", enricher: nil, store: memStore, dispatcher: dispatcher},
+		{name: "nil dispatcher", enricher: enricher, store: memStore, dispatcher: nil},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewPipeline(tt.enricher, tt.store, tt.router, tt.dispatcher, nil)
+			_, err := NewPipeline(tt.enricher, tt.store, tt.dispatcher, nil)
 			require.Error(t, err)
 		})
 	}
@@ -170,23 +166,20 @@ func TestNewPipelineRejectsNilDependencies(t *testing.T) {
 
 func TestProcessEventWithoutStoreDoesNotPanic(t *testing.T) {
 	var received atomic.Int64
-	output := &mockOutput{
+
+	cfg := defaultOutputConfig()
+	cfg.MinPriority = domain.PriorityDebug
+	out := NewOutput(&mockOutput{
 		name: "test",
 		sendFunc: func(_ context.Context, _ *domain.Event) error {
 			received.Add(1)
 			return nil
 		},
-	}
+	}, cfg, nil)
 
 	enricher, err := NewEnricher(EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
 	require.NoError(t, err)
-	p, err := NewPipeline(
-		enricher,
-		nil,
-		NewRouter(map[string]domain.Priority{"test": domain.PriorityDebug}),
-		NewDispatcher([]domain.Output{output}, defaultWorkerConfig(), nil),
-		nil,
-	)
+	p, err := NewPipeline(enricher, nil, NewDispatcher([]*Output{out}), nil)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -202,9 +195,9 @@ func TestProcessEventWithoutStoreDoesNotPanic(t *testing.T) {
 }
 
 func TestCollectOutputStatus(t *testing.T) {
-	p := buildTestPipeline(t, []domain.Output{
-		&mockOutput{name: "slack"},
-		&mockOutput{name: "loki"},
+	p := buildTestPipeline(t, []*Output{
+		NewOutput(&mockOutput{name: "slack"}, defaultOutputConfig(), nil),
+		NewOutput(&mockOutput{name: "loki"}, defaultOutputConfig(), nil),
 	})
 
 	statuses := p.CollectOutputStatus()
