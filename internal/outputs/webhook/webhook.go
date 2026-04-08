@@ -65,7 +65,7 @@ type output struct {
 	cfg    config
 }
 
-func createOutput(raw map[string]any, _ domain.OutputDeps) (domain.Output, error) {
+func createOutput(raw map[string]any, _ domain.OutputDeps) (domain.OutputDriver, error) {
 	var cfg config
 	if err := mapstructure.Decode(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("webhook config: %w", err)

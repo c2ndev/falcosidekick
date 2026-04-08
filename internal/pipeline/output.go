@@ -40,16 +40,17 @@ type OutputStatus struct {
 	FailedTotal   int       `json:"failed_total"`
 }
 
-// OutputWorkerConfig holds per-output worker pool settings.
-type OutputWorkerConfig struct {
+// OutputConfig holds per-output settings including delivery and priority.
+type OutputConfig struct {
+	MinPriority    domain.Priority      `mapstructure:"minimumpriority"`
 	CircuitBreaker CircuitBreakerConfig `mapstructure:"circuit_breaker"`
 	Retry          RetryConfig          `mapstructure:"retry"`
 	QueueSize      int                  `mapstructure:"queue_size"`
 	Workers        int                  `mapstructure:"workers"`
 }
 
-// Validate checks worker pool settings for errors.
-func (c *OutputWorkerConfig) Validate() utils.ValidationErrors {
+// Validate checks output settings for errors.
+func (c *OutputConfig) Validate() utils.ValidationErrors {
 	var errs utils.ValidationErrors
 
 	if c.QueueSize <= 0 {
@@ -67,114 +68,121 @@ func (c *OutputWorkerConfig) Validate() utils.ValidationErrors {
 	return nil
 }
 
-// OutputWorker manages a per-output queue, worker pool, circuit breaker, and retry.
-type OutputWorker struct {
+// Output is the complete runtime delivery unit for one output destination.
+// It wraps an OutputDriver with a queue, worker pool, retry, and circuit breaker.
+type Output struct {
 	lastError      atomic.Value
-	output         domain.Output
-	metrics        domain.MetricsCollector
 	lastSuccess    atomic.Value
+	driver         domain.OutputDriver
+	metrics        domain.MetricsCollector
 	queue          chan *domain.Event
 	circuitBreaker *CircuitBreaker
+	config         OutputConfig
 	workerDone     sync.WaitGroup
-	retry          RetryConfig
-	queueCapacity  int
-	workerCount    int
 	sentTotal      atomic.Int64
 	droppedTotal   atomic.Int64
 	failedTotal    atomic.Int64
 }
 
-// NewOutputWorker creates an OutputWorker for the given output.
-func NewOutputWorker(output domain.Output, cfg OutputWorkerConfig, metrics domain.MetricsCollector) *OutputWorker {
-	w := &OutputWorker{
-		output:         output,
+// NewOutput creates a complete Output from a driver and configuration.
+func NewOutput(driver domain.OutputDriver, cfg *OutputConfig, metrics domain.MetricsCollector) *Output {
+	o := &Output{
+		driver:         driver,
+		config:         *cfg,
 		queue:          make(chan *domain.Event, cfg.QueueSize),
-		queueCapacity:  cfg.QueueSize,
-		workerCount:    cfg.Workers,
 		circuitBreaker: NewCircuitBreaker(cfg.CircuitBreaker),
-		retry:          cfg.Retry,
 		metrics:        metrics,
 	}
-	w.lastSuccess.Store(time.Time{})
-	w.lastError.Store("")
-	return w
+	o.lastSuccess.Store(time.Time{})
+	o.lastError.Store("")
+	return o
+}
+
+// Name returns the output driver name.
+func (o *Output) Name() string {
+	return o.driver.Name()
 }
 
 // Start launches the worker goroutines.
-func (w *OutputWorker) Start(ctx context.Context) {
-	for i := 0; i < w.workerCount; i++ {
-		w.workerDone.Add(1)
+func (o *Output) Start(ctx context.Context) {
+	for i := 0; i < o.config.Workers; i++ {
+		o.workerDone.Add(1)
 		go func() {
-			defer w.workerDone.Done()
-			w.runWorker(ctx)
+			defer o.workerDone.Done()
+			o.runWorker(ctx)
 		}()
 	}
 }
 
 // Enqueue adds an event to the output queue. Drops the event if the queue is full.
-func (w *OutputWorker) Enqueue(event *domain.Event) {
+func (o *Output) Enqueue(event *domain.Event) {
 	select {
-	case w.queue <- event:
+	case o.queue <- event:
 	default:
-		w.droppedTotal.Add(1)
-		if w.metrics != nil {
-			w.metrics.RecordDrop(context.Background(), w.output.Name())
+		o.droppedTotal.Add(1)
+		if o.metrics != nil {
+			o.metrics.RecordDrop(context.Background(), o.driver.Name())
 		}
 	}
 }
 
+// Close releases the underlying driver resources.
+func (o *Output) Close() error {
+	return o.driver.Close()
+}
+
 // CloseQueue closes the event channel. Workers finish remaining events then exit.
-func (w *OutputWorker) CloseQueue() {
-	close(w.queue)
+func (o *Output) CloseQueue() {
+	close(o.queue)
 }
 
 // WaitDone blocks until all worker goroutines have exited.
-func (w *OutputWorker) WaitDone() {
-	w.workerDone.Wait()
+func (o *Output) WaitDone() {
+	o.workerDone.Wait()
 }
 
 // GetStatus returns observable state for the UI.
-func (w *OutputWorker) GetStatus() OutputStatus {
+func (o *Output) GetStatus() OutputStatus {
 	return OutputStatus{
-		Name:          w.output.Name(),
-		QueueDepth:    len(w.queue),
-		QueueCapacity: w.queueCapacity,
-		SentTotal:     int(w.sentTotal.Load()),
-		DroppedTotal:  int(w.droppedTotal.Load()),
-		FailedTotal:   int(w.failedTotal.Load()),
-		CircuitState:  w.circuitBreaker.GetState().String(),
-		LastSuccess:   w.lastSuccess.Load().(time.Time),
-		LastError:     w.lastError.Load().(string),
+		Name:          o.driver.Name(),
+		QueueDepth:    len(o.queue),
+		QueueCapacity: o.config.QueueSize,
+		SentTotal:     int(o.sentTotal.Load()),
+		DroppedTotal:  int(o.droppedTotal.Load()),
+		FailedTotal:   int(o.failedTotal.Load()),
+		CircuitState:  o.circuitBreaker.GetState().String(),
+		LastSuccess:   o.lastSuccess.Load().(time.Time),
+		LastError:     o.lastError.Load().(string),
 	}
 }
 
-func (w *OutputWorker) runWorker(ctx context.Context) {
+func (o *Output) runWorker(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case event, ok := <-w.queue:
+		case event, ok := <-o.queue:
 			if !ok {
 				return
 			}
-			w.sendWithRetry(ctx, event)
+			o.sendWithRetry(ctx, event)
 		}
 	}
 }
 
-func (w *OutputWorker) sendWithRetry(ctx context.Context, event *domain.Event) {
-	if !w.circuitBreaker.AllowRequest() {
-		w.failedTotal.Add(1)
-		if w.metrics != nil {
-			w.metrics.RecordOutput(ctx, w.output.Name(), "circuit_open", 0)
+func (o *Output) sendWithRetry(ctx context.Context, event *domain.Event) {
+	if !o.circuitBreaker.AllowRequest() {
+		o.failedTotal.Add(1)
+		if o.metrics != nil {
+			o.metrics.RecordOutput(ctx, o.driver.Name(), "circuit_open", 0)
 		}
 		return
 	}
 
 	var lastErr error
-	for attempt := 0; attempt < w.retry.MaxAttempts; attempt++ {
+	for attempt := 0; attempt < o.config.Retry.MaxAttempts; attempt++ {
 		if attempt > 0 {
-			backoff := w.retry.ComputeBackoff(attempt)
+			backoff := o.config.Retry.ComputeBackoff(attempt)
 			select {
 			case <-ctx.Done():
 				return
@@ -183,27 +191,27 @@ func (w *OutputWorker) sendWithRetry(ctx context.Context, event *domain.Event) {
 		}
 
 		start := time.Now()
-		err := w.output.Send(ctx, event)
+		err := o.driver.Send(ctx, event)
 		duration := time.Since(start)
 
 		if err == nil {
-			w.circuitBreaker.RecordSuccess()
-			w.sentTotal.Add(1)
-			w.lastSuccess.Store(time.Now())
-			if w.metrics != nil {
-				w.metrics.RecordOutput(ctx, w.output.Name(), "ok", duration)
+			o.circuitBreaker.RecordSuccess()
+			o.sentTotal.Add(1)
+			o.lastSuccess.Store(time.Now())
+			if o.metrics != nil {
+				o.metrics.RecordOutput(ctx, o.driver.Name(), "ok", duration)
 			}
 			return
 		}
 
 		lastErr = err
-		w.circuitBreaker.RecordFailure()
+		o.circuitBreaker.RecordFailure()
 	}
 
-	w.failedTotal.Add(1)
-	w.lastError.Store(lastErr.Error())
-	if w.metrics != nil {
-		w.metrics.RecordOutput(ctx, w.output.Name(), "error", 0)
-		w.metrics.RecordError(ctx, w.output.Name(), lastErr)
+	o.failedTotal.Add(1)
+	o.lastError.Store(lastErr.Error())
+	if o.metrics != nil {
+		o.metrics.RecordOutput(ctx, o.driver.Name(), "error", 0)
+		o.metrics.RecordError(ctx, o.driver.Name(), lastErr)
 	}
 }

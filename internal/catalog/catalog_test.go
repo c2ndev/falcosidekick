@@ -40,7 +40,7 @@ func stubType(name, category string) domain.OutputType {
 		Name:     name,
 		Category: category,
 		Schema:   domain.OutputSchema{},
-		New: func(_ map[string]any, _ domain.OutputDeps) (domain.Output, error) {
+		New: func(_ map[string]any, _ domain.OutputDeps) (domain.OutputDriver, error) {
 			return &stubOutput{name: name}, nil
 		},
 	}
@@ -51,7 +51,7 @@ func failingType(name string) domain.OutputType {
 		Name:     name,
 		Category: "test",
 		Schema:   domain.OutputSchema{},
-		New: func(_ map[string]any, _ domain.OutputDeps) (domain.Output, error) {
+		New: func(_ map[string]any, _ domain.OutputDeps) (domain.OutputDriver, error) {
 			return nil, fmt.Errorf("constructor failed")
 		},
 	}
@@ -96,7 +96,7 @@ func TestNew(t *testing.T) {
 		{
 			name: "empty name",
 			types: []domain.OutputType{
-				{Name: "", Category: "test", New: func(_ map[string]any, _ domain.OutputDeps) (domain.Output, error) {
+				{Name: "", Category: "test", New: func(_ map[string]any, _ domain.OutputDeps) (domain.OutputDriver, error) {
 					return &stubOutput{}, nil
 				}},
 			},

@@ -1,0 +1,99 @@
+# falcosidekick v3.0 configuration
+# See documentation at: https://github.com/falcosecurity/falcosidekick
+
+# Listen address and port
+listen_address: "0.0.0.0"
+listen_port: 2801
+debug: false
+
+# Logging
+log_level: info       # trace, debug, info, warning, error
+log_format: text      # text, json
+
+# TLS (optional)
+# tls:
+#   server:
+#     enabled: false
+#     certfile: /etc/certs/server.crt
+#     keyfile: /etc/certs/server.key
+#     mutualtls: false
+#     cacertfile: /etc/certs/ca.crt
+#   client:
+#     mutualtls: false
+#     certfile: /etc/certs/client.crt
+#     keyfile: /etc/certs/client.key
+#     cacertfile: /etc/certs/ca.crt
+
+# Event store (backend-specific sub-sections)
+eventstore:
+  backend: memory       # memory, sqlite, postgres, redis
+  memory:
+    capacity: 10000
+    ttl: 24h
+    gc_interval: 10s
+
+# UI (built-in web interface)
+# ui:
+#   enabled: false
+
+# Pipeline
+pipeline:
+  queue_size: 1000
+  workers: 2
+  retry:
+    max_attempts: 3
+    initial_interval: 1s
+    max_interval: 30s
+    multiplier: 2.0
+  circuit_breaker:
+    failure_threshold: 5
+    success_threshold: 2
+    reset_timeout: 30s
+
+  # Event enrichment
+  # enricher:
+  #   customfields:
+  #     environment: production
+  #     cluster: us-west-2
+  #   customtags:
+  #     - security
+  #   templatedfields:
+  #     namespace: '{{ or (index . "k8s.ns.name") "unknown" }}'
+  #   bracketreplacer: "_"
+  #   truncate_event_threshold: 4096
+  #   truncate_field_threshold: 512
+
+  # Outputs - zero outputs is valid (UI-only or store-only mode)
+  outputs:
+    # Chat / Messaging
+    # slack:
+    #   webhookurl: "https://hooks.slack.com/services/XXX"
+    #   channel: "#security-alerts"
+    #   minimumpriority: warning
+
+    # Generic webhook
+    # webhook:
+    #   address: "https://my-service/events"
+    #   method: POST
+    #   customheaders:
+    #     Authorization: "Bearer xxx"
+
+    # Logs
+    # elasticsearch:
+    #   hostport: "https://elasticsearch:9200"
+    #   index: falco
+    #   minimumpriority: ""
+
+    # loki:
+    #   hostport: "http://loki:3100"
+    #   minimumpriority: notice
+
+    # Alerting
+    # alertmanager:
+    #   hostport: "http://alertmanager:9093"
+    #   minimumpriority: warning
+
+    # Response Engine
+    # talon:
+    #   address: "http://falco-talon:2803"
+    #   minimumpriority: critical

@@ -17,15 +17,16 @@
 package config
 
 import (
+	"github.com/falcosecurity/falcosidekick/internal/domain"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
 	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
-// PipelineConfig holds event pipeline settings. Uses pipeline package types directly.
+// PipelineConfig holds event pipeline settings.
 type PipelineConfig struct {
-	Outputs                     map[string]map[string]any `mapstructure:"outputs"`
-	Enricher                    pipeline.EnricherConfig   `mapstructure:"enricher"`
-	pipeline.OutputWorkerConfig `mapstructure:",squash"`
+	Outputs               map[string]map[string]any `mapstructure:"outputs"`
+	Enricher              pipeline.EnricherConfig   `mapstructure:"enricher"`
+	pipeline.OutputConfig `mapstructure:",squash"`
 }
 
 // Validate checks the pipeline configuration for errors.
@@ -33,10 +34,39 @@ func (c *PipelineConfig) Validate() utils.ValidationErrors {
 	var errs utils.ValidationErrors
 
 	errs.Merge("enricher", c.Enricher.Validate())
-	errs.Merge("", c.OutputWorkerConfig.Validate())
+	errs.Merge("", c.OutputConfig.Validate())
 
 	if len(errs) > 0 {
 		return errs
 	}
 	return nil
+}
+
+// ResolveOutputConfig returns a fully resolved OutputConfig for the named output,
+// merging pipeline defaults with per-output overrides and priority.
+func (c *PipelineConfig) ResolveOutputConfig(name string) pipeline.OutputConfig {
+	resolved := c.OutputConfig
+
+	outputCfg, ok := c.Outputs[name]
+	if !ok {
+		return resolved
+	}
+
+	if v, ok := outputCfg["queue_size"]; ok {
+		if n, ok := v.(int); ok && n > 0 {
+			resolved.QueueSize = n
+		}
+	}
+	if v, ok := outputCfg["workers"]; ok {
+		if n, ok := v.(int); ok && n > 0 {
+			resolved.Workers = n
+		}
+	}
+	if v, ok := outputCfg["minimumpriority"]; ok {
+		if s, ok := v.(string); ok && s != "" {
+			resolved.MinPriority = domain.Priority(s)
+		}
+	}
+
+	return resolved
 }

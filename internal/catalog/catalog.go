@@ -71,7 +71,7 @@ func (c *Catalog) All() []domain.OutputType {
 }
 
 // Create instantiates a configured output by name.
-func (c *Catalog) Create(name string, cfg map[string]any, deps domain.OutputDeps) (domain.Output, error) {
+func (c *Catalog) Create(name string, cfg map[string]any, deps domain.OutputDeps) (domain.OutputDriver, error) {
 	t, ok := c.Get(name)
 	if !ok {
 		return nil, fmt.Errorf("catalog: unknown output type %q", name)

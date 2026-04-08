@@ -22,47 +22,43 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/domain"
 )
 
-// Dispatcher routes events to per-output worker pools.
+// Dispatcher manages outputs and routes events with priority filtering.
 type Dispatcher struct {
-	workers map[string]*OutputWorker
+	outputs []*Output
 }
 
-// NewDispatcher creates a Dispatcher with workers for each output.
-func NewDispatcher(outputs []domain.Output, defaultCfg OutputWorkerConfig, metrics domain.MetricsCollector) *Dispatcher {
-	workers := make(map[string]*OutputWorker, len(outputs))
-	for _, output := range outputs {
-		workers[output.Name()] = NewOutputWorker(output, defaultCfg, metrics)
-	}
-	return &Dispatcher{workers: workers}
+// NewDispatcher creates a Dispatcher for the given outputs.
+func NewDispatcher(outputs []*Output) *Dispatcher {
+	return &Dispatcher{outputs: outputs}
 }
 
 // Start launches all output worker pools.
 func (d *Dispatcher) Start(ctx context.Context) {
-	for _, w := range d.workers {
-		w.Start(ctx)
+	for _, out := range d.outputs {
+		out.Start(ctx)
 	}
 }
 
-// DispatchEvent sends an event to the named output workers.
-func (d *Dispatcher) DispatchEvent(event *domain.Event, targets []string) {
-	for _, name := range targets {
-		if w, ok := d.workers[name]; ok {
-			w.Enqueue(event)
+// DispatchEvent sends an event to all outputs that accept its priority.
+func (d *Dispatcher) DispatchEvent(event *domain.Event) {
+	for _, out := range d.outputs {
+		if acceptsPriority(out.config.MinPriority, event.Priority) {
+			out.Enqueue(event)
 		}
 	}
 }
 
 // DrainQueues closes all output queues and waits for workers to finish
-// processing remaining events. Respects ctx for timeout.
+// processing remaining events.
 func (d *Dispatcher) DrainQueues(ctx context.Context) {
-	for _, w := range d.workers {
-		w.CloseQueue()
+	for _, out := range d.outputs {
+		out.CloseQueue()
 	}
 
 	done := make(chan struct{})
 	go func() {
-		for _, w := range d.workers {
-			w.WaitDone()
+		for _, out := range d.outputs {
+			out.WaitDone()
 		}
 		close(done)
 	}()
@@ -73,11 +69,18 @@ func (d *Dispatcher) DrainQueues(ctx context.Context) {
 	}
 }
 
-// CollectStatus returns status for every output worker.
+// CollectStatus returns status for every output.
 func (d *Dispatcher) CollectStatus() []OutputStatus {
-	statuses := make([]OutputStatus, 0, len(d.workers))
-	for _, w := range d.workers {
-		statuses = append(statuses, w.GetStatus())
+	statuses := make([]OutputStatus, 0, len(d.outputs))
+	for _, out := range d.outputs {
+		statuses = append(statuses, out.GetStatus())
 	}
 	return statuses
+}
+
+func acceptsPriority(minPriority, eventPriority domain.Priority) bool {
+	if minPriority == "" {
+		return true
+	}
+	return eventPriority.GTE(minPriority)
 }

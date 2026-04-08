@@ -46,8 +46,8 @@ func (m *mockOutput) Send(ctx context.Context, event *domain.Event) error {
 	return nil
 }
 
-func defaultWorkerConfig() OutputWorkerConfig {
-	return OutputWorkerConfig{
+func defaultOutputConfig() *OutputConfig {
+	return &OutputConfig{
 		QueueSize: 100,
 		Workers:   1,
 		Retry: RetryConfig{
@@ -67,53 +67,41 @@ func defaultWorkerConfig() OutputWorkerConfig {
 func TestDispatcherRoutesToCorrectOutputs(t *testing.T) {
 	var slackCalls, lokiCalls atomic.Int64
 
-	outputs := []domain.Output{
-		&mockOutput{name: "slack", sendFunc: func(_ context.Context, _ *domain.Event) error {
-			slackCalls.Add(1)
-			return nil
-		}},
-		&mockOutput{name: "loki", sendFunc: func(_ context.Context, _ *domain.Event) error {
-			lokiCalls.Add(1)
-			return nil
-		}},
-	}
+	slackCfg := defaultOutputConfig()
+	slackCfg.MinPriority = domain.PriorityCritical
+	slackOut := NewOutput(&mockOutput{name: "slack", sendFunc: func(_ context.Context, _ *domain.Event) error {
+		slackCalls.Add(1)
+		return nil
+	}}, slackCfg, nil)
 
-	d := NewDispatcher(outputs, defaultWorkerConfig(), nil)
+	lokiCfg := defaultOutputConfig()
+	lokiCfg.MinPriority = domain.PriorityDebug
+	lokiOut := NewOutput(&mockOutput{name: "loki", sendFunc: func(_ context.Context, _ *domain.Event) error {
+		lokiCalls.Add(1)
+		return nil
+	}}, lokiCfg, nil)
+
+	d := NewDispatcher([]*Output{slackOut, lokiOut})
 	ctx := context.Background()
 	d.Start(ctx)
 
-	d.DispatchEvent(newTestEvent(), []string{"slack"})
-	d.DispatchEvent(newTestEvent(), []string{"loki"})
-	d.DispatchEvent(newTestEvent(), []string{"slack", "loki"})
+	event := newTestEvent()
+	event.Priority = domain.PriorityWarning
+	d.DispatchEvent(event)
 
 	drainCtx, drainCancel := context.WithTimeout(ctx, 2*time.Second)
 	defer drainCancel()
 	d.DrainQueues(drainCtx)
 
-	assert.Equal(t, int64(2), slackCalls.Load())
-	assert.Equal(t, int64(2), lokiCalls.Load())
-}
-
-func TestDispatcherIgnoresUnknownTargets(t *testing.T) {
-	d := NewDispatcher([]domain.Output{
-		&mockOutput{name: "slack"},
-	}, defaultWorkerConfig(), nil)
-
-	ctx := context.Background()
-	d.Start(ctx)
-
-	d.DispatchEvent(newTestEvent(), []string{"nonexistent"})
-
-	drainCtx, drainCancel := context.WithTimeout(ctx, 1*time.Second)
-	defer drainCancel()
-	d.DrainQueues(drainCtx)
+	assert.Equal(t, int64(0), slackCalls.Load(), "warning event must not reach critical-only slack")
+	assert.Equal(t, int64(1), lokiCalls.Load(), "warning event must reach debug-level loki")
 }
 
 func TestDispatcherCollectStatus(t *testing.T) {
-	d := NewDispatcher([]domain.Output{
-		&mockOutput{name: "slack"},
-		&mockOutput{name: "loki"},
-	}, defaultWorkerConfig(), nil)
+	d := NewDispatcher([]*Output{
+		NewOutput(&mockOutput{name: "slack"}, defaultOutputConfig(), nil),
+		NewOutput(&mockOutput{name: "loki"}, defaultOutputConfig(), nil),
+	})
 
 	statuses := d.CollectStatus()
 	assert.Len(t, statuses, 2)
@@ -130,7 +118,7 @@ func TestDispatcherDrainQueues(t *testing.T) {
 	var mu sync.Mutex
 	var received []string
 
-	output := &mockOutput{
+	out := NewOutput(&mockOutput{
 		name: "test",
 		sendFunc: func(_ context.Context, event *domain.Event) error {
 			mu.Lock()
@@ -138,16 +126,16 @@ func TestDispatcherDrainQueues(t *testing.T) {
 			mu.Unlock()
 			return nil
 		},
-	}
+	}, defaultOutputConfig(), nil)
 
-	d := NewDispatcher([]domain.Output{output}, defaultWorkerConfig(), nil)
+	d := NewDispatcher([]*Output{out})
 	ctx := context.Background()
 	d.Start(ctx)
 
 	for i := 0; i < 10; i++ {
 		e := newTestEvent()
 		e.Rule = fmt.Sprintf("rule-%d", i)
-		d.DispatchEvent(e, []string{"test"})
+		d.DispatchEvent(e)
 	}
 
 	drainCtx, drainCancel := context.WithTimeout(ctx, 2*time.Second)
@@ -161,18 +149,19 @@ func TestDispatcherDrainQueues(t *testing.T) {
 
 func TestDispatcherConcurrentDispatch(t *testing.T) {
 	var count atomic.Int64
-	output := &mockOutput{
+
+	cfg := defaultOutputConfig()
+	cfg.Workers = 4
+
+	out := NewOutput(&mockOutput{
 		name: "test",
 		sendFunc: func(_ context.Context, _ *domain.Event) error {
 			count.Add(1)
 			return nil
 		},
-	}
+	}, cfg, nil)
 
-	cfg := defaultWorkerConfig()
-	cfg.Workers = 4
-
-	d := NewDispatcher([]domain.Output{output}, cfg, nil)
+	d := NewDispatcher([]*Output{out})
 	ctx := context.Background()
 	d.Start(ctx)
 
@@ -181,7 +170,7 @@ func TestDispatcherConcurrentDispatch(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			d.DispatchEvent(newTestEvent(), []string{"test"})
+			d.DispatchEvent(newTestEvent())
 		}()
 	}
 	wg.Wait()
@@ -198,7 +187,7 @@ func TestDrainQueuesWaitsForActiveSend(t *testing.T) {
 	sendBlock := make(chan struct{})
 	var sendCompleted atomic.Bool
 
-	output := &mockOutput{
+	out := NewOutput(&mockOutput{
 		name: "test",
 		sendFunc: func(_ context.Context, _ *domain.Event) error {
 			close(sendStarted)
@@ -206,14 +195,13 @@ func TestDrainQueuesWaitsForActiveSend(t *testing.T) {
 			sendCompleted.Store(true)
 			return nil
 		},
-	}
+	}, defaultOutputConfig(), nil)
 
-	d := NewDispatcher([]domain.Output{output}, defaultWorkerConfig(), nil)
+	d := NewDispatcher([]*Output{out})
 	ctx := context.Background()
 	d.Start(ctx)
 
-	d.DispatchEvent(newTestEvent(), []string{"test"})
-
+	d.DispatchEvent(newTestEvent())
 	<-sendStarted
 
 	drainDone := make(chan struct{})
@@ -239,4 +227,74 @@ func TestDrainQueuesWaitsForActiveSend(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("DrainQueues did not return after Send completed")
 	}
+}
+
+func TestDrainQueuesReturnsOnTimeout(t *testing.T) {
+	out := NewOutput(&mockOutput{
+		name: "test",
+		sendFunc: func(_ context.Context, _ *domain.Event) error {
+			time.Sleep(10 * time.Second)
+			return nil
+		},
+	}, defaultOutputConfig(), nil)
+
+	d := NewDispatcher([]*Output{out})
+	ctx := context.Background()
+	d.Start(ctx)
+
+	d.DispatchEvent(newTestEvent())
+	time.Sleep(20 * time.Millisecond)
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer drainCancel()
+
+	start := time.Now()
+	d.DrainQueues(drainCtx)
+	elapsed := time.Since(start)
+
+	assert.Less(t, elapsed, 500*time.Millisecond, "DrainQueues must return when timeout fires, not wait for slow send")
+}
+
+func TestTwoContextShutdown(t *testing.T) {
+	sendStarted := make(chan struct{})
+	var sendCanceled atomic.Bool
+
+	out := NewOutput(&mockOutput{
+		name: "test",
+		sendFunc: func(ctx context.Context, _ *domain.Event) error {
+			close(sendStarted)
+			<-ctx.Done()
+			sendCanceled.Store(true)
+			return ctx.Err()
+		},
+	}, defaultOutputConfig(), nil)
+
+	d := NewDispatcher([]*Output{out})
+
+	// Two-context design: drainCtx is parent, workerCtx is child
+	drainCtx, drainCancel := context.WithCancel(context.Background())
+	defer drainCancel()
+
+	workerCtx, workerCancel := context.WithCancel(drainCtx)
+	defer workerCancel()
+
+	d.Start(workerCtx)
+
+	d.DispatchEvent(newTestEvent())
+	<-sendStarted
+
+	// Drain with short timeout - worker is blocked in Send
+	drainTimeout, drainTimeoutCancel := context.WithTimeout(drainCtx, 100*time.Millisecond)
+	defer drainTimeoutCancel()
+	d.DrainQueues(drainTimeout)
+
+	// DrainQueues returned (timeout), but worker is still alive (blocked in Send)
+	assert.False(t, sendCanceled.Load(), "worker should still be in Send after drain timeout")
+
+	// Cancel drainCtx -> cancels workerCtx (child) -> worker sees ctx.Done -> exits
+	drainCancel()
+
+	// Wait for worker to observe the cancellation
+	time.Sleep(50 * time.Millisecond)
+	assert.True(t, sendCanceled.Load(), "worker must exit after workerCtx is canceled via parent drainCtx")
 }
