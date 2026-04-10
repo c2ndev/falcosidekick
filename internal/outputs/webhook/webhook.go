@@ -17,31 +17,21 @@
 package webhook
 
 import (
-	"bytes"
 	"context"
-	"crypto/tls"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"time"
 
 	"github.com/mitchellh/mapstructure"
 
 	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/sdk"
 )
 
-const (
-	defaultMethod  = "POST"
-	defaultTimeout = 10 * time.Second
-)
+const defaultMethod = "POST"
 
 type config struct {
-	CustomHeaders   map[string]string `mapstructure:"customheaders"`
-	CheckCert       *bool             `mapstructure:"checkcert"`
-	Address         string            `mapstructure:"address"`
-	Method          string            `mapstructure:"method"`
-	MinimumPriority string            `mapstructure:"minimumpriority"`
+	URL            string `mapstructure:"url"`
+	Method         string `mapstructure:"method"`
+	sdk.HTTPConfig `mapstructure:",squash"`
 }
 
 // Type describes the webhook output for the catalog.
@@ -50,18 +40,15 @@ var Type = domain.OutputType{
 	Name:     "webhook",
 	Category: "webhook",
 	Schema: domain.OutputSchema{
-		Fields: []domain.SchemaField{
-			{Name: "address", Type: "string", Required: true, Label: "URL"},
+		Fields: append([]domain.SchemaField{
+			{Name: "url", Type: "string", Required: true, Label: "URL"},
 			{Name: "method", Type: "enum", Values: []string{"POST", "PUT"}, Default: "POST", Label: "HTTP Method"},
-			{Name: "customheaders", Type: "map", Label: "Custom Headers"},
-			{Name: "minimumpriority", Type: "priority", Label: "Minimum Priority"},
-			{Name: "checkcert", Type: "bool", Default: true, Label: "Verify TLS Certificate"},
-		},
+		}, sdk.HTTPConfigSchemaFields()...),
 	},
 }
 
 type output struct {
-	client *http.Client
+	sender *sdk.Sender
 	cfg    config
 }
 
@@ -70,85 +57,31 @@ func createOutput(raw map[string]any, _ domain.OutputDeps) (domain.OutputDriver,
 	if err := mapstructure.Decode(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("webhook config: %w", err)
 	}
-	if cfg.Address == "" {
-		return nil, fmt.Errorf("webhook: address is required")
+	if cfg.URL == "" {
+		return nil, fmt.Errorf("webhook: url is required")
 	}
 	if cfg.Method == "" {
 		cfg.Method = defaultMethod
 	}
 
-	checkCert := true
-	if cfg.CheckCert != nil {
-		checkCert = *cfg.CheckCert
-	}
-
 	return &output{
 		cfg:    cfg,
-		client: buildHTTPClient(checkCert),
+		sender: sdk.NewSender("webhook", &cfg.HTTPConfig),
 	}, nil
 }
 
-// Name returns the output identifier.
 func (o *output) Name() string { return "webhook" }
 
-// Init establishes connections. Webhook has no init-time work.
 func (o *output) Init(_ context.Context) error { return nil }
 
 // Send delivers an event as JSON to the webhook address.
 func (o *output) Send(ctx context.Context, event *domain.Event) error {
-	body, err := json.Marshal(event)
-	if err != nil {
-		return fmt.Errorf("webhook marshal: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, o.cfg.Method, o.cfg.Address, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("webhook request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	for k, v := range o.cfg.CustomHeaders {
-		req.Header.Set(k, v)
-	}
-
-	resp, err := o.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("webhook send: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode >= http.StatusBadRequest {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("webhook: HTTP %d: %s", resp.StatusCode, string(respBody))
-	}
-	return nil
+	return o.sender.SendJSON(ctx, o.cfg.Method, o.cfg.URL, event)
 }
 
 // HealthCheck verifies connectivity to the webhook address.
 func (o *output) HealthCheck(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, o.cfg.Address, http.NoBody)
-	if err != nil {
-		return fmt.Errorf("webhook healthcheck: %w", err)
-	}
-	resp, err := o.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("webhook healthcheck: %w", err)
-	}
-	_ = resp.Body.Close()
-	return nil
+	return o.sender.HealthCheck(ctx, o.cfg.URL)
 }
 
-// Close releases resources. Webhook has no persistent connections.
 func (o *output) Close() error { return nil }
-
-func buildHTTPClient(checkCert bool) *http.Client {
-	return &http.Client{
-		Timeout: defaultTimeout,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: !checkCert, //nolint:gosec // user-configurable TLS verification
-			},
-			MaxIdleConns:    10,
-			IdleConnTimeout: 30 * time.Second,
-		},
-	}
-}

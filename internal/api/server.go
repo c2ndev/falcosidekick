@@ -20,7 +20,10 @@ import (
 	"fmt"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/adaptor"
 	"github.com/gofiber/fiber/v3/middleware/recover"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/falcosecurity/falcosidekick/internal/domain"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
@@ -31,6 +34,7 @@ type ServerConfig struct {
 	Pipeline *pipeline.Pipeline
 	Store    domain.EventStore
 	Metrics  domain.MetricsCollector
+	Registry *prometheus.Registry
 	Address  string
 	Port     int
 }
@@ -69,6 +73,11 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 
 	app.Post("/", s.handlePostEvent)
 	app.Get("/healthz", s.handleGetHealthz)
+
+	if cfg.Registry != nil {
+		handler := promhttp.HandlerFor(cfg.Registry, promhttp.HandlerOpts{})
+		app.Get("/metrics", adaptor.HTTPHandler(handler))
+	}
 
 	s.app = app
 	return s, nil

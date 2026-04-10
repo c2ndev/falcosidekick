@@ -33,6 +33,7 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/config"
 	"github.com/falcosecurity/falcosidekick/internal/domain"
 	"github.com/falcosecurity/falcosidekick/internal/logging"
+	"github.com/falcosecurity/falcosidekick/internal/metrics"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/all"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
 	"github.com/falcosecurity/falcosidekick/internal/store"
@@ -80,6 +81,8 @@ func run(configPath string) error {
 		"go_version", v.GoVersion,
 	)
 
+	collector := metrics.NewCollector()
+
 	cat, err := catalog.New(all.Types())
 	if err != nil {
 		return fmt.Errorf("catalog: %w", err)
@@ -92,20 +95,22 @@ func run(configPath string) error {
 		return fmt.Errorf("enricher: %w", err)
 	}
 
-	outputs, err := createOutputs(cfg, cat)
+	outputs, err := createOutputs(cfg, cat, collector)
 	if err != nil {
 		return fmt.Errorf("outputs: %w", err)
 	}
 
 	dispatcher := pipeline.NewDispatcher(outputs)
 
-	pipe, err := pipeline.NewPipeline(enricher, eventStore, dispatcher, nil)
+	pipe, err := pipeline.NewPipeline(enricher, eventStore, dispatcher, collector)
 	if err != nil {
 		return fmt.Errorf("pipeline: %w", err)
 	}
 
 	srv, err := api.NewServer(api.ServerConfig{
 		Pipeline: pipe,
+		Metrics:  collector,
+		Registry: collector.Registry(),
 		Address:  cfg.ListenAddress,
 		Port:     cfg.ListenPort,
 	})
@@ -180,11 +185,11 @@ func createEventStore(cfg *config.Config) domain.EventStore {
 	}
 }
 
-func createOutputs(cfg *config.Config, cat *catalog.Catalog) ([]*pipeline.Output, error) {
+func createOutputs(cfg *config.Config, cat *catalog.Catalog, mc domain.MetricsCollector) ([]*pipeline.Output, error) {
 	outputs := make([]*pipeline.Output, 0, len(cfg.Pipeline.Outputs))
 
 	for name, outputCfg := range cfg.Pipeline.Outputs {
-		driver, err := cat.Create(name, outputCfg, domain.OutputDeps{})
+		driver, err := cat.Create(name, outputCfg, domain.OutputDeps{Logger: slog.Default(), Metrics: mc})
 		if err != nil {
 			return nil, fmt.Errorf("output %q: %w", name, err)
 		}
@@ -194,7 +199,7 @@ func createOutputs(cfg *config.Config, cat *catalog.Catalog) ([]*pipeline.Output
 
 		outCfg := cfg.Pipeline.ResolveOutputConfig(name)
 
-		out := pipeline.NewOutput(driver, &outCfg, nil)
+		out := pipeline.NewOutput(driver, &outCfg, mc)
 		outputs = append(outputs, out)
 		slog.Info("output enabled", "output", name, "min_priority", outCfg.MinPriority)
 	}

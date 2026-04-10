@@ -31,11 +31,13 @@ import (
 
 // OutputTestCase defines a test scenario for an output.
 type OutputTestCase struct {
-	ValidateReq func(t *testing.T, req *http.Request, body []byte)
-	Config      map[string]any
-	Name        string
-	MockStatus  int
-	ExpectError bool
+	ValidateReq  func(t *testing.T, req *http.Request, body []byte)
+	Config       map[string]any
+	Name         string
+	AddressField string
+	MockStatus   int
+	AddressSlice bool
+	ExpectError  bool
 }
 
 // RunOutputTests executes test cases against an output type using a mock HTTP server.
@@ -63,10 +65,19 @@ func RunOutputTests(t *testing.T, outputType domain.OutputType, cases []OutputTe
 			for k, v := range tc.Config {
 				cfg[k] = v
 			}
-			cfg["address"] = server.URL
+
+			if tc.AddressField != "" {
+				if tc.AddressSlice {
+					cfg[tc.AddressField] = []string{server.URL}
+				} else {
+					cfg[tc.AddressField] = server.URL
+				}
+			}
 
 			output, err := outputType.New(cfg, domain.OutputDeps{})
 			require.NoError(t, err)
+
+			require.NoError(t, output.Init(context.Background()))
 
 			err = output.Send(context.Background(), CreateValidEvent())
 
@@ -80,19 +91,5 @@ func RunOutputTests(t *testing.T, outputType domain.OutputType, cases []OutputTe
 				tc.ValidateReq(t, capturedReq, capturedBody)
 			}
 		})
-	}
-}
-
-// CreateCommonTestCases returns test cases that every HTTP-based output should pass.
-func CreateCommonTestCases() []OutputTestCase {
-	return []OutputTestCase{
-		{
-			Name: "sends valid event",
-		},
-		{
-			Name:        "returns error on server 500",
-			MockStatus:  http.StatusInternalServerError,
-			ExpectError: true,
-		},
 	}
 }

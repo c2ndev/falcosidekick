@@ -48,6 +48,10 @@ func applyDefaults(v *viper.Viper) {
 	v.SetDefault("pipeline.circuit_breaker.success_threshold", 2)
 	v.SetDefault("pipeline.circuit_breaker.reset_timeout", 30*time.Second)
 
+	v.SetDefault("pipeline.batching.enabled", false)
+	v.SetDefault("pipeline.batching.batch_size", 500)
+	v.SetDefault("pipeline.batching.flush_interval", time.Second)
+
 	v.SetDefault("pipeline.enricher.truncate_event_threshold", 4096)
 	v.SetDefault("pipeline.enricher.truncate_field_threshold", 512)
 }

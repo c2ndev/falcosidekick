@@ -17,6 +17,8 @@
 package config
 
 import (
+	"time"
+
 	"github.com/falcosecurity/falcosidekick/internal/domain"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
 	"github.com/falcosecurity/falcosidekick/internal/utils"
@@ -65,6 +67,26 @@ func (c *PipelineConfig) ResolveOutputConfig(name string) pipeline.OutputConfig 
 	if v, ok := outputCfg["minimumpriority"]; ok {
 		if s, ok := v.(string); ok && s != "" {
 			resolved.MinPriority = domain.Priority(s)
+		}
+	}
+
+	if v, ok := outputCfg["batching"]; ok {
+		if bm, ok := v.(map[string]any); ok {
+			if enabled, ok := bm["enabled"]; ok {
+				if b, ok := enabled.(bool); ok {
+					resolved.Batching.Enabled = b
+				}
+			}
+			if bs, ok := bm["batch_size"]; ok {
+				if n, ok := bs.(int); ok && n > 0 {
+					resolved.Batching.BatchSize = n
+				}
+			}
+			if fi, ok := bm["flush_interval"]; ok {
+				if d, ok := fi.(time.Duration); ok && d > 0 {
+					resolved.Batching.FlushInterval = d
+				}
+			}
 		}
 	}
 
