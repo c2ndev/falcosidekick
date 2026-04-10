@@ -20,12 +20,22 @@ package all
 
 import (
 	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/alertmanager"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/elasticsearch"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/kafka"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/loki"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/slack"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/webhook"
 )
 
 // Types returns all registered output types.
 func Types() []domain.OutputType {
 	return []domain.OutputType{
+		alertmanager.Type,
+		elasticsearch.Type,
+		kafka.Type,
+		loki.Type,
+		slack.Type,
 		webhook.Type,
 	}
 }
