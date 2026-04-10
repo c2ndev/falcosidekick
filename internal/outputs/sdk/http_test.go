@@ -76,3 +76,26 @@ func TestApplyHeadersNilMap(t *testing.T) {
 	ApplyHeaders(req, nil)
 	assert.Empty(t, req.Header.Get("X-Custom"))
 }
+
+func TestHTTPConfigSchemaFields(t *testing.T) {
+	fields := HTTPConfigSchemaFields()
+
+	require.NotEmpty(t, fields, "schema fields must not be empty")
+
+	names := make(map[string]bool, len(fields))
+	for _, f := range fields {
+		names[f.Name] = true
+	}
+
+	assert.True(t, names["username"], "must include username field")
+	assert.True(t, names["password"], "must include password field")
+	assert.True(t, names["bearer_token"], "must include bearer_token field")
+	assert.True(t, names["headers"], "must include headers field")
+	assert.True(t, names["insecure_skip_verify"], "must include insecure_skip_verify field")
+
+	for _, f := range fields {
+		if f.Name == "password" || f.Name == "bearer_token" {
+			assert.True(t, f.Secret, "%s must be marked as secret", f.Name)
+		}
+	}
+}

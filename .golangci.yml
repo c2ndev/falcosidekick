@@ -131,6 +131,7 @@ linters:
       - builtin$
       - examples$
       - ui/
+      - internal/pkg/
 formatters:
   enable:
     - gci
