@@ -23,10 +23,9 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/domain"
 )
 
-// Pipeline orchestrates event processing: enrich, store, dispatch.
+// Pipeline orchestrates event processing: enrich and dispatch.
 type Pipeline struct {
 	enricher   *Enricher
-	store      domain.EventStore
 	dispatcher *Dispatcher
 	metrics    domain.MetricsCollector
 }
@@ -34,7 +33,6 @@ type Pipeline struct {
 // NewPipeline creates a Pipeline from its dependencies.
 func NewPipeline(
 	enricher *Enricher,
-	eventStore domain.EventStore,
 	dispatcher *Dispatcher,
 	metrics domain.MetricsCollector,
 ) (*Pipeline, error) {
@@ -47,7 +45,6 @@ func NewPipeline(
 
 	return &Pipeline{
 		enricher:   enricher,
-		store:      eventStore,
 		dispatcher: dispatcher,
 		metrics:    metrics,
 	}, nil
@@ -58,7 +55,7 @@ func (p *Pipeline) Start(ctx context.Context) {
 	p.dispatcher.Start(ctx)
 }
 
-// ProcessEvent enriches, stores, and dispatches an event.
+// ProcessEvent enriches and dispatches an event to all active outputs.
 func (p *Pipeline) ProcessEvent(ctx context.Context, event *domain.Event) {
 	if err := p.enricher.Enrich(event); err != nil {
 		if p.metrics != nil {
@@ -72,14 +69,6 @@ func (p *Pipeline) ProcessEvent(ctx context.Context, event *domain.Event) {
 	}
 
 	p.dispatcher.DispatchEvent(event)
-
-	if p.store != nil {
-		if err := p.store.Append(ctx, event); err != nil {
-			if p.metrics != nil {
-				p.metrics.RecordError(ctx, "eventstore", err)
-			}
-		}
-	}
 }
 
 // DrainQueues waits for all output queues to empty and workers to exit.

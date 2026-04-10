@@ -22,6 +22,7 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/domain"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/alertmanager"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/elasticsearch"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/inmemory"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/kafka"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/loki"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/slack"
@@ -35,6 +36,7 @@ func Types() []domain.OutputType {
 		elasticsearch.Type,
 		kafka.Type,
 		loki.Type,
+		inmemory.Type,
 		slack.Type,
 		webhook.Type,
 	}

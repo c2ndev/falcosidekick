@@ -19,49 +19,20 @@ package config
 import (
 	"fmt"
 
+	"github.com/falcosecurity/falcosidekick/internal/logging"
 	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
-// LogLevel identifies a logging verbosity level.
-type LogLevel string
-
-// Supported log levels.
-const (
-	TraceLevel LogLevel = "trace"
-	DebugLevel LogLevel = "debug"
-	InfoLevel  LogLevel = "info"
-	WarnLevel  LogLevel = "warning"
-	ErrorLevel LogLevel = "error"
-)
-
-// LogFormat identifies a log output format.
-type LogFormat string
-
-// Supported log formats.
-const (
-	JSONFormat LogFormat = "json"
-	TextFormat LogFormat = "text"
-)
-
-var validLogLevels = map[LogLevel]bool{
-	TraceLevel: true, DebugLevel: true, InfoLevel: true, WarnLevel: true, ErrorLevel: true,
-}
-
-var validLogFormats = map[LogFormat]bool{
-	TextFormat: true, JSONFormat: true,
-}
-
 // Config holds the complete falcosidekick configuration.
 type Config struct {
-	LogFormat     string           `mapstructure:"log_format"`
-	LogLevel      string           `mapstructure:"log_level"`
-	ListenAddress string           `mapstructure:"listen_address"`
-	TLS           *TLSConfig       `mapstructure:"tls,omitempty"`
-	EventStore    EventStoreConfig `mapstructure:"eventstore,omitempty"`
-	Pipeline      PipelineConfig   `mapstructure:"pipeline"`
-	ListenPort    int              `mapstructure:"listen_port"`
-	UI            UISection        `mapstructure:"ui"`
-	Debug         bool             `mapstructure:"debug"`
+	TLS           *TLSConfig        `mapstructure:"tls,omitempty"`
+	LogFormat     logging.LogFormat `mapstructure:"log_format"`
+	LogLevel      logging.LogLevel  `mapstructure:"log_level"`
+	ListenAddress string            `mapstructure:"listen_address"`
+	UI            UIConfig          `mapstructure:"ui"`
+	Pipeline      PipelineConfig    `mapstructure:"pipeline"`
+	ListenPort    int               `mapstructure:"listen_port"`
+	Debug         bool              `mapstructure:"debug"`
 }
 
 // Validate checks the configuration for errors. Calls each sub-config's
@@ -73,28 +44,20 @@ func (cfg *Config) Validate() utils.ValidationErrors {
 		errs.Add("listen_port", fmt.Sprintf("must be 1-65535, got %d", cfg.ListenPort))
 	}
 
-	if !validLogLevels[LogLevel(cfg.LogLevel)] {
-		errs.Add("log_level", fmt.Sprintf("must be trace/debug/info/warn/warning/error, got %q", cfg.LogLevel))
-	}
+	errs.Merge("", cfg.LogLevel.Validate())
 
-	if !validLogFormats[LogFormat(cfg.LogFormat)] {
-		errs.Add("log_format", fmt.Sprintf("must be text/json, got %q", cfg.LogFormat))
-	}
+	errs.Merge("", cfg.LogFormat.Validate())
 
 	if cfg.TLS != nil {
 		errs.Merge("tls", cfg.TLS.Validate())
 	}
 
-	errs.Merge("eventstore", cfg.EventStore.Validate())
 	errs.Merge("pipeline", cfg.Pipeline.Validate())
+
+	errs.Merge("ui", cfg.UI.Validate())
 
 	if len(errs) > 0 {
 		return errs
 	}
 	return nil
-}
-
-// UISection holds UI settings.
-type UISection struct {
-	Enabled bool `mapstructure:"enabled"`
 }

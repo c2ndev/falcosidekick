@@ -18,7 +18,9 @@ package domain
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"time"
 )
 
 // OutputDriver represents the send implementation for one output type.
@@ -35,6 +37,15 @@ type OutputDriver interface {
 // the output implements BatchSender and batching is enabled in config.
 type BatchSender interface {
 	SendBatch(ctx context.Context, events []*Event) error
+}
+
+// ReadableStore is an optional interface for outputs that support event queries.
+// The API layer uses this to serve the UI. Only outputs configured as the
+// ui.backend need to implement it (e.g., memory, redis, postgres).
+type ReadableStore interface {
+	Search(ctx context.Context, query *SearchQuery) (*SearchResult, error)
+	Count(ctx context.Context, filters *Filters) (int64, error)
+	CountBy(ctx context.Context, field string, filters *Filters) (map[string]int64, error)
 }
 
 // OutputType describes an available output kind.
@@ -65,4 +76,68 @@ type SchemaField struct {
 	Values   []string `json:"values,omitempty"`
 	Required bool     `json:"required"`
 	Secret   bool     `json:"secret,omitempty"`
+}
+
+// SearchQuery holds parameters for querying stored events.
+type SearchQuery struct {
+	Filter   string  `json:"filter"`
+	SortBy   string  `json:"sort_by"`
+	Filters  Filters `json:"filters"`
+	Page     int     `json:"page"`
+	Limit    int     `json:"limit"`
+	SortDesc bool    `json:"sort_desc"`
+}
+
+// Filters holds structured filter criteria for event queries.
+type Filters struct {
+	Priority []string      `json:"priority,omitempty"`
+	Rule     []string      `json:"rule,omitempty"`
+	Source   []string      `json:"source,omitempty"`
+	Hostname []string      `json:"hostname,omitempty"`
+	Tags     []string      `json:"tags,omitempty"`
+	Since    time.Duration `json:"since,omitempty"`
+}
+
+// SearchResult holds a page of events with pagination metadata.
+type SearchResult struct {
+	Events []Event `json:"events"`
+	Total  int64   `json:"total"`
+	Page   int     `json:"page"`
+	Limit  int     `json:"limit"`
+}
+
+// Normalize applies defaults and validates the query.
+func (q *SearchQuery) Normalize() error {
+	if q.Limit <= 0 {
+		q.Limit = 100
+	}
+	if q.Limit > 1000 {
+		q.Limit = 1000
+	}
+	if q.Page <= 0 {
+		q.Page = 1
+	}
+	if q.SortBy == "" {
+		q.SortBy = "timestamp"
+	}
+	if !validSortFields[q.SortBy] {
+		return fmt.Errorf("search: invalid sort_by %q", q.SortBy)
+	}
+	return nil
+}
+
+var validSortFields = map[string]bool{
+	"timestamp": true, "priority": true, "rule": true, "source": true,
+}
+
+// ValidateGroupBy checks if a field is allowed for CountBy aggregation.
+func ValidateGroupBy(field string) error {
+	if !validGroupByFields[field] {
+		return fmt.Errorf("invalid group_by field: %q", field)
+	}
+	return nil
+}
+
+var validGroupByFields = map[string]bool{
+	"priority": true, "rule": true, "source": true, "tags": true, "hostname": true,
 }

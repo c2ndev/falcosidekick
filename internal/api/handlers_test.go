@@ -74,7 +74,7 @@ func buildTestServer(t *testing.T, outputs []*pipeline.Output) *Server {
 	})
 	dispatcher := pipeline.NewDispatcher(outputs)
 
-	p, err := pipeline.NewPipeline(enricher, nil, dispatcher, nil)
+	p, err := pipeline.NewPipeline(enricher, dispatcher, nil)
 	if err != nil {
 		t.Fatalf("build pipeline: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestServerDefaults(t *testing.T) {
 		TruncateFieldThreshold: 512,
 	})
 	require.NoError(t, err)
-	p, err := pipeline.NewPipeline(enricher, nil, pipeline.NewDispatcher(nil), nil)
+	p, err := pipeline.NewPipeline(enricher, pipeline.NewDispatcher(nil), nil)
 	require.NoError(t, err)
 
 	srv, err := NewServer(ServerConfig{Pipeline: p})

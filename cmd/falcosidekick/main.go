@@ -36,7 +36,6 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/metrics"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/all"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
-	"github.com/falcosecurity/falcosidekick/internal/store"
 )
 
 func main() {
@@ -67,7 +66,7 @@ func run(configPath string) error {
 		return fmt.Errorf("config validation: %s", errs.Error())
 	}
 
-	logger, err := logging.NewLogger(cfg.LogLevel, cfg.LogFormat)
+	logger, err := logging.NewLogger(logging.LogLevel(cfg.LogLevel), logging.LogFormat(cfg.LogFormat))
 	if err != nil {
 		return fmt.Errorf("logger: %w", err)
 	}
@@ -88,8 +87,6 @@ func run(configPath string) error {
 		return fmt.Errorf("catalog: %w", err)
 	}
 
-	eventStore := createEventStore(cfg)
-
 	enricher, err := pipeline.NewEnricher(cfg.Pipeline.Enricher)
 	if err != nil {
 		return fmt.Errorf("enricher: %w", err)
@@ -100,19 +97,25 @@ func run(configPath string) error {
 		return fmt.Errorf("outputs: %w", err)
 	}
 
+	readStore, err := resolveReadableStore(outputs, cfg.UI)
+	if err != nil {
+		return fmt.Errorf("readable store: %w", err)
+	}
+
 	dispatcher := pipeline.NewDispatcher(outputs)
 
-	pipe, err := pipeline.NewPipeline(enricher, eventStore, dispatcher, collector)
+	pipe, err := pipeline.NewPipeline(enricher, dispatcher, collector)
 	if err != nil {
 		return fmt.Errorf("pipeline: %w", err)
 	}
 
 	srv, err := api.NewServer(api.ServerConfig{
-		Pipeline: pipe,
-		Metrics:  collector,
-		Registry: collector.Registry(),
-		Address:  cfg.ListenAddress,
-		Port:     cfg.ListenPort,
+		Pipeline:  pipe,
+		ReadStore: readStore,
+		Metrics:   collector,
+		Registry:  collector.Registry(),
+		Address:   cfg.ListenAddress,
+		Port:      cfg.ListenPort,
 	})
 	if err != nil {
 		return fmt.Errorf("server: %w", err)
@@ -157,32 +160,26 @@ func run(configPath string) error {
 		}
 	}
 
-	if eventStore != nil {
-		if closeErr := eventStore.Close(); closeErr != nil {
-			slog.Error("store close", "error", closeErr)
-		}
-	}
-
 	slog.Info("stopped")
 	return nil
 }
 
-func createEventStore(cfg *config.Config) domain.EventStore {
-	switch cfg.EventStore.Backend {
-	case config.MemoryStore:
-		if cfg.EventStore.Memory == nil {
-			slog.Warn("memory store config missing, using defaults")
-			return store.NewMemoryStore(&store.MemoryConfig{
-				Capacity:   10000,
-				TTL:        24 * time.Hour,
-				GCInterval: 10 * time.Second,
-			})
-		}
-		return store.NewMemoryStore(cfg.EventStore.Memory)
-	default:
-		slog.Warn("event store backend not implemented, store disabled", "backend", cfg.EventStore.Backend)
-		return nil
+func resolveReadableStore(outputs []*pipeline.Output, ui config.UIConfig) (domain.ReadableStore, error) {
+	if !ui.Enabled || ui.Backend == "" {
+		return nil, nil
 	}
+
+	for _, out := range outputs {
+		if out.Name() == ui.Backend {
+			rs, ok := out.Driver().(domain.ReadableStore)
+			if !ok {
+				return nil, fmt.Errorf("output %q does not implement ReadableStore", ui.Backend)
+			}
+			return rs, nil
+		}
+	}
+
+	return nil, fmt.Errorf("ui.backend %q not found in configured outputs", ui.Backend)
 }
 
 func createOutputs(cfg *config.Config, cat *catalog.Catalog, mc domain.MetricsCollector) ([]*pipeline.Output, error) {

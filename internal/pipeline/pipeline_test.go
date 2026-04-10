@@ -26,17 +26,15 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/falcosecurity/falcosidekick/internal/domain"
-	"github.com/falcosecurity/falcosidekick/internal/store"
 )
 
 func buildTestPipeline(t *testing.T, outputs []*Output) *Pipeline {
 	t.Helper()
 	enricher, err := NewEnricher(EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
 	require.NoError(t, err)
-	memStore := store.NewMemoryStore(&store.MemoryConfig{Capacity: 100, GCInterval: 10 * time.Second})
 	dispatcher := NewDispatcher(outputs)
 
-	p, err := NewPipeline(enricher, memStore, dispatcher, nil)
+	p, err := NewPipeline(enricher, dispatcher, nil)
 	require.NoError(t, err)
 	return p
 }
@@ -59,10 +57,9 @@ func TestProcessEventEnrichesAndDispatches(t *testing.T) {
 		TruncateEventThreshold: 4096,
 		TruncateFieldThreshold: 512,
 	})
-	memStore := store.NewMemoryStore(&store.MemoryConfig{Capacity: 100, GCInterval: 10 * time.Second})
 	dispatcher := NewDispatcher([]*Output{out})
 
-	p, err := NewPipeline(enricher, memStore, dispatcher, nil)
+	p, err := NewPipeline(enricher, dispatcher, nil)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -78,28 +75,6 @@ func TestProcessEventEnrichesAndDispatches(t *testing.T) {
 	assert.Equal(t, int64(1), received.Load())
 	assert.NotEmpty(t, event.UUID)
 	assert.Equal(t, "test", event.OutputFields["env"])
-}
-
-func TestProcessEventStoresAsync(t *testing.T) {
-	enricher, _ := NewEnricher(EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
-	memStore := store.NewMemoryStore(&store.MemoryConfig{Capacity: 100, GCInterval: 10 * time.Second})
-	dispatcher := NewDispatcher(nil)
-
-	p, err := NewPipeline(enricher, memStore, dispatcher, nil)
-	require.NoError(t, err)
-
-	ctx := context.Background()
-	p.Start(ctx)
-
-	p.ProcessEvent(ctx, newTestEvent())
-
-	drainCtx, drainCancel := context.WithTimeout(ctx, 2*time.Second)
-	defer drainCancel()
-	p.DrainQueues(drainCtx)
-
-	count, err := memStore.Count(ctx, &domain.Filters{})
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), count)
 }
 
 func TestProcessEventRoutesByPriority(t *testing.T) {
@@ -120,10 +95,9 @@ func TestProcessEventRoutesByPriority(t *testing.T) {
 	}}, lokiCfg, nil)
 
 	enricher, _ := NewEnricher(EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
-	memStore := store.NewMemoryStore(&store.MemoryConfig{Capacity: 100, GCInterval: 10 * time.Second})
 	dispatcher := NewDispatcher([]*Output{slackOut, lokiOut})
 
-	p, err := NewPipeline(enricher, memStore, dispatcher, nil)
+	p, err := NewPipeline(enricher, dispatcher, nil)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -143,43 +117,29 @@ func TestProcessEventRoutesByPriority(t *testing.T) {
 
 func TestNewPipelineRejectsNilDependencies(t *testing.T) {
 	enricher, _ := NewEnricher(EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
-	memStore := store.NewMemoryStore(&store.MemoryConfig{Capacity: 10, GCInterval: 10 * time.Second})
 	dispatcher := NewDispatcher(nil)
 
 	tests := []struct {
 		enricher   *Enricher
-		store      domain.EventStore
 		dispatcher *Dispatcher
 		name       string
 	}{
-		{name: "nil enricher", enricher: nil, store: memStore, dispatcher: dispatcher},
-		{name: "nil dispatcher", enricher: enricher, store: memStore, dispatcher: nil},
+		{name: "nil enricher", enricher: nil, dispatcher: dispatcher},
+		{name: "nil dispatcher", enricher: enricher, dispatcher: nil},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewPipeline(tt.enricher, tt.store, tt.dispatcher, nil)
+			_, err := NewPipeline(tt.enricher, tt.dispatcher, nil)
 			require.Error(t, err)
 		})
 	}
 }
 
-func TestProcessEventWithoutStoreDoesNotPanic(t *testing.T) {
-	var received atomic.Int64
-
-	cfg := defaultOutputConfig()
-	cfg.MinPriority = domain.PriorityDebug
-	out := NewOutput(&mockOutput{
-		name: "test",
-		sendFunc: func(_ context.Context, _ *domain.Event) error {
-			received.Add(1)
-			return nil
-		},
-	}, cfg, nil)
-
+func TestProcessEventWithNoOutputsDoesNotPanic(t *testing.T) {
 	enricher, err := NewEnricher(EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
 	require.NoError(t, err)
-	p, err := NewPipeline(enricher, nil, NewDispatcher([]*Output{out}), nil)
+	p, err := NewPipeline(enricher, NewDispatcher(nil), nil)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -187,11 +147,9 @@ func TestProcessEventWithoutStoreDoesNotPanic(t *testing.T) {
 
 	p.ProcessEvent(ctx, newTestEvent())
 
-	drainCtx, drainCancel := context.WithTimeout(ctx, 2*time.Second)
+	drainCtx, drainCancel := context.WithTimeout(ctx, 1*time.Second)
 	defer drainCancel()
 	p.DrainQueues(drainCtx)
-
-	assert.Equal(t, int64(1), received.Load())
 }
 
 func TestCollectOutputStatus(t *testing.T) {

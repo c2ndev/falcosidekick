@@ -24,10 +24,10 @@ import (
 )
 
 func TestNewLoggerValidLevels(t *testing.T) {
-	levels := []string{"trace", "debug", "info", "warning", "error"}
+	levels := []LogLevel{TraceLevel, DebugLevel, InfoLevel, WarnLevel, ErrorLevel}
 	for _, level := range levels {
-		t.Run(level, func(t *testing.T) {
-			logger, err := NewLogger(level, "text")
+		t.Run(string(level), func(t *testing.T) {
+			logger, err := NewLogger(level, TextFormat)
 			require.NoError(t, err)
 			assert.NotNil(t, logger)
 		})
@@ -35,9 +35,9 @@ func TestNewLoggerValidLevels(t *testing.T) {
 }
 
 func TestNewLoggerValidFormats(t *testing.T) {
-	formats := []string{"text", "json"}
+	formats := []LogFormat{TextFormat, JSONFormat}
 	for _, format := range formats {
-		t.Run(format, func(t *testing.T) {
+		t.Run(string(format), func(t *testing.T) {
 			logger, err := NewLogger("info", format)
 			require.NoError(t, err)
 			assert.NotNil(t, logger)
@@ -46,11 +46,58 @@ func TestNewLoggerValidFormats(t *testing.T) {
 }
 
 func TestNewLoggerInvalidLevel(t *testing.T) {
-	_, err := NewLogger("invalid", "text")
+	_, err := NewLogger("invalid", TextFormat)
 	assert.Error(t, err)
 }
 
 func TestNewLoggerInvalidFormat(t *testing.T) {
 	_, err := NewLogger("info", "invalid")
 	assert.Error(t, err)
+}
+
+func TestLogLevelValidate(t *testing.T) {
+	tests := []struct {
+		level   LogLevel
+		wantErr bool
+	}{
+		{TraceLevel, false},
+		{DebugLevel, false},
+		{InfoLevel, false},
+		{WarnLevel, false},
+		{ErrorLevel, false},
+		{"invalid", true},
+		{"", true},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.level), func(t *testing.T) {
+			errs := tt.level.Validate()
+			if tt.wantErr {
+				assert.NotEmpty(t, errs)
+			} else {
+				assert.Empty(t, errs)
+			}
+		})
+	}
+}
+
+func TestLogFormatValidate(t *testing.T) {
+	tests := []struct {
+		format  LogFormat
+		wantErr bool
+	}{
+		{TextFormat, false},
+		{JSONFormat, false},
+		{"invalid", true},
+		{"", true},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.format), func(t *testing.T) {
+			errs := tt.format.Validate()
+			if tt.wantErr {
+				assert.NotEmpty(t, errs)
+			} else {
+				assert.Empty(t, errs)
+			}
+		})
+	}
 }
