@@ -16,7 +16,10 @@
 
 package domain
 
-import "context"
+import (
+	"context"
+	"log/slog"
+)
 
 // OutputDriver represents the send implementation for one output type.
 type OutputDriver interface {
@@ -27,16 +30,24 @@ type OutputDriver interface {
 	Close() error
 }
 
+// BatchSender is an optional interface for outputs that support batch delivery.
+// The dispatcher checks for this at startup. Batching activates only when both
+// the output implements BatchSender and batching is enabled in config.
+type BatchSender interface {
+	SendBatch(ctx context.Context, events []*Event) error
+}
+
 // OutputType describes an available output kind.
 type OutputType struct {
 	New      func(cfg map[string]any, deps OutputDeps) (OutputDriver, error) `json:"-"`
-	Name     string                                                    `json:"name"`
-	Category string                                                    `json:"category"`
-	Schema   OutputSchema                                              `json:"schema"`
+	Name     string                                                          `json:"name"`
+	Category string                                                          `json:"category"`
+	Schema   OutputSchema                                                    `json:"schema"`
 }
 
 // OutputDeps holds shared dependencies injected into outputs at creation.
 type OutputDeps struct {
+	Logger  *slog.Logger
 	Metrics MetricsCollector
 }
 

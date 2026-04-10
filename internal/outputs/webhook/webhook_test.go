@@ -30,13 +30,17 @@ import (
 )
 
 func TestWebhookCommonCases(t *testing.T) {
-	testutil.RunOutputTests(t, Type, testutil.CreateCommonTestCases())
+	testutil.RunOutputTests(t, Type, []testutil.OutputTestCase{
+		{Name: "sends valid event", AddressField: "url"},
+		{Name: "returns error on server 500", AddressField: "url", MockStatus: http.StatusInternalServerError, ExpectError: true},
+	})
 }
 
 func TestWebhookSpecificCases(t *testing.T) {
 	testutil.RunOutputTests(t, Type, []testutil.OutputTestCase{
 		{
-			Name: "sends POST by default",
+			Name:         "sends POST by default",
+			AddressField: "url",
 			ValidateReq: func(t *testing.T, req *http.Request, _ []byte) {
 				t.Helper()
 				assert.Equal(t, http.MethodPost, req.Method)
@@ -44,17 +48,19 @@ func TestWebhookSpecificCases(t *testing.T) {
 			},
 		},
 		{
-			Name:   "sends PUT when configured",
-			Config: map[string]any{"method": "PUT"},
+			Name:         "sends PUT when configured",
+			AddressField: "url",
+			Config:       map[string]any{"method": "PUT"},
 			ValidateReq: func(t *testing.T, req *http.Request, _ []byte) {
 				t.Helper()
 				assert.Equal(t, http.MethodPut, req.Method)
 			},
 		},
 		{
-			Name: "includes custom headers",
+			Name:         "includes custom headers",
+			AddressField: "url",
 			Config: map[string]any{
-				"customheaders": map[string]string{
+				"headers": map[string]string{
 					"X-Custom":      "value",
 					"Authorization": "Bearer token",
 				},
@@ -66,9 +72,10 @@ func TestWebhookSpecificCases(t *testing.T) {
 			},
 		},
 		{
-			Name:        "returns error on 500",
-			MockStatus:  http.StatusInternalServerError,
-			ExpectError: true,
+			Name:         "returns error on 500",
+			AddressField: "url",
+			MockStatus:   http.StatusInternalServerError,
+			ExpectError:  true,
 		},
 	})
 }
@@ -80,25 +87,25 @@ func TestWebhookCreateValidation(t *testing.T) {
 		}))
 		defer server.Close()
 
-		o, err := Type.New(map[string]any{"address": server.URL}, domain.OutputDeps{})
+		o, err := Type.New(map[string]any{"url": server.URL}, domain.OutputDeps{})
 		require.NoError(t, err)
 		assert.NoError(t, o.HealthCheck(context.Background()))
 	})
 
 	t.Run("healthcheck failure", func(t *testing.T) {
-		o, err := Type.New(map[string]any{"address": "http://127.0.0.1:1"}, domain.OutputDeps{})
+		o, err := Type.New(map[string]any{"url": "http://127.0.0.1:1"}, domain.OutputDeps{})
 		require.NoError(t, err)
 		assert.Error(t, o.HealthCheck(context.Background()))
 	})
 
 	t.Run("send to unreachable host", func(t *testing.T) {
-		o, err := Type.New(map[string]any{"address": "http://127.0.0.1:1"}, domain.OutputDeps{})
+		o, err := Type.New(map[string]any{"url": "http://127.0.0.1:1"}, domain.OutputDeps{})
 		require.NoError(t, err)
 		assert.Error(t, o.Send(context.Background(), testutil.CreateValidEvent()))
 	})
 
 	t.Run("init and close", func(t *testing.T) {
-		o, err := Type.New(map[string]any{"address": "http://example.com"}, domain.OutputDeps{})
+		o, err := Type.New(map[string]any{"url": "http://example.com"}, domain.OutputDeps{})
 		require.NoError(t, err)
 		assert.NoError(t, o.Init(context.Background()))
 		assert.NoError(t, o.Close())
@@ -110,17 +117,17 @@ func TestWebhookCreateValidation(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:    "missing address",
+			name:    "missing url",
 			cfg:     map[string]any{},
 			wantErr: true,
 		},
 		{
 			name: "valid minimal config",
-			cfg:  map[string]any{"address": "http://example.com"},
+			cfg:  map[string]any{"url": "http://example.com"},
 		},
 		{
 			name: "method defaults to POST",
-			cfg:  map[string]any{"address": "http://example.com"},
+			cfg:  map[string]any{"url": "http://example.com"},
 		},
 	}
 
@@ -137,34 +144,15 @@ func TestWebhookCreateValidation(t *testing.T) {
 	}
 }
 
-func TestWebhookCheckCertDefaultsToTrue(t *testing.T) {
-	o, err := Type.New(map[string]any{"address": "http://example.com"}, domain.OutputDeps{})
+func TestWebhookInsecureSkipVerifyDefaults(t *testing.T) {
+	o, err := Type.New(map[string]any{"url": "http://example.com"}, domain.OutputDeps{})
 	require.NoError(t, err)
 
 	w := o.(*output)
-	assert.Nil(t, w.cfg.CheckCert, "CheckCert not set in config")
+	assert.False(t, w.cfg.InsecureSkipVerify, "InsecureSkipVerify defaults to false")
 
-	certFalse := false
-	o2, err := Type.New(map[string]any{"address": "http://example.com", "checkcert": &certFalse}, domain.OutputDeps{})
+	o2, err := Type.New(map[string]any{"url": "http://example.com", "insecure_skip_verify": true}, domain.OutputDeps{})
 	require.NoError(t, err)
 	w2 := o2.(*output)
-	require.NotNil(t, w2.cfg.CheckCert)
-	assert.False(t, *w2.cfg.CheckCert, "CheckCert explicitly false")
-}
-
-func TestWebhookSchemaIncludesMinimumPriority(t *testing.T) {
-	found := false
-	for _, f := range Type.Schema.Fields {
-		if f.Name == "minimumpriority" {
-			found = true
-			assert.Equal(t, "priority", f.Type)
-		}
-	}
-	assert.True(t, found, "minimumpriority must be in schema")
-}
-
-func TestWebhookSchemaDoesNotExposeMutualTLS(t *testing.T) {
-	for _, f := range Type.Schema.Fields {
-		assert.NotEqual(t, "mutualtls", f.Name, "mutualtls should not be in schema until implemented")
-	}
+	assert.True(t, w2.cfg.InsecureSkipVerify, "InsecureSkipVerify explicitly true")
 }

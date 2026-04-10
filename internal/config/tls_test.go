@@ -71,6 +71,32 @@ func TestValidateTLSClientMutualTLS(t *testing.T) {
 	assert.NotEmpty(t, errs, "mutual TLS without cert/key/ca should fail")
 }
 
+func TestValidateTLSClientMutualTLSWithNonexistentFiles(t *testing.T) {
+	cfg := loadDefaults(t)
+	cfg.TLS = &TLSConfig{
+		Client: TLSClientConfig{
+			MutualTLS:  true,
+			CertFile:   "/nonexistent/client.pem",
+			KeyFile:    "/nonexistent/client-key.pem",
+			CACertFile: "/nonexistent/ca.pem",
+		},
+	}
+
+	errs := cfg.Validate()
+	assert.NotEmpty(t, errs, "client mutual TLS with nonexistent files should fail")
+	assert.GreaterOrEqual(t, len(errs), 3)
+}
+
+func TestValidateTLSClientDisabledPasses(t *testing.T) {
+	cfg := loadDefaults(t)
+	cfg.TLS = &TLSConfig{
+		Client: TLSClientConfig{MutualTLS: false},
+	}
+
+	errs := cfg.Validate()
+	assert.Empty(t, errs)
+}
+
 func TestValidateTLSServerMutualTLSRequiresCA(t *testing.T) {
 	cfg := loadDefaults(t)
 	cfg.TLS = &TLSConfig{
