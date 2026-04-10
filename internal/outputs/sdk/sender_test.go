@@ -19,6 +19,7 @@ package sdk
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -273,4 +274,187 @@ func TestSenderSendJSONWithPUTMethod(t *testing.T) {
 	err := s.SendJSON(context.Background(), http.MethodPut, server.URL, "data")
 	require.NoError(t, err)
 	assert.Equal(t, http.MethodPut, capturedMethod)
+}
+
+func TestSenderSendGzipJSON(t *testing.T) {
+	var capturedEncoding string
+	var capturedBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedEncoding = r.Header.Get("Content-Encoding")
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	s := NewSender("test", &HTTPConfig{})
+	payload := map[string]string{"key": "value"}
+
+	err := s.SendGzipJSON(context.Background(), http.MethodPost, server.URL, payload)
+	require.NoError(t, err)
+
+	assert.Equal(t, "gzip", capturedEncoding)
+	assert.NotEmpty(t, capturedBody, "body should contain gzip-compressed data")
+	assert.NotEqual(t, `{"key":"value"}`, string(capturedBody), "body should be compressed, not raw JSON")
+}
+
+func TestSenderSendGzipJSONMarshalError(t *testing.T) {
+	s := NewSender("test", &HTTPConfig{})
+	err := s.SendGzipJSON(context.Background(), http.MethodPost, "http://localhost", make(chan int))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "test marshal")
+}
+
+func TestSenderSendGzipRaw(t *testing.T) {
+	var capturedEncoding, capturedContentType string
+	var capturedBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedEncoding = r.Header.Get("Content-Encoding")
+		capturedContentType = r.Header.Get("Content-Type")
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	s := NewSender("test", &HTTPConfig{})
+	raw := []byte(`{"rule":"test"}`)
+
+	err := s.SendGzipRaw(context.Background(), http.MethodPost, server.URL, raw, "application/x-ndjson")
+	require.NoError(t, err)
+
+	assert.Equal(t, "gzip", capturedEncoding)
+	assert.Equal(t, "application/x-ndjson", capturedContentType)
+	assert.NotEqual(t, raw, capturedBody, "body should be gzip-compressed")
+}
+
+func TestSenderSendJSONCheckBody(t *testing.T) {
+	const expectedBody = "ok"
+	tests := []struct {
+		checkFn     func(body []byte) error
+		name        string
+		respBody    string
+		expectError bool
+	}{
+		{
+			name:     "check passes",
+			respBody: expectedBody,
+			checkFn: func(body []byte) error {
+				if string(body) != expectedBody {
+					return fmt.Errorf("unexpected body: %s", body)
+				}
+				return nil
+			},
+			expectError: false,
+		},
+		{
+			name:     "check fails",
+			respBody: "invalid_token",
+			checkFn: func(body []byte) error {
+				if string(body) != expectedBody {
+					return fmt.Errorf("unexpected body: %s", body)
+				}
+				return nil
+			},
+			expectError: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tt.respBody))
+			}))
+			defer server.Close()
+
+			s := NewSender("test", &HTTPConfig{})
+			err := s.SendJSONCheckBody(context.Background(), http.MethodPost, server.URL, "data", tt.checkFn)
+
+			if tt.expectError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestSenderSendJSONCheckBodyMarshalError(t *testing.T) {
+	s := NewSender("test", &HTTPConfig{})
+	err := s.SendJSONCheckBody(context.Background(), http.MethodPost, "http://localhost", make(chan int), func([]byte) error { return nil })
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "test marshal")
+}
+
+func TestSenderSendRawReadBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"errors":false}`))
+	}))
+	defer server.Close()
+
+	s := NewSender("test", &HTTPConfig{})
+	body, err := s.SendRawReadBody(context.Background(), http.MethodPost, server.URL, []byte("data"), "application/json")
+
+	require.NoError(t, err)
+	assert.Equal(t, `{"errors":false}`, string(body))
+}
+
+func TestSenderSendRawReadBodyErrorStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte("bad request"))
+	}))
+	defer server.Close()
+
+	s := NewSender("myoutput", &HTTPConfig{})
+	body, err := s.SendRawReadBody(context.Background(), http.MethodPost, server.URL, []byte("data"), "application/json")
+
+	require.Error(t, err)
+	assert.Nil(t, body)
+	assert.Contains(t, err.Error(), "myoutput")
+	assert.Contains(t, err.Error(), "400")
+}
+
+func TestSenderDoReadBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("response-data"))
+	}))
+	defer server.Close()
+
+	s := NewSender("test", &HTTPConfig{})
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, http.NoBody)
+	require.NoError(t, err)
+
+	body, err := s.DoReadBody(context.Background(), req)
+	require.NoError(t, err)
+	assert.Equal(t, "response-data", string(body))
+}
+
+func TestSenderDoReadBodyErrorStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("server error"))
+	}))
+	defer server.Close()
+
+	s := NewSender("myoutput", &HTTPConfig{})
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, http.NoBody)
+	require.NoError(t, err)
+
+	body, err := s.DoReadBody(context.Background(), req)
+	require.Error(t, err)
+	assert.Nil(t, body)
+	assert.Contains(t, err.Error(), "myoutput")
+	assert.Contains(t, err.Error(), "500")
+}
+
+func TestSenderDoReadBodyConnectionRefused(t *testing.T) {
+	s := NewSender("myoutput", &HTTPConfig{})
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://localhost:1", http.NoBody)
+	require.NoError(t, err)
+
+	body, err := s.DoReadBody(context.Background(), req)
+	require.Error(t, err)
+	assert.Nil(t, body)
+	assert.Contains(t, err.Error(), "myoutput send")
 }
