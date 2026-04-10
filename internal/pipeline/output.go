@@ -45,6 +45,7 @@ type OutputConfig struct {
 	MinPriority    domain.Priority      `mapstructure:"minimumpriority"`
 	CircuitBreaker CircuitBreakerConfig `mapstructure:"circuit_breaker"`
 	Retry          RetryConfig          `mapstructure:"retry"`
+	Batching       BatchingConfig       `mapstructure:"batching"`
 	QueueSize      int                  `mapstructure:"queue_size"`
 	Workers        int                  `mapstructure:"workers"`
 }
@@ -61,6 +62,7 @@ func (c *OutputConfig) Validate() utils.ValidationErrors {
 	}
 	errs.Merge("circuit_breaker", c.CircuitBreaker.Validate())
 	errs.Merge("retry", c.Retry.Validate())
+	errs.Merge("batching", c.Batching.Validate())
 
 	if len(errs) > 0 {
 		return errs
@@ -74,6 +76,7 @@ type Output struct {
 	lastError      atomic.Value
 	lastSuccess    atomic.Value
 	driver         domain.OutputDriver
+	batchSender    domain.BatchSender
 	metrics        domain.MetricsCollector
 	queue          chan *domain.Event
 	circuitBreaker *CircuitBreaker
@@ -93,6 +96,9 @@ func NewOutput(driver domain.OutputDriver, cfg *OutputConfig, metrics domain.Met
 		circuitBreaker: NewCircuitBreaker(cfg.CircuitBreaker),
 		metrics:        metrics,
 	}
+	if bs, ok := driver.(domain.BatchSender); ok && cfg.Batching.Enabled {
+		o.batchSender = bs
+	}
 	o.lastSuccess.Store(time.Time{})
 	o.lastError.Store("")
 	return o
@@ -105,11 +111,15 @@ func (o *Output) Name() string {
 
 // Start launches the worker goroutines.
 func (o *Output) Start(ctx context.Context) {
+	worker := o.runWorker
+	if o.batchSender != nil {
+		worker = o.runBatchWorker
+	}
 	for i := 0; i < o.config.Workers; i++ {
 		o.workerDone.Add(1)
 		go func() {
 			defer o.workerDone.Done()
-			o.runWorker(ctx)
+			worker(ctx)
 		}()
 	}
 }
@@ -156,23 +166,11 @@ func (o *Output) GetStatus() OutputStatus {
 	}
 }
 
-func (o *Output) runWorker(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case event, ok := <-o.queue:
-			if !ok {
-				return
-			}
-			o.sendWithRetry(ctx, event)
-		}
-	}
-}
-
-func (o *Output) sendWithRetry(ctx context.Context, event *domain.Event) {
+// executeWithRetry runs fn with circuit breaker and retry. On success it adds
+// count to sentTotal; on final failure it adds count to failedTotal.
+func (o *Output) executeWithRetry(ctx context.Context, count int64, sendFunc func(ctx context.Context) error) {
 	if !o.circuitBreaker.AllowRequest() {
-		o.failedTotal.Add(1)
+		o.failedTotal.Add(count)
 		if o.metrics != nil {
 			o.metrics.RecordOutput(ctx, o.driver.Name(), "circuit_open", 0)
 		}
@@ -191,12 +189,12 @@ func (o *Output) sendWithRetry(ctx context.Context, event *domain.Event) {
 		}
 
 		start := time.Now()
-		err := o.driver.Send(ctx, event)
+		err := sendFunc(ctx)
 		duration := time.Since(start)
 
 		if err == nil {
 			o.circuitBreaker.RecordSuccess()
-			o.sentTotal.Add(1)
+			o.sentTotal.Add(count)
 			o.lastSuccess.Store(time.Now())
 			if o.metrics != nil {
 				o.metrics.RecordOutput(ctx, o.driver.Name(), "ok", duration)
@@ -208,7 +206,7 @@ func (o *Output) sendWithRetry(ctx context.Context, event *domain.Event) {
 		o.circuitBreaker.RecordFailure()
 	}
 
-	o.failedTotal.Add(1)
+	o.failedTotal.Add(count)
 	o.lastError.Store(lastErr.Error())
 	if o.metrics != nil {
 		o.metrics.RecordOutput(ctx, o.driver.Name(), "error", 0)

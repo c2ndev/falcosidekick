@@ -1,22 +1,25 @@
 # falcosidekick v3.0 configuration
 # See documentation at: https://github.com/falcosecurity/falcosidekick
 
-# Listen address and port
-listen_address: "0.0.0.0"
-listen_port: 2801
-debug: false
+# --- Server ---
 
-# Logging
-log_level: info       # trace, debug, info, warning, error
-log_format: text      # text, json
+listen_address: "0.0.0.0"    # IP address to bind (empty = all interfaces)
+listen_port: 2801             # HTTP port for receiving Falco events
+debug: false                  # enable debug logging and payload dumping
 
-# TLS (optional)
+# --- Logging ---
+
+log_level: info               # trace, debug, info, warning, error
+log_format: text              # text (human-readable), json (structured)
+
+# --- TLS ---
+# Optional. When server TLS is enabled, Falco must be configured with HTTPS.
 # tls:
 #   server:
 #     enabled: false
 #     certfile: /etc/certs/server.crt
 #     keyfile: /etc/certs/server.key
-#     mutualtls: false
+#     mutualtls: false            # require client certificate verification
 #     cacertfile: /etc/certs/ca.crt
 #   client:
 #     mutualtls: false
@@ -24,33 +27,41 @@ log_format: text      # text, json
 #     keyfile: /etc/certs/client.key
 #     cacertfile: /etc/certs/ca.crt
 
-# Event store (backend-specific sub-sections)
-eventstore:
-  backend: memory       # memory, sqlite, postgres, redis
-  memory:
-    capacity: 10000
-    ttl: 24h
-    gc_interval: 10s
+# --- Event Store ---
+# Backend for storing events. Memory is the default (no external dependency).
+# sqlite, postgres, redis: available in Sprint 4.
 
-# UI (built-in web interface)
+eventstore:
+  backend: memory
+  memory:
+    capacity: 10000           # max events in store
+    ttl: 24h                  # time-to-live per event
+    gc_interval: 10s          # garbage collection interval
+
+# --- UI ---
+# Built-in web interface (Sprint 3).
 # ui:
 #   enabled: false
 
-# Pipeline
-pipeline:
-  queue_size: 1000
-  workers: 2
-  retry:
-    max_attempts: 3
-    initial_interval: 1s
-    max_interval: 30s
-    multiplier: 2.0
-  circuit_breaker:
-    failure_threshold: 5
-    success_threshold: 2
-    reset_timeout: 30s
+# --- Pipeline ---
+# Event processing: enrich -> store -> route -> dispatch.
+# Per-output overrides can be set under each output section.
 
-  # Event enrichment
+pipeline:
+  queue_size: 1000            # per-output event queue capacity
+  workers: 2                  # worker goroutines per output
+  retry:
+    max_attempts: 3           # retries before marking event as failed
+    initial_interval: 1s      # first retry backoff
+    max_interval: 30s         # maximum retry backoff
+    multiplier: 2.0           # exponential backoff multiplier
+  circuit_breaker:
+    failure_threshold: 5      # consecutive failures to open circuit
+    success_threshold: 2      # successes in half-open to close circuit
+    reset_timeout: 30s        # time before half-open after open
+
+  # --- Enrichment ---
+  # Fields, tags, and templates added to every event before dispatch.
   # enricher:
   #   customfields:
   #     environment: production
@@ -60,40 +71,131 @@ pipeline:
   #   templatedfields:
   #     namespace: '{{ or (index . "k8s.ns.name") "unknown" }}'
   #   bracketreplacer: "_"
-  #   truncate_event_threshold: 4096
-  #   truncate_field_threshold: 512
 
-  # Outputs - zero outputs is valid (UI-only or store-only mode)
+  # --- Outputs ---
+  # Each output is identified by name. Only configured outputs are started.
+  # Zero outputs is valid (UI-only or store-only mode).
+  #
+  # Shared HTTP fields available to all HTTP-based outputs:
+  #   username:             basic auth username
+  #   password:             basic auth password
+  #   bearer_token:         bearer token for Authorization header
+  #   headers:              custom HTTP headers (map)
+  #   insecure_skip_verify: skip TLS certificate verification (default: false)
+
   outputs:
-    # Chat / Messaging
-    # slack:
-    #   webhookurl: "https://hooks.slack.com/services/XXX"
-    #   channel: "#security-alerts"
-    #   minimumpriority: warning
 
-    # Generic webhook
+    # --- Webhook ---
+    # Generic HTTP webhook. Sends the full event as JSON.
     # webhook:
-    #   address: "https://my-service/events"
-    #   method: POST
-    #   customheaders:
-    #     Authorization: "Bearer xxx"
+    #   url: "https://my-service/events"        # required
+    #   method: POST                             # POST (default) or PUT
+    #   username: ""                             # basic auth
+    #   password: ""
+    #   bearer_token: ""                         # bearer auth
+    #   headers:                                 # custom headers
+    #     X-Custom: "value"
+    #   insecure_skip_verify: false
+    #   minimumpriority: ""                      # minimum event priority
 
-    # Logs
-    # elasticsearch:
-    #   hostport: "https://elasticsearch:9200"
-    #   index: falco
-    #   minimumpriority: ""
-
-    # loki:
-    #   hostport: "http://loki:3100"
-    #   minimumpriority: notice
-
-    # Alerting
-    # alertmanager:
-    #   hostport: "http://alertmanager:9093"
+    # --- Slack ---
+    # Sends events as Slack webhook attachments with priority color coding.
+    # slack:
+    #   webhook_url: "https://hooks.slack.com/services/XXX/YYY/ZZZ"  # required
+    #   channel: "#security-alerts"              # override webhook default channel
+    #   username: "Falcosidekick"                # bot display name
+    #   icon_url: ""                             # bot avatar URL
+    #   icon_emoji: ":owl:"                      # bot avatar emoji (overrides icon_url)
+    #   output_format: all                       # all (fields+text), fields, text
+    #   message_format: ""                       # Go template for message above attachment
+    #   footer: ""                               # attachment footer text
     #   minimumpriority: warning
 
-    # Response Engine
-    # talon:
-    #   address: "http://falco-talon:2803"
-    #   minimumpriority: critical
+    # --- Elasticsearch ---
+    # Indexes events as documents. Supports single-doc and bulk API.
+    # Uses "create" action (append-only, data-stream compatible).
+    # elasticsearch:
+    #   url: "https://elasticsearch:9200"        # required
+    #   index: falco                             # index name prefix (default: falco)
+    #   index_suffix: daily                      # daily, monthly, annually, none
+    #   pipeline: ""                             # ingest pipeline name
+    #   api_key: ""                              # ES API key (overrides basic auth)
+    #   flatten_fields: false                    # replace dots with underscores in field names
+    #   create_index_template: false             # create composable index template on startup
+    #   number_of_shards: 3                      # template setting
+    #   number_of_replicas: 3                    # template setting
+    #   username: ""                             # basic auth (via shared HTTP config)
+    #   password: ""
+    #   minimumpriority: ""
+    #   # Per-output pipeline overrides:
+    #   # queue_size: 5000
+    #   # workers: 3
+    #   # batching:
+    #   #   enabled: true
+    #   #   batch_size: 1000
+    #   #   flush_interval: 1s
+
+    # --- Loki ---
+    # Pushes events to Grafana Loki with gzip compression.
+    # Events with identical label sets are grouped into streams.
+    # loki:
+    #   url: "http://loki:3100"                  # required
+    #   tenant: ""                               # X-Scope-OrgID header for multi-tenancy
+    #   endpoint: "/loki/api/v1/push"            # push API endpoint
+    #   log_format: json                         # json (full event) or text (output field only)
+    #   extra_labels: ""                         # comma-separated event field names to promote to labels
+    #   username: ""                             # basic auth (e.g., Grafana Cloud)
+    #   password: ""
+    #   minimumpriority: notice
+    #   # batching:
+    #   #   enabled: true
+    #   #   batch_size: 500
+    #   #   flush_interval: 1s
+
+    # --- Alertmanager ---
+    # Sends alerts to Prometheus Alertmanager v2 API.
+    # Fan-out: sends to ALL configured hosts in parallel (HA safe).
+    # alertmanager:
+    #   hosts:                                   # required, one or more AM instances
+    #     - "http://alertmanager:9093"
+    #   endpoint: "/api/v2/alerts"               # v2 API (default, v1 deprecated)
+    #   generator_url: ""                        # link back to source in AM UI
+    #   expires_after: 0                         # alert auto-resolve in seconds (0 = never)
+    #   extra_labels:                            # additional Prometheus labels
+    #     env: production
+    #   extra_annotations:                       # additional annotations
+    #     runbook: "https://wiki/falco-runbook"
+    #   custom_severity_map:                     # override default priority-to-severity mapping
+    #     critical: P1
+    #     warning: P3
+    #   minimumpriority: warning
+
+    # --- Kafka ---
+    # Produces events to Apache Kafka topics with franz-go client.
+    # Supports SASL auth, TLS, compression, message keys, and headers.
+    # kafka:
+    #   brokers:                                 # required, one or more broker addresses
+    #     - "kafka:9092"
+    #   topic: "falco-events"                    # required, default topic
+    #   topic_field: ""                          # event field to use as topic (overrides default)
+    #   message_key: ""                          # static message key for partition affinity
+    #   message_key_field: ""                    # event field to use as key (e.g., hostname)
+    #   sasl: ""                                 # plain, scram_sha256, scram_sha512
+    #   username: ""                             # SASL username
+    #   password: ""                             # SASL password
+    #   tls_enabled: false                       # enable TLS for broker connections
+    #   insecure_skip_verify: false              # skip broker TLS certificate verification
+    #   tls_ca: ""                               # custom CA certificate file
+    #   tls_cert: ""                             # client certificate file (mTLS)
+    #   tls_key: ""                              # client key file (mTLS)
+    #   compression: none                        # none, gzip, snappy, lz4, zstd
+    #   balancer: ""                             # round_robin, least_backup, sticky
+    #   required_acks: all                       # all, one, none
+    #   client_id: ""                            # Kafka client identifier
+    #   async: false                             # fire-and-forget mode (errors logged, not returned)
+    #   auto_create_topic: false                 # allow broker to auto-create topic
+    #   minimumpriority: ""
+    #   # batching:
+    #   #   enabled: true
+    #   #   batch_size: 500
+    #   #   flush_interval: 1s
