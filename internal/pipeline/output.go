@@ -109,6 +109,11 @@ func (o *Output) Name() string {
 	return o.driver.Name()
 }
 
+// Driver returns the underlying OutputDriver.
+func (o *Output) Driver() domain.OutputDriver {
+	return o.driver
+}
+
 // Start launches the worker goroutines.
 func (o *Output) Start(ctx context.Context) {
 	worker := o.runWorker

@@ -14,7 +14,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-package store
+package inmemory
 
 import (
 	"context"
@@ -24,9 +24,22 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mitchellh/mapstructure"
+
 	"github.com/falcosecurity/falcosidekick/internal/domain"
-	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
+
+func decodeConfig(raw map[string]any, result *config) error {
+	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+		DecodeHook:       mapstructure.StringToTimeDurationHookFunc(),
+		WeaklyTypedInput: true,
+		Result:           result,
+	})
+	if err != nil {
+		return err
+	}
+	return decoder.Decode(raw)
+}
 
 const (
 	fieldPriority = "priority"
@@ -34,11 +47,34 @@ const (
 	fieldSource   = "source"
 	fieldHostname = "hostname"
 	fieldTags     = "tags"
+
+	// Defaults.
+	defaultCapacity   = 10000
+	defaultTTL        = 24 * time.Hour
+	defaultGCInterval = 10 * time.Second
 )
 
-// MemoryStore implements domain.EventStore with a ring buffer,
-// secondary indexes, and TTL-based expiry.
-type MemoryStore struct {
+// Type describes the in-memory event store for the output catalog.
+var Type = domain.OutputType{
+	New:      createOutput,
+	Name:     "memory",
+	Category: "store",
+	Schema: domain.OutputSchema{
+		Fields: []domain.SchemaField{
+			{Name: "capacity", Type: "int", Default: 10000, Required: true, Label: "Max Events"},
+			{Name: "ttl", Type: "string", Default: "24h", Label: "Event TTL"},
+			{Name: "gc_interval", Type: "string", Default: "10s", Label: "GC Interval"},
+		},
+	},
+}
+
+type config struct {
+	TTL        time.Duration `mapstructure:"ttl"`
+	GCInterval time.Duration `mapstructure:"gc_interval"`
+	Capacity   int           `mapstructure:"capacity"`
+}
+
+type output struct {
 	byRule     map[string]map[int]struct{}
 	byPriority map[string]map[int]struct{}
 	bySource   map[string]map[int]struct{}
@@ -47,99 +83,105 @@ type MemoryStore struct {
 	stopGC     chan struct{}
 	events     []*domain.Event
 	ttl        time.Duration
+	gcInterval time.Duration
 	head       int
 	count      int
 	capacity   int
 	mu         sync.RWMutex
 }
 
-// MemoryConfig holds MemoryStore settings.
-type MemoryConfig struct {
-	Capacity   int           `mapstructure:"capacity"`
-	TTL        time.Duration `mapstructure:"ttl"`
-	GCInterval time.Duration `mapstructure:"gc_interval"`
-}
+func createOutput(raw map[string]any, _ domain.OutputDeps) (domain.OutputDriver, error) {
+	var cfg config
+	if err := decodeConfig(raw, &cfg); err != nil {
+		return nil, fmt.Errorf("memory config: %w", err)
+	}
+	if cfg.Capacity <= 0 {
+		cfg.Capacity = defaultCapacity
+	}
+	if cfg.TTL < 0 {
+		cfg.TTL = defaultTTL
+	}
+	if cfg.GCInterval <= 0 {
+		cfg.GCInterval = defaultGCInterval
+	}
 
-// Validate checks that memory store settings are valid.
-func (c *MemoryConfig) Validate() utils.ValidationErrors {
-	var errs utils.ValidationErrors
-	if c.Capacity <= 0 {
-		errs.Add("capacity", fmt.Sprintf("must be > 0, got %d", c.Capacity))
-	}
-	if c.TTL < 0 {
-		errs.Add("ttl", fmt.Sprintf("must be >= 0, got %v", c.TTL))
-	}
-	if c.GCInterval <= 0 {
-		errs.Add("gc_interval", fmt.Sprintf("must be > 0, got %v", c.GCInterval))
-	}
-	if len(errs) > 0 {
-		return errs
-	}
-	return nil
-}
-
-// NewMemoryStore creates an in-memory EventStore.
-func NewMemoryStore(cfg *MemoryConfig) *MemoryStore {
-	s := &MemoryStore{
+	return &output{
 		events:     make([]*domain.Event, cfg.Capacity),
 		capacity:   cfg.Capacity,
 		ttl:        cfg.TTL,
+		gcInterval: cfg.GCInterval,
 		byRule:     make(map[string]map[int]struct{}),
 		byPriority: make(map[string]map[int]struct{}),
 		bySource:   make(map[string]map[int]struct{}),
 		byHostname: make(map[string]map[int]struct{}),
 		byTag:      make(map[string]map[int]struct{}),
 		stopGC:     make(chan struct{}),
-	}
-
-	if cfg.TTL > 0 {
-		go s.runGC(cfg.GCInterval)
-	}
-
-	return s
+	}, nil
 }
 
-// Append stores an event. Overwrites the oldest event when at capacity.
-func (s *MemoryStore) Append(_ context.Context, event *domain.Event) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (o *output) Name() string { return "memory" }
 
-	pos := s.head
+func (o *output) Init(_ context.Context) error {
+	if o.ttl > 0 {
+		go o.runGC(o.gcInterval)
+	}
+	return nil
+}
 
-	if s.events[pos] != nil {
-		s.removeFromIndexes(pos)
+func (o *output) Send(_ context.Context, event *domain.Event) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	pos := o.head
+
+	if o.events[pos] != nil {
+		o.removeFromIndexes(pos)
 	}
 
-	s.events[pos] = event
+	o.events[pos] = event
 
-	s.addToIndex(s.byRule, event.Rule, pos)
-	s.addToIndex(s.byPriority, string(event.Priority), pos)
-	s.addToIndex(s.bySource, event.Source, pos)
+	o.addToIndex(o.byRule, event.Rule, pos)
+	o.addToIndex(o.byPriority, string(event.Priority), pos)
+	o.addToIndex(o.bySource, event.Source, pos)
 	if event.Hostname != "" {
-		s.addToIndex(s.byHostname, event.Hostname, pos)
+		o.addToIndex(o.byHostname, event.Hostname, pos)
 	}
 	for _, tag := range event.Tags {
-		s.addToIndex(s.byTag, tag, pos)
+		o.addToIndex(o.byTag, tag, pos)
 	}
 
-	s.head = (s.head + 1) % s.capacity
-	if s.count < s.capacity {
-		s.count++
+	o.head = (o.head + 1) % o.capacity
+	if o.count < o.capacity {
+		o.count++
 	}
 
 	return nil
 }
 
-// Search returns events matching the query, sorted by timestamp descending.
-func (s *MemoryStore) Search(_ context.Context, query *domain.SearchQuery) (*domain.SearchResult, error) {
+func (o *output) HealthCheck(_ context.Context) error { return nil }
+
+func (o *output) Close() error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	select {
+	case <-o.stopGC:
+	default:
+		close(o.stopGC)
+	}
+	return nil
+}
+
+// --- ReadableStore ---
+
+func (o *output) Search(_ context.Context, query *domain.SearchQuery) (*domain.SearchResult, error) {
 	if err := query.Normalize(); err != nil {
 		return nil, err
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	o.mu.RLock()
+	defer o.mu.RUnlock()
 
-	candidates := s.findMatchingEvents(&query.Filters, query.Filter)
+	candidates := o.findMatchingEvents(&query.Filters, query.Filter)
 
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].Time.After(candidates[j].Time)
@@ -170,47 +212,35 @@ func (s *MemoryStore) Search(_ context.Context, query *domain.SearchQuery) (*dom
 	}, nil
 }
 
-// Count returns the total number of events matching the filters.
-func (s *MemoryStore) Count(_ context.Context, filters *domain.Filters) (int64, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return int64(len(s.findMatchingEvents(filters, ""))), nil
+func (o *output) Count(_ context.Context, filters *domain.Filters) (int64, error) {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return int64(len(o.findMatchingEvents(filters, ""))), nil
 }
 
-// CountBy returns event counts grouped by the specified field.
-func (s *MemoryStore) CountBy(_ context.Context, field string, filters *domain.Filters) (map[string]int64, error) {
+func (o *output) CountBy(_ context.Context, field string, filters *domain.Filters) (map[string]int64, error) {
 	if err := domain.ValidateGroupBy(field); err != nil {
 		return nil, err
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	o.mu.RLock()
+	defer o.mu.RUnlock()
 
 	if hasNoFilters(filters) {
-		return s.countFromIndex(field), nil
+		return o.countFromIndex(field), nil
 	}
 
-	return countFromEvents(s.findMatchingEvents(filters, ""), field), nil
+	return countFromEvents(o.findMatchingEvents(filters, ""), field), nil
 }
 
-// Close stops the GC goroutine. Safe to call multiple times.
-func (s *MemoryStore) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	select {
-	case <-s.stopGC:
-	default:
-		close(s.stopGC)
-	}
-	return nil
-}
+// --- Internal methods ---
 
-func (s *MemoryStore) findMatchingEvents(filters *domain.Filters, freeText string) []*domain.Event {
-	positions := s.findMatchingPositions(filters)
+func (o *output) findMatchingEvents(filters *domain.Filters, freeText string) []*domain.Event {
+	positions := o.findMatchingPositions(filters)
 
 	var result []*domain.Event
 	for pos := range positions {
-		e := s.events[pos]
+		e := o.events[pos]
 		if e == nil {
 			continue
 		}
@@ -226,10 +256,9 @@ func (s *MemoryStore) findMatchingEvents(filters *domain.Filters, freeText strin
 	return result
 }
 
-// findMatchingPositions intersects index lookups per filter field (AND between fields, OR within).
-func (s *MemoryStore) findMatchingPositions(filters *domain.Filters) map[int]struct{} {
+func (o *output) findMatchingPositions(filters *domain.Filters) map[int]struct{} {
 	if hasNoStructuredFilters(filters) {
-		return s.collectAllPositions()
+		return o.collectAllPositions()
 	}
 
 	var result map[int]struct{}
@@ -248,23 +277,23 @@ func (s *MemoryStore) findMatchingPositions(filters *domain.Filters) map[int]str
 		}
 	}
 
-	narrow(s.byPriority, filters.Priority)
-	narrow(s.byRule, filters.Rule)
-	narrow(s.bySource, filters.Source)
-	narrow(s.byHostname, filters.Hostname)
-	narrow(s.byTag, filters.Tags)
+	narrow(o.byPriority, filters.Priority)
+	narrow(o.byRule, filters.Rule)
+	narrow(o.bySource, filters.Source)
+	narrow(o.byHostname, filters.Hostname)
+	narrow(o.byTag, filters.Tags)
 
 	if first {
-		return s.collectAllPositions()
+		return o.collectAllPositions()
 	}
 
 	return result
 }
 
-func (s *MemoryStore) collectAllPositions() map[int]struct{} {
-	positions := make(map[int]struct{}, s.count)
-	for i := 0; i < s.capacity; i++ {
-		if s.events[i] != nil {
+func (o *output) collectAllPositions() map[int]struct{} {
+	positions := make(map[int]struct{}, o.count)
+	for i := 0; i < o.capacity; i++ {
+		if o.events[i] != nil {
 			positions[i] = struct{}{}
 		}
 	}
@@ -294,24 +323,24 @@ func intersectSets(a, b map[int]struct{}) map[int]struct{} {
 	return result
 }
 
-func (s *MemoryStore) addToIndex(idx map[string]map[int]struct{}, key string, pos int) {
+func (o *output) addToIndex(idx map[string]map[int]struct{}, key string, pos int) {
 	if _, ok := idx[key]; !ok {
 		idx[key] = make(map[int]struct{})
 	}
 	idx[key][pos] = struct{}{}
 }
 
-func (s *MemoryStore) removeFromIndexes(pos int) {
-	e := s.events[pos]
+func (o *output) removeFromIndexes(pos int) {
+	e := o.events[pos]
 	if e == nil {
 		return
 	}
-	removeFromIndex(s.byRule, e.Rule, pos)
-	removeFromIndex(s.byPriority, string(e.Priority), pos)
-	removeFromIndex(s.bySource, e.Source, pos)
-	removeFromIndex(s.byHostname, e.Hostname, pos)
+	removeFromIndex(o.byRule, e.Rule, pos)
+	removeFromIndex(o.byPriority, string(e.Priority), pos)
+	removeFromIndex(o.bySource, e.Source, pos)
+	removeFromIndex(o.byHostname, e.Hostname, pos)
 	for _, tag := range e.Tags {
-		removeFromIndex(s.byTag, tag, pos)
+		removeFromIndex(o.byTag, tag, pos)
 	}
 }
 
@@ -324,19 +353,19 @@ func removeFromIndex(idx map[string]map[int]struct{}, key string, pos int) {
 	}
 }
 
-func (s *MemoryStore) countFromIndex(field string) map[string]int64 {
+func (o *output) countFromIndex(field string) map[string]int64 {
 	var idx map[string]map[int]struct{}
 	switch field {
 	case fieldPriority:
-		idx = s.byPriority
+		idx = o.byPriority
 	case fieldRule:
-		idx = s.byRule
+		idx = o.byRule
 	case fieldSource:
-		idx = s.bySource
+		idx = o.bySource
 	case fieldHostname:
-		idx = s.byHostname
+		idx = o.byHostname
 	case fieldTags:
-		idx = s.byTag
+		idx = o.byTag
 	}
 
 	result := make(map[string]int64, len(idx))
@@ -367,29 +396,29 @@ func countFromEvents(events []*domain.Event, field string) map[string]int64 {
 	return result
 }
 
-func (s *MemoryStore) runGC(interval time.Duration) {
+func (o *output) runGC(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-s.stopGC:
+		case <-o.stopGC:
 			return
 		case <-ticker.C:
-			s.removeExpired()
+			o.removeExpired()
 		}
 	}
 }
 
-func (s *MemoryStore) removeExpired() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (o *output) removeExpired() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 
-	cutoff := time.Now().Add(-s.ttl)
-	for i := 0; i < s.capacity; i++ {
-		if s.events[i] != nil && s.events[i].Time.Before(cutoff) {
-			s.removeFromIndexes(i)
-			s.events[i] = nil
-			s.count--
+	cutoff := time.Now().Add(-o.ttl)
+	for i := 0; i < o.capacity; i++ {
+		if o.events[i] != nil && o.events[i].Time.Before(cutoff) {
+			o.removeFromIndexes(i)
+			o.events[i] = nil
+			o.count--
 		}
 	}
 }

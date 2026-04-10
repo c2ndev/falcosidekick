@@ -31,21 +31,21 @@ import (
 
 // ServerConfig holds HTTP server dependencies.
 type ServerConfig struct {
-	Pipeline *pipeline.Pipeline
-	Store    domain.EventStore
-	Metrics  domain.MetricsCollector
-	Registry *prometheus.Registry
-	Address  string
-	Port     int
+	Pipeline  *pipeline.Pipeline
+	ReadStore domain.ReadableStore
+	Metrics   domain.MetricsCollector
+	Registry  *prometheus.Registry
+	Address   string
+	Port      int
 }
 
 // Server manages the Fiber HTTP application.
 type Server struct {
-	app      *fiber.App
-	pipeline *pipeline.Pipeline
-	store    domain.EventStore
-	metrics  domain.MetricsCollector
-	address  string
+	app       *fiber.App
+	pipeline  *pipeline.Pipeline
+	readStore domain.ReadableStore
+	metrics   domain.MetricsCollector
+	address   string
 }
 
 // NewServer creates a Fiber-based HTTP Server.
@@ -61,10 +61,10 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}
 
 	s := &Server{
-		pipeline: cfg.Pipeline,
-		store:    cfg.Store,
-		metrics:  cfg.Metrics,
-		address:  fmt.Sprintf("%s:%d", cfg.Address, cfg.Port),
+		pipeline:  cfg.Pipeline,
+		readStore: cfg.ReadStore,
+		metrics:   cfg.Metrics,
+		address:   fmt.Sprintf("%s:%d", cfg.Address, cfg.Port),
 	}
 
 	app := fiber.New()

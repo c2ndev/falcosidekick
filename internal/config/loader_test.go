@@ -32,12 +32,10 @@ func TestLoadDefaults(t *testing.T) {
 	assert.Equal(t, "0.0.0.0", cfg.ListenAddress)
 	assert.Equal(t, 2801, cfg.ListenPort)
 	assert.False(t, cfg.Debug)
-	assert.Equal(t, "info", cfg.LogLevel)
-	assert.Equal(t, "text", cfg.LogFormat)
-	assert.Equal(t, MemoryStore, cfg.EventStore.Backend)
-	require.NotNil(t, cfg.EventStore.Memory)
-	assert.Equal(t, 10000, cfg.EventStore.Memory.Capacity)
+	assert.Equal(t, "info", string(cfg.LogLevel))
+	assert.Equal(t, "text", string(cfg.LogFormat))
 	assert.False(t, cfg.UI.Enabled)
+	assert.Equal(t, "memory", cfg.UI.Backend)
 	assert.Equal(t, 1000, cfg.Pipeline.QueueSize)
 	assert.Equal(t, 2, cfg.Pipeline.Workers)
 }
@@ -60,7 +58,7 @@ pipeline:
 	require.NoError(t, err)
 
 	assert.Equal(t, 3000, cfg.ListenPort)
-	assert.Equal(t, "debug", cfg.LogLevel)
+	assert.Equal(t, "debug", string(cfg.LogLevel))
 	assert.True(t, cfg.UI.Enabled)
 	assert.Equal(t, 5000, cfg.Pipeline.QueueSize)
 	assert.Equal(t, "0.0.0.0", cfg.ListenAddress)
@@ -78,7 +76,7 @@ func TestLoadEnvOverride(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, 9999, cfg.ListenPort)
-	assert.Equal(t, "error", cfg.LogLevel)
+	assert.Equal(t, "error", string(cfg.LogLevel))
 }
 
 func TestLoadEnvOverridesFile(t *testing.T) {

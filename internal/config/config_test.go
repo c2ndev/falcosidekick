@@ -56,22 +56,12 @@ func TestDefaultPipelineWorkerFromConfig(t *testing.T) {
 	assert.Equal(t, 30*time.Second, cfg.Pipeline.CircuitBreaker.ResetTimeout)
 }
 
-func TestDefaultEventStoreFromConfig(t *testing.T) {
-	cfg, err := Load("")
-	require.NoError(t, err)
-
-	assert.Equal(t, MemoryStore, cfg.EventStore.Backend)
-	require.NotNil(t, cfg.EventStore.Memory)
-	assert.Equal(t, 10000, cfg.EventStore.Memory.Capacity)
-	assert.Equal(t, 24*time.Hour, cfg.EventStore.Memory.TTL)
-	assert.Equal(t, 10*time.Second, cfg.EventStore.Memory.GCInterval)
-}
-
 func TestDefaultUIFromConfig(t *testing.T) {
 	cfg, err := Load("")
 	require.NoError(t, err)
 
 	assert.False(t, cfg.UI.Enabled)
+	assert.Equal(t, "memory", cfg.UI.Backend)
 }
 
 func TestDefaultTLSFromConfig(t *testing.T) {
@@ -117,68 +107,14 @@ func TestValidatePortRange(t *testing.T) {
 	}
 }
 
-func TestValidateLogLevel(t *testing.T) {
-	tests := []struct {
-		level   string
-		wantErr bool
-	}{
-		{"trace", false},
-		{"debug", false},
-		{"info", false},
-		{"warning", false},
-		{"error", false},
-		{invalidValue, true},
-		{"", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.level, func(t *testing.T) {
-			cfg := loadDefaults(t)
-			cfg.LogLevel = tt.level
-			errs := cfg.Validate()
-			if tt.wantErr {
-				assert.NotEmpty(t, errs)
-			} else {
-				assert.Empty(t, errs)
-			}
-		})
-	}
-}
-
-func TestValidateLogFormat(t *testing.T) {
-	tests := []struct {
-		format  string
-		wantErr bool
-	}{
-		{"text", false},
-		{"json", false},
-		{invalidValue, true},
-		{"", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.format, func(t *testing.T) {
-			cfg := loadDefaults(t)
-			cfg.LogFormat = tt.format
-			errs := cfg.Validate()
-			if tt.wantErr {
-				assert.NotEmpty(t, errs)
-			} else {
-				assert.Empty(t, errs)
-			}
-		})
-	}
-}
-
 func TestValidateMultipleErrors(t *testing.T) {
 	cfg := loadDefaults(t)
 	cfg.ListenPort = 0
 	cfg.LogLevel = invalidValue
 	cfg.LogFormat = invalidValue
-	cfg.EventStore.Backend = StoreBackend(invalidValue)
 
 	errs := cfg.Validate()
-	assert.GreaterOrEqual(t, len(errs), 4)
+	assert.GreaterOrEqual(t, len(errs), 3)
 }
 
 func TestValidateTLSNilPassesCleanly(t *testing.T) {

@@ -14,5 +14,4 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Package store provides EventStore implementations.
-package store
+package config

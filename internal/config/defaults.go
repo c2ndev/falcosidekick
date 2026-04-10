@@ -30,11 +30,7 @@ func applyDefaults(v *viper.Viper) {
 	v.SetDefault("log_format", "text")
 
 	v.SetDefault("ui.enabled", false)
-
-	v.SetDefault("eventstore.backend", "memory")
-	v.SetDefault("eventstore.memory.capacity", 10000)
-	v.SetDefault("eventstore.memory.ttl", 24*time.Hour)
-	v.SetDefault("eventstore.memory.gc_interval", 10*time.Second)
+	v.SetDefault("ui.backend", "memory")
 
 	v.SetDefault("pipeline.queue_size", 1000)
 	v.SetDefault("pipeline.workers", 2)
