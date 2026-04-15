@@ -35,8 +35,8 @@ func TestLoadDefaults(t *testing.T) {
 	assert.Equal(t, "text", string(cfg.LogFormat))
 	assert.False(t, cfg.UI.Enabled)
 	assert.Equal(t, "inmemory", cfg.UI.EventSource)
-	assert.Equal(t, 1000, cfg.Pipeline.QueueSize)
-	assert.Equal(t, 2, cfg.Pipeline.Workers)
+	assert.Equal(t, 1000, cfg.RuntimeDefaults.QueueSize)
+	assert.Equal(t, 2, cfg.RuntimeDefaults.Workers)
 }
 
 func TestLoadFromFile(t *testing.T) {
@@ -46,11 +46,10 @@ listen_port: 3000
 log_level: debug
 ui:
   enabled: true
-pipeline:
+runtime_defaults:
   queue_size: 5000
-  outputs:
-    webhook:
-      address: "http://example.com"
+enricher:
+  truncate_event_threshold: 8192
 `), 0o600))
 
 	cfg, err := Load(cfgFile)
@@ -59,12 +58,9 @@ pipeline:
 	assert.Equal(t, 3000, cfg.ListenPort)
 	assert.Equal(t, "debug", string(cfg.LogLevel))
 	assert.True(t, cfg.UI.Enabled)
-	assert.Equal(t, 5000, cfg.Pipeline.QueueSize)
+	assert.Equal(t, 5000, cfg.RuntimeDefaults.QueueSize)
 	assert.Equal(t, "0.0.0.0", cfg.ListenAddress)
-
-	webhookCfg, ok := cfg.Pipeline.Outputs["webhook"]
-	require.True(t, ok)
-	assert.Equal(t, "http://example.com", webhookCfg["address"])
+	assert.Equal(t, 8192, cfg.Enricher.TruncateEventThreshold)
 }
 
 func TestLoadEnvOverride(t *testing.T) {
@@ -90,39 +86,26 @@ func TestLoadEnvOverridesFile(t *testing.T) {
 	assert.Equal(t, 4000, cfg.ListenPort)
 }
 
+func TestLoadRejectsUnknownCoreKeys(t *testing.T) {
+	cfgFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(cfgFile, []byte(`
+listen_port: 3000
+listen_portt: 4000
+`), 0o600))
+
+	_, err := Load(cfgFile)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "listen_portt")
+}
+
 func TestLoadInvalidFilePath(t *testing.T) {
 	_, err := Load("/nonexistent/config.yaml")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "config read")
 }
 
-func TestLoadOutputsAsRawMap(t *testing.T) {
-	cfgFile := filepath.Join(t.TempDir(), "config.yaml")
-	require.NoError(t, os.WriteFile(cfgFile, []byte(`
-pipeline:
-  outputs:
-    slack:
-      webhookurl: "https://hooks.slack.com/xxx"
-      channel: "#alerts"
-    elasticsearch:
-      hostport: "https://es:9200"
-`), 0o600))
-
-	cfg, err := Load(cfgFile)
-	require.NoError(t, err)
-
-	require.Len(t, cfg.Pipeline.Outputs, 2)
-
-	slack := cfg.Pipeline.Outputs["slack"]
-	assert.Equal(t, "https://hooks.slack.com/xxx", slack["webhookurl"])
-
-	es := cfg.Pipeline.Outputs["elasticsearch"]
-	assert.Equal(t, "https://es:9200", es["hostport"])
-}
-
 func TestLoadValidatesWithDefaults(t *testing.T) {
-	cfg, err := Load("")
-	require.NoError(t, err)
+	cfg := loadDefaults(t)
 
 	errs := cfg.Validate()
 	assert.Empty(t, errs)

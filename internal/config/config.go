@@ -18,13 +18,15 @@ package config
 
 import (
 	"github.com/falcosecurity/falcosidekick/internal/domain/core"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
-// Config holds the complete falcosidekick configuration.
+// Config holds the core falcosidekick configuration loaded from sidekick.yaml.
 type Config struct {
-	core.Config `mapstructure:",squash"`
-	Pipeline    PipelineConfig `mapstructure:"pipeline"`
+	core.Config     `mapstructure:",squash"`
+	RuntimeDefaults output.RuntimeConfig  `mapstructure:"runtime_defaults"`
+	Enricher        output.EnricherConfig `mapstructure:"enricher"`
 }
 
 // Validate checks the configuration for errors.
@@ -37,7 +39,8 @@ func (cfg *Config) Validate() utils.ValidationErrors {
 		errs.Merge("tls", validateTLS(cfg.TLS))
 	}
 
-	errs.Merge("pipeline", cfg.Pipeline.Validate())
+	errs.Merge("enricher", cfg.Enricher.Validate())
+	errs.Merge("runtime_defaults", cfg.RuntimeDefaults.Validate())
 
 	if len(errs) > 0 {
 		return errs

@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/mitchellh/mapstructure"
 	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/falcosecurity/falcosidekick/internal/domain/core"
@@ -40,6 +39,7 @@ type config struct {
 	TLS             shared.TLSClientConfig `mapstructure:"tls"`
 	Producer        kafkaProducer          `mapstructure:"producer"`
 	Brokers         []string               `mapstructure:"brokers"`
+	Runtime         output.RuntimeConfig   `mapstructure:"runtime"`
 	TLSEnabled      bool                   `mapstructure:"tls_enabled"`
 }
 
@@ -80,7 +80,7 @@ var OutputType = output.Type{
 			{Name: "producer.client_id", Type: "string", Label: "Client ID"},
 			{Name: "producer.async", Type: "bool", Default: false, Label: "Async Produce"},
 			{Name: "producer.auto_create_topic", Type: "bool", Default: false, Label: "Allow Auto Topic Creation"},
-		}, shared.TLSClientSchemaFields()...),
+		}, append(shared.TLSClientSchemaFields(), shared.RuntimeConfigSchemaFields()...)...),
 	},
 }
 
@@ -90,6 +90,8 @@ type driver struct {
 	opts   []kgo.Opt
 	cfg    config
 }
+
+func (d *driver) RuntimeConfig() output.RuntimeConfig { return d.cfg.Runtime }
 
 var (
 	validSASL         = map[string]bool{"": true, "plain": true, "scram_sha256": true, "scram_sha512": true}
@@ -140,7 +142,7 @@ func (c *config) validate() utils.ValidationErrors {
 
 func createOutput(raw map[string]any, deps output.Deps) (output.Driver, error) {
 	var cfg config
-	if err := mapstructure.Decode(raw, &cfg); err != nil {
+	if err := shared.DecodeDriverConfig(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("kafka config: %w", err)
 	}
 	if errs := cfg.validate(); len(errs) > 0 {
@@ -159,79 +161,79 @@ func createOutput(raw map[string]any, deps output.Deps) (output.Driver, error) {
 	}, nil
 }
 
-func (o *driver) Name() string { return "kafka" }
+func (d *driver) Name() string { return "kafka" }
 
 // Init creates the Kafka client connection.
-func (o *driver) Init(_ context.Context) error {
-	client, err := kgo.NewClient(o.opts...)
+func (d *driver) Init(_ context.Context) error {
+	client, err := kgo.NewClient(d.opts...)
 	if err != nil {
 		return fmt.Errorf("kafka client: %w", err)
 	}
-	o.client = client
+	d.client = client
 	return nil
 }
 
 // Send delivers a single event to Kafka.
-func (o *driver) Send(ctx context.Context, evt *event.Event) error {
-	if o.client == nil {
+func (d *driver) Send(ctx context.Context, evt *event.Event) error {
+	if d.client == nil {
 		return fmt.Errorf("kafka: %w", core.ErrNotReady)
 	}
-	record, err := o.buildRecord(evt)
+	record, err := d.buildRecord(evt)
 	if err != nil {
 		return err
 	}
 
-	if o.cfg.Producer.Async {
-		o.client.Produce(ctx, record, o.asyncCallback)
+	if d.cfg.Producer.Async {
+		d.client.Produce(ctx, record, d.asyncCallback)
 		return nil
 	}
 
-	return o.client.ProduceSync(ctx, record).FirstErr()
+	return d.client.ProduceSync(ctx, record).FirstErr()
 }
 
 // SendBatch delivers multiple events to Kafka.
-func (o *driver) SendBatch(ctx context.Context, events []*event.Event) error {
-	if o.client == nil {
+func (d *driver) SendBatch(ctx context.Context, events []*event.Event) error {
+	if d.client == nil {
 		return fmt.Errorf("kafka: %w", core.ErrNotReady)
 	}
 	records := make([]*kgo.Record, 0, len(events))
 	for _, event := range events {
-		record, err := o.buildRecord(event)
+		record, err := d.buildRecord(event)
 		if err != nil {
 			return err
 		}
 		records = append(records, record)
 	}
 
-	if o.cfg.Producer.Async {
+	if d.cfg.Producer.Async {
 		for _, r := range records {
-			o.client.Produce(ctx, r, o.asyncCallback)
+			d.client.Produce(ctx, r, d.asyncCallback)
 		}
 		return nil
 	}
 
-	return o.client.ProduceSync(ctx, records...).FirstErr()
+	return d.client.ProduceSync(ctx, records...).FirstErr()
 }
 
 // HealthCheck tests the Kafka broker connection.
-func (o *driver) HealthCheck(ctx context.Context) error {
-	if o.client == nil {
+func (d *driver) HealthCheck(ctx context.Context) error {
+	if d.client == nil {
 		return fmt.Errorf("kafka: %w", core.ErrNotReady)
 	}
-	return o.client.Ping(ctx)
+	return d.client.Ping(ctx)
 }
 
 // Close shuts down the Kafka producer. franz-go flushes buffered records internally.
-func (o *driver) Close() error {
-	if o.client != nil {
-		o.client.Close()
+func (d *driver) Close() error {
+	if d.client != nil {
+		d.client.Close()
 	}
 	return nil
 }
 
 // asyncCallback handles produce results for async mode.
-func (o *driver) asyncCallback(_ *kgo.Record, err error) {
+func (d *driver) asyncCallback(_ *kgo.Record, err error) {
 	if err != nil {
-		o.logger.Error("async produce failed", "error", err)
+		d.logger.Error("async produce failed", "error", err)
 	}
 }

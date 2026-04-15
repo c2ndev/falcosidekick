@@ -29,26 +29,11 @@ import (
 
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
 
-type mockOutput struct {
-	sendFunc func(ctx context.Context, evt *event.Event) error
-	name     string
-}
-
-func (m *mockOutput) Name() string                        { return m.name }
-func (m *mockOutput) Init(_ context.Context) error        { return nil }
-func (m *mockOutput) HealthCheck(_ context.Context) error { return nil }
-func (m *mockOutput) Close() error                        { return nil }
-func (m *mockOutput) Send(ctx context.Context, evt *event.Event) error {
-	if m.sendFunc != nil {
-		return m.sendFunc(ctx, evt)
-	}
-	return nil
-}
-
-func defaultPipelineDefaults() *output.Config {
-	return &output.Config{
+func defaultRuntimeDefaults() *output.RuntimeConfig {
+	return &output.RuntimeConfig{
 		QueueSize: 100,
 		Workers:   1,
 		Retry: &output.RetryConfig{
@@ -68,16 +53,16 @@ func defaultPipelineDefaults() *output.Config {
 func TestDispatcherRoutesToCorrectOutputs(t *testing.T) {
 	var slackCalls, lokiCalls atomic.Int64
 
-	slackCfg := defaultPipelineDefaults()
+	slackCfg := defaultRuntimeDefaults()
 	slackCfg.MinPriority = event.PriorityCritical
-	slackOut := NewOutput(&mockOutput{name: "slack", sendFunc: func(_ context.Context, _ *event.Event) error {
+	slackOut := NewOutput(&testutil.MockDriver{DriverName: "slack", SendFunc: func(_ context.Context, _ *event.Event) error {
 		slackCalls.Add(1)
 		return nil
 	}}, slackCfg, nil)
 
-	lokiCfg := defaultPipelineDefaults()
+	lokiCfg := defaultRuntimeDefaults()
 	lokiCfg.MinPriority = event.PriorityDebug
-	lokiOut := NewOutput(&mockOutput{name: "loki", sendFunc: func(_ context.Context, _ *event.Event) error {
+	lokiOut := NewOutput(&testutil.MockDriver{DriverName: "loki", SendFunc: func(_ context.Context, _ *event.Event) error {
 		lokiCalls.Add(1)
 		return nil
 	}}, lokiCfg, nil)
@@ -99,8 +84,8 @@ func TestDispatcherRoutesToCorrectOutputs(t *testing.T) {
 
 func TestDispatcherCollectStatus(t *testing.T) {
 	d := NewDispatcher([]*Output{
-		NewOutput(&mockOutput{name: "slack"}, defaultPipelineDefaults(), nil),
-		NewOutput(&mockOutput{name: "loki"}, defaultPipelineDefaults(), nil),
+		NewOutput(&testutil.MockDriver{DriverName: "slack"}, defaultRuntimeDefaults(), nil),
+		NewOutput(&testutil.MockDriver{DriverName: "loki"}, defaultRuntimeDefaults(), nil),
 	})
 
 	statuses := d.CollectStatus()
@@ -118,15 +103,15 @@ func TestDispatcherDrainQueues(t *testing.T) {
 	var mu sync.Mutex
 	var received []string
 
-	out := NewOutput(&mockOutput{
-		name: "test",
-		sendFunc: func(_ context.Context, evt *event.Event) error {
+	out := NewOutput(&testutil.MockDriver{
+		DriverName: "test",
+		SendFunc: func(_ context.Context, evt *event.Event) error {
 			mu.Lock()
 			received = append(received, evt.Rule)
 			mu.Unlock()
 			return nil
 		},
-	}, defaultPipelineDefaults(), nil)
+	}, defaultRuntimeDefaults(), nil)
 
 	d := NewDispatcher([]*Output{out})
 	ctx := context.Background()
@@ -149,12 +134,12 @@ func TestDispatcherDrainQueues(t *testing.T) {
 func TestDispatcherConcurrentDispatch(t *testing.T) {
 	var count atomic.Int64
 
-	cfg := defaultPipelineDefaults()
+	cfg := defaultRuntimeDefaults()
 	cfg.Workers = 4
 
-	out := NewOutput(&mockOutput{
-		name: "test",
-		sendFunc: func(_ context.Context, _ *event.Event) error {
+	out := NewOutput(&testutil.MockDriver{
+		DriverName: "test",
+		SendFunc: func(_ context.Context, _ *event.Event) error {
 			count.Add(1)
 			return nil
 		},
@@ -185,15 +170,15 @@ func TestDrainQueuesWaitsForActiveSend(t *testing.T) {
 	sendBlock := make(chan struct{})
 	var sendCompleted atomic.Bool
 
-	out := NewOutput(&mockOutput{
-		name: "test",
-		sendFunc: func(_ context.Context, _ *event.Event) error {
+	out := NewOutput(&testutil.MockDriver{
+		DriverName: "test",
+		SendFunc: func(_ context.Context, _ *event.Event) error {
 			close(sendStarted)
 			<-sendBlock
 			sendCompleted.Store(true)
 			return nil
 		},
-	}, defaultPipelineDefaults(), nil)
+	}, defaultRuntimeDefaults(), nil)
 
 	d := NewDispatcher([]*Output{out})
 	ctx := context.Background()
@@ -227,13 +212,13 @@ func TestDrainQueuesWaitsForActiveSend(t *testing.T) {
 }
 
 func TestCloseQueuesAndCancelStopsSlowWorker(t *testing.T) {
-	out := NewOutput(&mockOutput{
-		name: "test",
-		sendFunc: func(ctx context.Context, _ *event.Event) error {
+	out := NewOutput(&testutil.MockDriver{
+		DriverName: "test",
+		SendFunc: func(ctx context.Context, _ *event.Event) error {
 			<-ctx.Done()
 			return ctx.Err()
 		},
-	}, defaultPipelineDefaults(), nil)
+	}, defaultRuntimeDefaults(), nil)
 
 	d := NewDispatcher([]*Output{out})
 	workerCtx, workerCancel := context.WithCancel(context.Background())
@@ -255,15 +240,15 @@ func TestTwoContextShutdown(t *testing.T) {
 	sendStarted := make(chan struct{})
 	var sendCanceled atomic.Bool
 
-	out := NewOutput(&mockOutput{
-		name: "test",
-		sendFunc: func(ctx context.Context, _ *event.Event) error {
+	out := NewOutput(&testutil.MockDriver{
+		DriverName: "test",
+		SendFunc: func(ctx context.Context, _ *event.Event) error {
 			close(sendStarted)
 			<-ctx.Done()
 			sendCanceled.Store(true)
 			return ctx.Err()
 		},
-	}, defaultPipelineDefaults(), nil)
+	}, defaultRuntimeDefaults(), nil)
 
 	d := NewDispatcher([]*Output{out})
 

@@ -156,7 +156,7 @@ func TestLokiCreateValidation(t *testing.T) {
 	assert.Error(t, err, "missing url must fail")
 }
 
-func TestLokiCreateOutputDefaults(t *testing.T) {
+func TestLokiCreateRuntimeDefaults(t *testing.T) {
 	d, err := createOutput(map[string]any{"url": "http://localhost:3100"}, output.Deps{})
 	require.NoError(t, err)
 

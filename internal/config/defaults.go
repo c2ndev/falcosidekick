@@ -33,22 +33,22 @@ func applyDefaults(v *viper.Viper) {
 
 	v.SetDefault("database.backend", "inmemory")
 
-	v.SetDefault("pipeline.queue_size", 1000)
-	v.SetDefault("pipeline.workers", 2)
+	v.SetDefault("runtime_defaults.queue_size", 1000)
+	v.SetDefault("runtime_defaults.workers", 2)
 
-	v.SetDefault("pipeline.retry.max_attempts", 3)
-	v.SetDefault("pipeline.retry.initial_interval", time.Second)
-	v.SetDefault("pipeline.retry.max_interval", 30*time.Second)
-	v.SetDefault("pipeline.retry.multiplier", 2.0)
+	v.SetDefault("runtime_defaults.retry.max_attempts", 3)
+	v.SetDefault("runtime_defaults.retry.initial_interval", time.Second)
+	v.SetDefault("runtime_defaults.retry.max_interval", 30*time.Second)
+	v.SetDefault("runtime_defaults.retry.multiplier", 2.0)
 
-	v.SetDefault("pipeline.circuit_breaker.failure_threshold", 5)
-	v.SetDefault("pipeline.circuit_breaker.success_threshold", 2)
-	v.SetDefault("pipeline.circuit_breaker.reset_timeout", 30*time.Second)
+	v.SetDefault("runtime_defaults.circuit_breaker.failure_threshold", 5)
+	v.SetDefault("runtime_defaults.circuit_breaker.success_threshold", 2)
+	v.SetDefault("runtime_defaults.circuit_breaker.reset_timeout", 30*time.Second)
 
-	v.SetDefault("pipeline.batching.enabled", false)
-	v.SetDefault("pipeline.batching.batch_size", 500)
-	v.SetDefault("pipeline.batching.flush_interval", time.Second)
+	v.SetDefault("runtime_defaults.batching.enabled", false)
+	v.SetDefault("runtime_defaults.batching.batch_size", 500)
+	v.SetDefault("runtime_defaults.batching.flush_interval", time.Second)
 
-	v.SetDefault("pipeline.enricher.truncate_event_threshold", 4096)
-	v.SetDefault("pipeline.enricher.truncate_field_threshold", 512)
+	v.SetDefault("enricher.truncate_event_threshold", 4096)
+	v.SetDefault("enricher.truncate_field_threshold", 512)
 }

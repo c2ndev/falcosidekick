@@ -32,6 +32,7 @@ type Driver interface {
 	Init(ctx context.Context) error
 	Send(ctx context.Context, evt *event.Event) error
 	HealthCheck(ctx context.Context) error
+	RuntimeConfig() RuntimeConfig
 	Close() error
 }
 

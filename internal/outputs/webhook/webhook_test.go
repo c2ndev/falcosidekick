@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
@@ -155,6 +156,47 @@ func TestWebhookInsecureSkipVerifyDefaults(t *testing.T) {
 	require.NoError(t, err)
 	w2 := o2.(*driver)
 	assert.True(t, w2.cfg.TLS.InsecureSkipVerify, "InsecureSkipVerify explicitly true")
+}
+
+func TestCreateOutputAcceptsRuntimeOverrides(t *testing.T) {
+	d, err := OutputType.New(map[string]any{
+		"url": "http://example.com",
+		"runtime": map[string]any{
+			"minimum_priority": "warning",
+			"queue_size":       5000,
+			"workers":          4,
+			"retry": map[string]any{
+				"max_attempts": 5,
+			},
+			"circuit_breaker": map[string]any{
+				"failure_threshold": 10,
+			},
+			"batching": map[string]any{
+				"enabled":    true,
+				"batch_size": 1000,
+			},
+		},
+	}, output.Deps{})
+	require.NoError(t, err, "runtime override keys must not be rejected")
+	assert.Equal(t, "webhook", d.Name())
+	pCfg := d.RuntimeConfig()
+	assert.Equal(t, 5000, pCfg.QueueSize)
+	assert.Equal(t, 4, pCfg.Workers)
+	assert.Equal(t, event.PriorityWarning, pCfg.MinPriority)
+	require.NotNil(t, pCfg.Retry)
+	assert.Equal(t, 5, pCfg.Retry.MaxAttempts)
+	require.NotNil(t, pCfg.Batching)
+	assert.True(t, pCfg.Batching.Enabled)
+	assert.Equal(t, 1000, pCfg.Batching.BatchSize)
+}
+
+func TestCreateOutputRejectsUnknownKeys(t *testing.T) {
+	_, err := OutputType.New(map[string]any{
+		"url":   "http://example.com",
+		"methd": "PUT",
+	}, output.Deps{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "methd")
 }
 
 func TestCreateOutputInvalidTLSFailsConstruction(t *testing.T) {

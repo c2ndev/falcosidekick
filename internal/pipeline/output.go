@@ -50,7 +50,7 @@ type Output struct {
 	metrics        core.MetricsCollector
 	queue          chan *event.Event
 	circuitBreaker *CircuitBreaker
-	config         output.Config
+	config         output.RuntimeConfig
 	workerDone     sync.WaitGroup
 	sentTotal      atomic.Int64
 	droppedTotal   atomic.Int64
@@ -58,7 +58,7 @@ type Output struct {
 }
 
 // NewOutput creates a complete Output from a driver and configuration.
-func NewOutput(driver output.Driver, cfg *output.Config, metrics core.MetricsCollector) *Output {
+func NewOutput(driver output.Driver, cfg *output.RuntimeConfig, metrics core.MetricsCollector) *Output {
 	o := &Output{
 		driver:         driver,
 		config:         *cfg,

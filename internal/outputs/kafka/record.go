@@ -26,16 +26,16 @@ import (
 )
 
 // buildRecord creates a Kafka record from a Falco event with key, headers, and topic resolution.
-func (o *driver) buildRecord(evt *event.Event) (*kgo.Record, error) {
+func (d *driver) buildRecord(evt *event.Event) (*kgo.Record, error) {
 	data, err := json.Marshal(evt)
 	if err != nil {
 		return nil, fmt.Errorf("kafka marshal: %w", err)
 	}
 
 	return &kgo.Record{
-		Topic:   o.resolveTopic(evt),
+		Topic:   d.resolveTopic(evt),
 		Value:   data,
-		Key:     o.resolveKey(evt),
+		Key:     d.resolveKey(evt),
 		Headers: buildHeaders(evt),
 	}, nil
 }
@@ -43,29 +43,29 @@ func (o *driver) buildRecord(evt *event.Event) (*kgo.Record, error) {
 // resolveTopic returns the topic for this event.
 // If topic_field is configured and the field exists in the event, use it.
 // Otherwise use the default static topic.
-func (o *driver) resolveTopic(evt *event.Event) string {
-	if o.cfg.TopicField != "" {
-		if v, ok := evt.OutputFields[o.cfg.TopicField]; ok {
+func (d *driver) resolveTopic(evt *event.Event) string {
+	if d.cfg.TopicField != "" {
+		if v, ok := evt.OutputFields[d.cfg.TopicField]; ok {
 			if s, ok := v.(string); ok && s != "" {
 				return s
 			}
 		}
 	}
-	return o.cfg.Topic
+	return d.cfg.Topic
 }
 
 // resolveKey returns the message key for partition affinity.
 // Priority: message_key_field (dynamic) > message_key (static) > nil (round-robin).
-func (o *driver) resolveKey(evt *event.Event) []byte {
-	if o.cfg.MessageKeyField != "" {
-		if v, ok := evt.OutputFields[o.cfg.MessageKeyField]; ok {
+func (d *driver) resolveKey(evt *event.Event) []byte {
+	if d.cfg.MessageKeyField != "" {
+		if v, ok := evt.OutputFields[d.cfg.MessageKeyField]; ok {
 			if s, ok := v.(string); ok && s != "" {
 				return []byte(s)
 			}
 		}
 	}
-	if o.cfg.MessageKey != "" {
-		return []byte(o.cfg.MessageKey)
+	if d.cfg.MessageKey != "" {
+		return []byte(d.cfg.MessageKey)
 	}
 	return nil
 }

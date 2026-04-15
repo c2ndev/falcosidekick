@@ -25,10 +25,9 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
-// Config holds output pipeline configuration settings.
+// RuntimeConfig holds runtime output configuration settings.
 // Pointer fields are nil when not specified (used for per-output overrides).
-// When used as pipeline defaults, all fields are populated.
-type Config struct {
+type RuntimeConfig struct {
 	Retry          *RetryConfig          `json:"retry,omitempty" mapstructure:"retry"`
 	CircuitBreaker *CircuitBreakerConfig `json:"circuit_breaker,omitempty" mapstructure:"circuit_breaker"`
 	Batching       *BatchingConfig       `json:"batching,omitempty" mapstructure:"batching"`
@@ -37,8 +36,8 @@ type Config struct {
 	Workers        int                   `json:"workers" mapstructure:"workers"`
 }
 
-// Validate checks pipeline defaults for errors.
-func (c *Config) Validate() utils.ValidationErrors {
+// Validate checks runtime config for errors.
+func (c *RuntimeConfig) Validate() utils.ValidationErrors {
 	var errs utils.ValidationErrors
 
 	if c.QueueSize <= 0 {
@@ -70,6 +69,24 @@ func (c *Config) Validate() utils.ValidationErrors {
 		return errs
 	}
 	return nil
+}
+
+// DeepCopy creates a deep copy of the config.
+func (c *RuntimeConfig) DeepCopy() RuntimeConfig {
+	cp := *c
+	if c.Retry != nil {
+		r := *c.Retry
+		cp.Retry = &r
+	}
+	if c.CircuitBreaker != nil {
+		cb := *c.CircuitBreaker
+		cp.CircuitBreaker = &cb
+	}
+	if c.Batching != nil {
+		b := *c.Batching
+		cp.Batching = &b
+	}
+	return cp
 }
 
 // RetryConfig holds retry policy settings.

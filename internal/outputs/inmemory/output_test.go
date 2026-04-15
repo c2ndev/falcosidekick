@@ -79,7 +79,7 @@ func TestCloseIsIdempotent(t *testing.T) {
 
 // --- createOutput validation ---
 
-func TestCreateOutputDefaults(t *testing.T) {
+func TestCreateRuntimeDefaults(t *testing.T) {
 	o, err := createOutput(map[string]any{}, output.Deps{})
 	require.NoError(t, err)
 	mem := o.(*driver)

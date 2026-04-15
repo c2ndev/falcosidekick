@@ -17,24 +17,15 @@
 package catalog
 
 import (
-	"context"
 	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
-
-type stubOutput struct{ name string }
-
-func (o *stubOutput) Name() string                                 { return o.name }
-func (o *stubOutput) Init(_ context.Context) error                 { return nil }
-func (o *stubOutput) Send(_ context.Context, _ *event.Event) error { return nil }
-func (o *stubOutput) HealthCheck(_ context.Context) error          { return nil }
-func (o *stubOutput) Close() error                                 { return nil }
 
 func stubType(name, category string) output.Type {
 	return output.Type{
@@ -42,7 +33,7 @@ func stubType(name, category string) output.Type {
 		Category: category,
 		Schema:   output.Schema{},
 		New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
-			return &stubOutput{name: name}, nil
+			return &testutil.MockDriver{DriverName: name}, nil
 		},
 	}
 }
@@ -98,7 +89,7 @@ func TestNew(t *testing.T) {
 			name: "empty name",
 			types: []output.Type{
 				{Name: "", Category: "test", New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
-					return &stubOutput{}, nil
+					return &testutil.MockDriver{}, nil
 				}},
 			},
 			wantErr: true,

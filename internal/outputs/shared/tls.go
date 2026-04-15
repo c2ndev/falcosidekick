@@ -72,7 +72,7 @@ func TLSClientSchemaFields() []output.SchemaField {
 		{Name: "tls.insecure_skip_verify", Type: "bool", Default: false, Label: "Skip TLS Certificate Verification"},
 		{Name: "tls.ca_file", Type: "string", Label: "CA Certificate File"},
 		{Name: "tls.cert_file", Type: "string", Label: "Client Certificate File (mTLS)"},
-		{Name: "tls.key_file", Type: "string", Secret: true, Label: "Client Key File (mTLS)"},
+		{Name: "tls.key_file", Type: "string", Label: "Client Key File (mTLS)"},
 		{Name: "tls.server_name", Type: "string", Label: "Server Name Override"},
 	}
 }

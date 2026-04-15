@@ -1,0 +1,40 @@
+// Copyright (C) 2026 The Falco Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package shared
+
+import (
+	"fmt"
+
+	"github.com/mitchellh/mapstructure"
+)
+
+// DecodeDriverConfig decodes a raw config map into a typed driver config struct.
+// The target struct should include a Runtime output.RuntimeConfig field to receive runtime override fields.
+// Rejects unknown keys, handles duration strings, and squashes embedded structs.
+func DecodeDriverConfig(raw map[string]any, result any) error {
+	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+		ErrorUnused:      true,
+		WeaklyTypedInput: true,
+		Squash:           true,
+		DecodeHook:       mapstructure.StringToTimeDurationHookFunc(),
+		Result:           result,
+	})
+	if err != nil {
+		return fmt.Errorf("decoder init: %w", err)
+	}
+	return dec.Decode(raw)
+}

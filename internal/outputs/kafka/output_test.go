@@ -217,10 +217,12 @@ func TestCreateOutputTLS(t *testing.T) {
 		{
 			name: "tls with insecure_skip_verify false",
 			config: map[string]any{
-				"brokers":              []string{"http://localhost:9092"},
-				"topic":                "events",
-				"tls_enabled":          true,
-				"insecure_skip_verify": false,
+				"brokers":     []string{"http://localhost:9092"},
+				"topic":       "events",
+				"tls_enabled": true,
+				"tls": map[string]any{
+					"insecure_skip_verify": false,
+				},
 			},
 		},
 	}
@@ -253,6 +255,40 @@ func TestCreateOutputSASLVariants(t *testing.T) {
 			assert.NotNil(t, driver)
 		})
 	}
+}
+
+func TestCreateOutputAcceptsRuntimeOverrides(t *testing.T) {
+	d, err := createOutput(map[string]any{
+		"brokers": []string{"http://localhost:9092"},
+		"topic":   "events",
+		"runtime": map[string]any{
+			"minimum_priority": "error",
+			"queue_size":       3000,
+			"workers":          8,
+			"batching": map[string]any{
+				"enabled":    true,
+				"batch_size": 500,
+			},
+		},
+	}, output.Deps{})
+	require.NoError(t, err, "runtime override keys must not be rejected")
+	assert.Equal(t, "kafka", d.Name())
+	pCfg := d.RuntimeConfig()
+	assert.Equal(t, 3000, pCfg.QueueSize)
+	assert.Equal(t, 8, pCfg.Workers)
+	assert.Equal(t, event.PriorityError, pCfg.MinPriority)
+	require.NotNil(t, pCfg.Batching)
+	assert.True(t, pCfg.Batching.Enabled)
+}
+
+func TestCreateOutputRejectsUnknownKeys(t *testing.T) {
+	_, err := createOutput(map[string]any{
+		"brokers":     []string{"http://localhost:9092"},
+		"topic":       "events",
+		"unknown_key": "value",
+	}, output.Deps{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown_key")
 }
 
 func TestCreateOutputSASLInvalid(t *testing.T) {
