@@ -33,47 +33,49 @@ func loadDefaults(t *testing.T) *Config {
 	return cfg
 }
 
-func TestDefaultPipelineEnricherFromConfig(t *testing.T) {
+func TestLoadEmptyPathUsesDefaults(t *testing.T) {
 	cfg, err := Load("")
 	require.NoError(t, err)
+	assert.Equal(t, 2801, cfg.ListenPort)
+	assert.Equal(t, "0.0.0.0", cfg.ListenAddress)
+}
 
-	assert.Equal(t, 4096, cfg.Pipeline.Enricher.TruncateEventThreshold)
-	assert.Equal(t, 512, cfg.Pipeline.Enricher.TruncateFieldThreshold)
+func TestDefaultEnricherFromConfig(t *testing.T) {
+	cfg := loadDefaults(t)
+
+	assert.Equal(t, 4096, cfg.Enricher.TruncateEventThreshold)
+	assert.Equal(t, 512, cfg.Enricher.TruncateFieldThreshold)
 }
 
 func TestDefaultPipelineWorkerFromConfig(t *testing.T) {
-	cfg, err := Load("")
-	require.NoError(t, err)
+	cfg := loadDefaults(t)
 
-	assert.Equal(t, 1000, cfg.Pipeline.QueueSize)
-	assert.Equal(t, 2, cfg.Pipeline.Workers)
-	assert.Equal(t, 3, cfg.Pipeline.Retry.MaxAttempts)
-	assert.Equal(t, time.Second, cfg.Pipeline.Retry.InitialInterval)
-	assert.Equal(t, 30*time.Second, cfg.Pipeline.Retry.MaxInterval)
-	assert.Equal(t, 2.0, cfg.Pipeline.Retry.Multiplier)
-	assert.Equal(t, 5, cfg.Pipeline.CircuitBreaker.FailureThreshold)
-	assert.Equal(t, 2, cfg.Pipeline.CircuitBreaker.SuccessThreshold)
-	assert.Equal(t, 30*time.Second, cfg.Pipeline.CircuitBreaker.ResetTimeout)
+	assert.Equal(t, 1000, cfg.RuntimeDefaults.QueueSize)
+	assert.Equal(t, 2, cfg.RuntimeDefaults.Workers)
+	assert.Equal(t, 3, cfg.RuntimeDefaults.Retry.MaxAttempts)
+	assert.Equal(t, time.Second, cfg.RuntimeDefaults.Retry.InitialInterval)
+	assert.Equal(t, 30*time.Second, cfg.RuntimeDefaults.Retry.MaxInterval)
+	assert.Equal(t, 2.0, cfg.RuntimeDefaults.Retry.Multiplier)
+	assert.Equal(t, 5, cfg.RuntimeDefaults.CircuitBreaker.FailureThreshold)
+	assert.Equal(t, 2, cfg.RuntimeDefaults.CircuitBreaker.SuccessThreshold)
+	assert.Equal(t, 30*time.Second, cfg.RuntimeDefaults.CircuitBreaker.ResetTimeout)
 }
 
 func TestDefaultUIFromConfig(t *testing.T) {
-	cfg, err := Load("")
-	require.NoError(t, err)
+	cfg := loadDefaults(t)
 
 	assert.False(t, cfg.UI.Enabled)
 	assert.Equal(t, "inmemory", cfg.UI.EventSource)
 }
 
 func TestDefaultTLSFromConfig(t *testing.T) {
-	cfg, err := Load("")
-	require.NoError(t, err)
+	cfg := loadDefaults(t)
 
 	assert.Nil(t, cfg.TLS)
 }
 
 func TestDefaultsPassValidation(t *testing.T) {
-	cfg, err := Load("")
-	require.NoError(t, err)
+	cfg := loadDefaults(t)
 
 	errs := cfg.Validate()
 	assert.Empty(t, errs)

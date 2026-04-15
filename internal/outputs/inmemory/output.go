@@ -22,24 +22,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mitchellh/mapstructure"
-
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
 	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
-
-func decodeConfig(raw map[string]any, result *config) error {
-	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-		DecodeHook:       mapstructure.StringToTimeDurationHookFunc(),
-		WeaklyTypedInput: true,
-		Result:           result,
-	})
-	if err != nil {
-		return err
-	}
-	return decoder.Decode(raw)
-}
 
 const (
 	fieldPriority = "priority"
@@ -58,18 +45,19 @@ var OutputType = output.Type{
 	Name:     "inmemory",
 	Category: "store",
 	Schema: output.Schema{
-		Fields: []output.SchemaField{
+		Fields: append([]output.SchemaField{
 			{Name: "capacity", Type: "int", Default: 10000, Required: true, Label: "Max Events"},
 			{Name: "ttl", Type: "string", Default: "0", Label: "Event TTL (0 = no expiry)"},
 			{Name: "gc_interval", Type: "string", Default: "10s", Label: "GC Interval (when TTL > 0)"},
-		},
+		}, shared.RuntimeConfigSchemaFields()...),
 	},
 }
 
 type config struct {
-	TTL        time.Duration `mapstructure:"ttl"`
-	GCInterval time.Duration `mapstructure:"gc_interval"`
-	Capacity   int           `mapstructure:"capacity"`
+	Runtime    output.RuntimeConfig `mapstructure:"runtime"`
+	TTL        time.Duration        `mapstructure:"ttl"`
+	GCInterval time.Duration        `mapstructure:"gc_interval"`
+	Capacity   int                  `mapstructure:"capacity"`
 }
 
 // driver implements a bounded ring buffer with optional TTL-based GC.
@@ -82,21 +70,24 @@ type config struct {
 //   - When count == capacity: buffer full, writing at head overwrites tail
 //   - GC only advances tail forward (never creates holes in the middle)
 type driver struct {
+	stopGC     chan struct{}
 	byRule     map[string]map[int]struct{}
 	byPriority map[string]map[int]struct{}
 	bySource   map[string]map[int]struct{}
 	byHostname map[string]map[int]struct{}
 	byTag      map[string]map[int]struct{}
-	stopGC     chan struct{}
 	events     []*event.Event
-	ttl        time.Duration
-	gcInterval time.Duration
+	runtime    output.RuntimeConfig
 	head       int
+	gcInterval time.Duration
+	ttl        time.Duration
 	tail       int
 	count      int
 	capacity   int
 	mu         sync.RWMutex
 }
+
+func (d *driver) RuntimeConfig() output.RuntimeConfig { return d.runtime }
 
 func (c *config) validate() utils.ValidationErrors {
 	var errs utils.ValidationErrors
@@ -122,7 +113,7 @@ func (c *config) validate() utils.ValidationErrors {
 
 func createOutput(raw map[string]any, _ output.Deps) (output.Driver, error) {
 	var cfg config
-	if err := decodeConfig(raw, &cfg); err != nil {
+	if err := shared.DecodeDriverConfig(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("inmemory config: %w", err)
 	}
 	if errs := cfg.validate(); len(errs) > 0 {
@@ -130,6 +121,7 @@ func createOutput(raw map[string]any, _ output.Deps) (output.Driver, error) {
 	}
 
 	return &driver{
+		runtime:    cfg.Runtime,
 		events:     make([]*event.Event, cfg.Capacity),
 		capacity:   cfg.Capacity,
 		ttl:        cfg.TTL,

@@ -20,8 +20,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/mitchellh/mapstructure"
-
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
@@ -34,6 +32,7 @@ type config struct {
 	URL               string `mapstructure:"url"`
 	Method            string `mapstructure:"method"`
 	shared.HTTPConfig `mapstructure:",squash"`
+	Runtime           output.RuntimeConfig `mapstructure:"runtime"`
 }
 
 // OutputType describes the webhook output for the catalog.
@@ -45,7 +44,7 @@ var OutputType = output.Type{
 		Fields: append([]output.SchemaField{
 			{Name: "url", Type: "string", Required: true, Label: "URL"},
 			{Name: "method", Type: "enum", Values: []string{"POST", "PUT"}, Default: "POST", Label: "HTTP Method"},
-		}, shared.HTTPConfigSchemaFields()...),
+		}, append(shared.HTTPConfigSchemaFields(), shared.RuntimeConfigSchemaFields()...)...),
 	},
 }
 
@@ -53,6 +52,8 @@ type driver struct {
 	sender *shared.Sender
 	cfg    config
 }
+
+func (d *driver) RuntimeConfig() output.RuntimeConfig { return d.cfg.Runtime }
 
 var validMethods = map[string]bool{"POST": true, "PUT": true}
 
@@ -73,7 +74,7 @@ func (c *config) validate() utils.ValidationErrors {
 
 func createOutput(raw map[string]any, _ output.Deps) (output.Driver, error) {
 	var cfg config
-	if err := mapstructure.Decode(raw, &cfg); err != nil {
+	if err := shared.DecodeDriverConfig(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("webhook config: %w", err)
 	}
 	if errs := cfg.validate(); len(errs) > 0 {

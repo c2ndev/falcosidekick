@@ -29,22 +29,11 @@ import (
 
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
 
-type mockBatchOutput struct {
-	sendBatchFunc func(ctx context.Context, events []*event.Event) error
-	mockOutput
-}
-
-func (m *mockBatchOutput) SendBatch(ctx context.Context, events []*event.Event) error {
-	if m.sendBatchFunc != nil {
-		return m.sendBatchFunc(ctx, events)
-	}
-	return nil
-}
-
-func batchPipelineDefaults(batchSize int, flushInterval time.Duration) *output.Config {
-	cfg := defaultPipelineDefaults()
+func batchRuntimeDefaults(batchSize int, flushInterval time.Duration) *output.RuntimeConfig {
+	cfg := defaultRuntimeDefaults()
 	cfg.Batching = &output.BatchingConfig{
 		Enabled:       true,
 		BatchSize:     batchSize,
@@ -57,10 +46,10 @@ func TestBatchWorkerFlushOnSize(t *testing.T) {
 	var mu sync.Mutex
 	var batches []int
 
-	cfg := batchPipelineDefaults(5, 10*time.Second)
-	out := NewOutput(&mockBatchOutput{
-		mockOutput: mockOutput{name: "batch-test"},
-		sendBatchFunc: func(_ context.Context, events []*event.Event) error {
+	cfg := batchRuntimeDefaults(5, 10*time.Second)
+	out := NewOutput(&testutil.MockBatchDriver{
+		MockDriver: testutil.MockDriver{DriverName: "batch-test"},
+		SendBatchFunc: func(_ context.Context, events []*event.Event) error {
 			mu.Lock()
 			batches = append(batches, len(events))
 			mu.Unlock()
@@ -93,10 +82,10 @@ func TestBatchWorkerFlushOnInterval(t *testing.T) {
 	var mu sync.Mutex
 	var batches []int
 
-	cfg := batchPipelineDefaults(100, 50*time.Millisecond)
-	out := NewOutput(&mockBatchOutput{
-		mockOutput: mockOutput{name: "batch-test"},
-		sendBatchFunc: func(_ context.Context, events []*event.Event) error {
+	cfg := batchRuntimeDefaults(100, 50*time.Millisecond)
+	out := NewOutput(&testutil.MockBatchDriver{
+		MockDriver: testutil.MockDriver{DriverName: "batch-test"},
+		SendBatchFunc: func(_ context.Context, events []*event.Event) error {
 			mu.Lock()
 			batches = append(batches, len(events))
 			mu.Unlock()
@@ -130,10 +119,10 @@ func TestBatchWorkerFlushOnClose(t *testing.T) {
 	var mu sync.Mutex
 	var batches []int
 
-	cfg := batchPipelineDefaults(100, 10*time.Second)
-	out := NewOutput(&mockBatchOutput{
-		mockOutput: mockOutput{name: "batch-test"},
-		sendBatchFunc: func(_ context.Context, events []*event.Event) error {
+	cfg := batchRuntimeDefaults(100, 10*time.Second)
+	out := NewOutput(&testutil.MockBatchDriver{
+		MockDriver: testutil.MockDriver{DriverName: "batch-test"},
+		SendBatchFunc: func(_ context.Context, events []*event.Event) error {
 			mu.Lock()
 			batches = append(batches, len(events))
 			mu.Unlock()
@@ -165,10 +154,10 @@ func TestBatchWorkerContextCancel(t *testing.T) {
 	var mu sync.Mutex
 	var batches []int
 
-	cfg := batchPipelineDefaults(100, 10*time.Second)
-	out := NewOutput(&mockBatchOutput{
-		mockOutput: mockOutput{name: "batch-test"},
-		sendBatchFunc: func(_ context.Context, events []*event.Event) error {
+	cfg := batchRuntimeDefaults(100, 10*time.Second)
+	out := NewOutput(&testutil.MockBatchDriver{
+		MockDriver: testutil.MockDriver{DriverName: "batch-test"},
+		SendBatchFunc: func(_ context.Context, events []*event.Event) error {
 			mu.Lock()
 			batches = append(batches, len(events))
 			mu.Unlock()
@@ -200,18 +189,18 @@ func TestBatchWorkerDisabledFallsBackToSingle(t *testing.T) {
 	var singleCalls atomic.Int64
 	var batchCalls atomic.Int64
 
-	cfg := defaultPipelineDefaults()
+	cfg := defaultRuntimeDefaults()
 	cfg.Batching = &output.BatchingConfig{Enabled: false, BatchSize: 5, FlushInterval: time.Second}
 
-	out := NewOutput(&mockBatchOutput{
-		mockOutput: mockOutput{
-			name: "batch-test",
-			sendFunc: func(_ context.Context, _ *event.Event) error {
+	out := NewOutput(&testutil.MockBatchDriver{
+		MockDriver: testutil.MockDriver{
+			DriverName: "batch-test",
+			SendFunc: func(_ context.Context, _ *event.Event) error {
 				singleCalls.Add(1)
 				return nil
 			},
 		},
-		sendBatchFunc: func(_ context.Context, _ []*event.Event) error {
+		SendBatchFunc: func(_ context.Context, _ []*event.Event) error {
 			batchCalls.Add(1)
 			return nil
 		},
@@ -234,12 +223,12 @@ func TestBatchWorkerDisabledFallsBackToSingle(t *testing.T) {
 func TestBatchWorkerNonBatchDriver(t *testing.T) {
 	var singleCalls atomic.Int64
 
-	cfg := defaultPipelineDefaults()
+	cfg := defaultRuntimeDefaults()
 	cfg.Batching = &output.BatchingConfig{Enabled: true, BatchSize: 5, FlushInterval: time.Second}
 
-	out := NewOutput(&mockOutput{
-		name: "non-batch",
-		sendFunc: func(_ context.Context, _ *event.Event) error {
+	out := NewOutput(&testutil.MockDriver{
+		DriverName: "non-batch",
+		SendFunc: func(_ context.Context, _ *event.Event) error {
 			singleCalls.Add(1)
 			return nil
 		},
@@ -261,7 +250,7 @@ func TestBatchWorkerNonBatchDriver(t *testing.T) {
 func TestBatchWorkerRetryOnFailure(t *testing.T) {
 	var attempts atomic.Int64
 
-	cfg := batchPipelineDefaults(5, 10*time.Second)
+	cfg := batchRuntimeDefaults(5, 10*time.Second)
 	cfg.Retry = &output.RetryConfig{
 		MaxAttempts:     3,
 		InitialInterval: 10 * time.Millisecond,
@@ -269,9 +258,9 @@ func TestBatchWorkerRetryOnFailure(t *testing.T) {
 		Multiplier:      2.0,
 	}
 
-	out := NewOutput(&mockBatchOutput{
-		mockOutput: mockOutput{name: "batch-test"},
-		sendBatchFunc: func(_ context.Context, _ []*event.Event) error {
+	out := NewOutput(&testutil.MockBatchDriver{
+		MockDriver: testutil.MockDriver{DriverName: "batch-test"},
+		SendBatchFunc: func(_ context.Context, _ []*event.Event) error {
 			n := attempts.Add(1)
 			if n <= 2 {
 				return fmt.Errorf("transient error")
@@ -296,13 +285,13 @@ func TestBatchWorkerRetryOnFailure(t *testing.T) {
 
 func TestWorkerSendsEvent(t *testing.T) {
 	var received atomic.Int64
-	out := NewOutput(&mockOutput{
-		name: "test",
-		sendFunc: func(_ context.Context, _ *event.Event) error {
+	out := NewOutput(&testutil.MockDriver{
+		DriverName: "test",
+		SendFunc: func(_ context.Context, _ *event.Event) error {
 			received.Add(1)
 			return nil
 		},
-	}, defaultPipelineDefaults(), nil)
+	}, defaultRuntimeDefaults(), nil)
 
 	ctx := context.Background()
 	out.Start(ctx)
@@ -316,7 +305,7 @@ func TestWorkerSendsEvent(t *testing.T) {
 
 func TestWorkerRetriesOnFailure(t *testing.T) {
 	var attempts atomic.Int64
-	cfg := defaultPipelineDefaults()
+	cfg := defaultRuntimeDefaults()
 	cfg.Retry = &output.RetryConfig{
 		MaxAttempts:     4,
 		InitialInterval: 10 * time.Millisecond,
@@ -324,9 +313,9 @@ func TestWorkerRetriesOnFailure(t *testing.T) {
 		Multiplier:      2.0,
 	}
 
-	out := NewOutput(&mockOutput{
-		name: "test",
-		sendFunc: func(_ context.Context, _ *event.Event) error {
+	out := NewOutput(&testutil.MockDriver{
+		DriverName: "test",
+		SendFunc: func(_ context.Context, _ *event.Event) error {
 			n := attempts.Add(1)
 			if n <= 2 {
 				return fmt.Errorf("transient error")
@@ -346,7 +335,7 @@ func TestWorkerRetriesOnFailure(t *testing.T) {
 }
 
 func TestWorkerFailsAfterMaxRetries(t *testing.T) {
-	cfg := defaultPipelineDefaults()
+	cfg := defaultRuntimeDefaults()
 	cfg.Retry = &output.RetryConfig{
 		MaxAttempts:     2,
 		InitialInterval: 10 * time.Millisecond,
@@ -354,9 +343,9 @@ func TestWorkerFailsAfterMaxRetries(t *testing.T) {
 		Multiplier:      1.0,
 	}
 
-	out := NewOutput(&mockOutput{
-		name: "test",
-		sendFunc: func(_ context.Context, _ *event.Event) error {
+	out := NewOutput(&testutil.MockDriver{
+		DriverName: "test",
+		SendFunc: func(_ context.Context, _ *event.Event) error {
 			return fmt.Errorf("persistent error")
 		},
 	}, cfg, nil)
@@ -374,7 +363,7 @@ func TestWorkerFailsAfterMaxRetries(t *testing.T) {
 
 func TestWorkerCircuitBreakerBlocks(t *testing.T) {
 	var attempts atomic.Int64
-	cfg := defaultPipelineDefaults()
+	cfg := defaultRuntimeDefaults()
 	cfg.Workers = 1
 	cfg.QueueSize = 100
 	cfg.Retry = &output.RetryConfig{
@@ -389,9 +378,9 @@ func TestWorkerCircuitBreakerBlocks(t *testing.T) {
 		ResetTimeout:     5 * time.Second,
 	}
 
-	out := NewOutput(&mockOutput{
-		name: "test",
-		sendFunc: func(_ context.Context, _ *event.Event) error {
+	out := NewOutput(&testutil.MockDriver{
+		DriverName: "test",
+		SendFunc: func(_ context.Context, _ *event.Event) error {
 			attempts.Add(1)
 			return fmt.Errorf("fail")
 		},
@@ -412,13 +401,13 @@ func TestWorkerCircuitBreakerBlocks(t *testing.T) {
 }
 
 func TestWorkerForceStopOnContextCancel(t *testing.T) {
-	out := NewOutput(&mockOutput{
-		name: "test",
-		sendFunc: func(ctx context.Context, _ *event.Event) error {
+	out := NewOutput(&testutil.MockDriver{
+		DriverName: "test",
+		SendFunc: func(ctx context.Context, _ *event.Event) error {
 			<-ctx.Done()
 			return ctx.Err()
 		},
-	}, defaultPipelineDefaults(), nil)
+	}, defaultRuntimeDefaults(), nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	out.Start(ctx)

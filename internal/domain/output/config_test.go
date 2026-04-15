@@ -23,8 +23,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func validConfig() Config {
-	return Config{
+func validConfig() RuntimeConfig {
+	return RuntimeConfig{
 		QueueSize: 1000,
 		Workers:   2,
 		Retry: &RetryConfig{
@@ -47,7 +47,7 @@ func TestConfigValidateValid(t *testing.T) {
 }
 
 func TestConfigValidateZeroValues(t *testing.T) {
-	assert.NotEmpty(t, (&Config{}).Validate())
+	assert.NotEmpty(t, (&RuntimeConfig{}).Validate())
 }
 
 func TestConfigValidateNegativeQueueSize(t *testing.T) {

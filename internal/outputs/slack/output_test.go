@@ -309,7 +309,7 @@ func TestCreateOutputInvalidTemplate(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid Go template")
 }
 
-func TestCreateOutputDefaults(t *testing.T) {
+func TestCreateRuntimeDefaults(t *testing.T) {
 	d, err := createOutput(map[string]any{
 		"webhook_url": "https://hooks.slack.com/test",
 	}, output.Deps{})

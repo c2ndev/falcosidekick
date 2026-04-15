@@ -25,27 +25,28 @@ import (
 
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
 
-func TestPipelineDefaultsValidateValid(t *testing.T) {
-	cfg := defaultPipelineDefaults()
+func TestRuntimeDefaultsValidateValid(t *testing.T) {
+	cfg := defaultRuntimeDefaults()
 	assert.Empty(t, cfg.Validate())
 }
 
-func TestPipelineDefaultsValidateZeroValues(t *testing.T) {
-	cfg := output.Config{}
+func TestRuntimeDefaultsValidateZeroValues(t *testing.T) {
+	cfg := output.RuntimeConfig{}
 	assert.NotEmpty(t, cfg.Validate())
 }
 
-func TestPipelineDefaultsValidateNegativeQueueSize(t *testing.T) {
-	cfg := defaultPipelineDefaults()
+func TestRuntimeDefaultsValidateNegativeQueueSize(t *testing.T) {
+	cfg := defaultRuntimeDefaults()
 	cfg.QueueSize = -1
 	errs := cfg.Validate()
 	assert.NotEmpty(t, errs)
 }
 
 func TestOutputGetStatus(t *testing.T) {
-	out := NewOutput(&mockOutput{name: "slack"}, defaultPipelineDefaults(), nil)
+	out := NewOutput(&testutil.MockDriver{DriverName: "slack"}, defaultRuntimeDefaults(), nil)
 
 	status := out.GetStatus()
 	assert.Equal(t, "slack", status.Name)
@@ -56,13 +57,13 @@ func TestOutputGetStatus(t *testing.T) {
 
 func TestOutputDropsWhenQueueFull(t *testing.T) {
 	blocked := make(chan struct{})
-	cfg := defaultPipelineDefaults()
+	cfg := defaultRuntimeDefaults()
 	cfg.QueueSize = 2
 	cfg.Workers = 1
 
-	out := NewOutput(&mockOutput{
-		name: "test",
-		sendFunc: func(_ context.Context, _ *event.Event) error {
+	out := NewOutput(&testutil.MockDriver{
+		DriverName: "test",
+		SendFunc: func(_ context.Context, _ *event.Event) error {
 			<-blocked
 			return nil
 		},

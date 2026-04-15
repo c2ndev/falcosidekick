@@ -17,9 +17,11 @@
 package testutil
 
 import (
+	"context"
 	"time"
 
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
 )
 
@@ -40,6 +42,38 @@ func CreateValidEvent() *event.Event {
 			"user.name":    "root",
 		},
 	}
+}
+
+// MockDriver implements output.Driver for tests.
+type MockDriver struct {
+	SendFunc   func(ctx context.Context, evt *event.Event) error
+	DriverName string
+}
+
+func (m *MockDriver) Name() string                        { return m.DriverName }           //nolint:revive // interface impl
+func (m *MockDriver) Init(_ context.Context) error        { return nil }                    //nolint:revive // interface impl
+func (m *MockDriver) HealthCheck(_ context.Context) error { return nil }                    //nolint:revive // interface impl
+func (m *MockDriver) Close() error                        { return nil }                    //nolint:revive // interface impl
+func (m *MockDriver) RuntimeConfig() output.RuntimeConfig { return output.RuntimeConfig{} } //nolint:revive // interface impl
+func (m *MockDriver) Send(ctx context.Context, evt *event.Event) error { //nolint:revive // interface impl
+	if m.SendFunc != nil {
+		return m.SendFunc(ctx, evt)
+	}
+	return nil
+}
+
+// MockBatchDriver extends MockDriver with batch delivery support for tests.
+type MockBatchDriver struct {
+	SendBatchFunc func(ctx context.Context, events []*event.Event) error
+	MockDriver
+}
+
+// SendBatch delegates to SendBatchFunc when set.
+func (m *MockBatchDriver) SendBatch(ctx context.Context, events []*event.Event) error {
+	if m.SendBatchFunc != nil {
+		return m.SendBatchFunc(ctx, events)
+	}
+	return nil
 }
 
 // MustNewSender creates a Sender with empty config or fails the test.

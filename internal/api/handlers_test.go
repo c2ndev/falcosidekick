@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -27,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -34,10 +36,12 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/domain/core"
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/metrics"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
 )
 
-var defaultTestOutputConfig = output.Config{
+var defaultTestOutputConfig = output.RuntimeConfig{
 	QueueSize: 100,
 	Workers:   1,
 	Retry: &output.RetryConfig{
@@ -51,22 +55,6 @@ var defaultTestOutputConfig = output.Config{
 		SuccessThreshold: 2,
 		ResetTimeout:     30 * time.Second,
 	},
-}
-
-type testOutput struct {
-	sendFunc func(ctx context.Context, evt *event.Event) error
-	name     string
-}
-
-func (m *testOutput) Name() string                        { return m.name }
-func (m *testOutput) Init(_ context.Context) error        { return nil }
-func (m *testOutput) HealthCheck(_ context.Context) error { return nil }
-func (m *testOutput) Close() error                        { return nil }
-func (m *testOutput) Send(ctx context.Context, evt *event.Event) error {
-	if m.sendFunc != nil {
-		return m.sendFunc(ctx, evt)
-	}
-	return nil
 }
 
 func buildTestServer(t *testing.T, outputs []*pipeline.Output) *Server {
@@ -110,7 +98,7 @@ func TestHandlePostEventValid(t *testing.T) {
 	var received atomic.Int64
 	cfg := defaultTestOutputConfig
 	cfg.MinPriority = event.PriorityDebug
-	out := pipeline.NewOutput(&testOutput{name: "test", sendFunc: func(_ context.Context, _ *event.Event) error {
+	out := pipeline.NewOutput(&testutil.MockDriver{DriverName: "test", SendFunc: func(_ context.Context, _ *event.Event) error {
 		received.Add(1)
 		return nil
 	}}, &cfg, nil)
@@ -177,6 +165,20 @@ func TestHandleGetHealthz(t *testing.T) {
 
 	body, _ := io.ReadAll(resp.Body)
 	assert.Contains(t, string(body), `"status":"ok"`)
+}
+
+func TestHandleGetVersion(t *testing.T) {
+	srv := buildTestServer(t, nil)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/version", http.NoBody)
+
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, 200, resp.StatusCode)
+
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "version")
 }
 
 func TestServerDefaults(t *testing.T) {
@@ -296,4 +298,98 @@ func TestHandleGetOutputsNoDatabase(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, 503, resp.StatusCode)
+}
+
+func TestStartAndShutdown(t *testing.T) {
+	srv := buildTestServer(t, nil)
+
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		_ = srv.Start()
+	}()
+	<-started
+
+	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, srv.Shutdown())
+}
+
+func TestHandlePostEventWithMetrics(t *testing.T) {
+	collector := metrics.NewCollector()
+	enricher, _ := pipeline.NewEnricher(output.EnricherConfig{
+		TruncateEventThreshold: 4096,
+		TruncateFieldThreshold: 512,
+	})
+	dispatcher := pipeline.NewDispatcher(nil)
+	p, err := pipeline.NewPipeline(enricher, dispatcher, collector)
+	require.NoError(t, err)
+	p.Start()
+
+	srv, err := NewServer(&ServerConfig{Pipeline: p, Metrics: collector})
+	require.NoError(t, err)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", bytes.NewReader(createValidEventJSON()))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, 200, resp.StatusCode)
+}
+
+func TestNewServerWithMetricsRegistry(t *testing.T) {
+	enricher, _ := pipeline.NewEnricher(output.EnricherConfig{
+		TruncateEventThreshold: 4096,
+		TruncateFieldThreshold: 512,
+	})
+	p, err := pipeline.NewPipeline(enricher, pipeline.NewDispatcher(nil), nil)
+	require.NoError(t, err)
+
+	reg := prometheus.NewRegistry()
+	srv, err := NewServer(&ServerConfig{Pipeline: p, Registry: reg})
+	require.NoError(t, err)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, 200, resp.StatusCode)
+}
+
+type errorDB struct{ core.Database }
+
+func (e *errorDB) GetConfig(_ context.Context) (*core.ConfigEntry, error) {
+	return nil, errors.New("db failure")
+}
+
+func (e *errorDB) GetOutputConfigs(_ context.Context) (map[string]core.OutputConfigEntry, error) {
+	return nil, errors.New("db failure")
+}
+
+func (e *errorDB) Close() error { return nil }
+
+func TestHandleGetConfigDBError(t *testing.T) {
+	srv := buildTestServerWithDB(t, &errorDB{})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/config", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, 500, resp.StatusCode)
+
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "db failure")
+}
+
+func TestHandleGetOutputsDBError(t *testing.T) {
+	srv := buildTestServerWithDB(t, &errorDB{})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/outputs", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, 500, resp.StatusCode)
+
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "db failure")
 }

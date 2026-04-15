@@ -26,8 +26,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mitchellh/mapstructure"
-
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
@@ -47,10 +45,11 @@ type config struct {
 	Pipeline            string `mapstructure:"pipeline"`
 	APIKey              string `mapstructure:"api_key"`
 	shared.HTTPConfig   `mapstructure:",squash"`
-	NumberOfShards      int  `mapstructure:"number_of_shards"`
-	NumberOfReplicas    int  `mapstructure:"number_of_replicas"`
-	FlattenFields       bool `mapstructure:"flatten_fields"`
-	CreateIndexTemplate bool `mapstructure:"create_index_template"`
+	Runtime             output.RuntimeConfig `mapstructure:"runtime"`
+	NumberOfShards      int                  `mapstructure:"number_of_shards"`
+	NumberOfReplicas    int                  `mapstructure:"number_of_replicas"`
+	FlattenFields       bool                 `mapstructure:"flatten_fields"`
+	CreateIndexTemplate bool                 `mapstructure:"create_index_template"`
 }
 
 // OutputType describes the Elasticsearch output for the catalog.
@@ -69,7 +68,7 @@ var OutputType = output.Type{
 			{Name: "create_index_template", Type: "bool", Default: false, Label: "Create Index Template"},
 			{Name: "number_of_shards", Type: "int", Default: 3, Label: "Number of Shards"},
 			{Name: "number_of_replicas", Type: "int", Default: 3, Label: "Number of Replicas"},
-		}, shared.HTTPConfigSchemaFields()...),
+		}, append(shared.HTTPConfigSchemaFields(), shared.RuntimeConfigSchemaFields()...)...),
 	},
 }
 
@@ -78,6 +77,8 @@ type driver struct {
 	logger *slog.Logger
 	cfg    config
 }
+
+func (d *driver) RuntimeConfig() output.RuntimeConfig { return d.cfg.Runtime }
 
 var (
 	validSuffixes = map[string]bool{"daily": true, "monthly": true, "annually": true, suffixNone: true}
@@ -114,7 +115,7 @@ func (c *config) validate() utils.ValidationErrors {
 
 func createOutput(raw map[string]any, deps output.Deps) (output.Driver, error) {
 	var cfg config
-	if err := mapstructure.Decode(raw, &cfg); err != nil {
+	if err := shared.DecodeDriverConfig(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("elasticsearch config: %w", err)
 	}
 	if errs := cfg.validate(); len(errs) > 0 {

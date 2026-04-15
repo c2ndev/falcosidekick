@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -41,10 +42,20 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/version"
 )
 
+type stringSliceFlag []string
+
+func (f *stringSliceFlag) String() string { return strings.Join(*f, ",") }
+func (f *stringSliceFlag) Set(v string) error {
+	*f = append(*f, v)
+	return nil
+}
+
 func main() {
-	configPath := flag.String("c", "", "config file path")
+	configPath := flag.String("c", "", "core config file (sidekick.yaml)")
 	showVersion := flag.Bool("v", false, "print version and exit")
 	flag.BoolVar(showVersion, "version", false, "print version and exit")
+	var outputPaths stringSliceFlag
+	flag.Var(&outputPaths, "o", "output config file (repeatable)")
 	flag.Parse()
 
 	if *showVersion {
@@ -54,18 +65,27 @@ func main() {
 		return
 	}
 
-	if err := run(*configPath); err != nil {
+	if err := run(*configPath, outputPaths); err != nil {
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(configPath string) error {
+func run(configPath string, outputPaths []string) error {
 	v := version.GetInfo()
+
+	if configPath == "" {
+		slog.Warn("no config file specified (-c flag), running with defaults and environment variables only")
+	}
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("config load: %w", err)
+	}
+
+	outsCfg, err := config.LoadOutputs(outputPaths)
+	if err != nil {
+		return fmt.Errorf("outputs load: %w", err)
 	}
 
 	if errs := cfg.Validate(); len(errs) > 0 {
@@ -87,29 +107,39 @@ func run(configPath string) error {
 
 	collector := metrics.NewCollector()
 
+	cat, err := catalog.New(all.Types())
+	if err != nil {
+		return fmt.Errorf("catalog: %w", err)
+	}
+
+	for name, outputCfg := range outsCfg.Outputs {
+		outputType, ok := cat.Get(name)
+		if !ok {
+			return fmt.Errorf("unknown output type %q", name)
+		}
+		if err := config.ResolveSecrets(name, outputCfg, outputType.Schema); err != nil {
+			return fmt.Errorf("secret resolution: %w", err)
+		}
+	}
+
 	db, err := createDatabase(cfg.Database)
 	if err != nil {
 		return fmt.Errorf("database: %w", err)
 	}
 	if err := db.Provision(context.Background(), &core.ProvisionRequest{
 		Config:  &cfg.Config,
-		Outputs: cfg.Pipeline.Outputs,
+		Outputs: outsCfg.Outputs,
 	}); err != nil {
 		return fmt.Errorf("database provision: %w", err)
 	}
-	slog.Info("database provisioned", "backend", cfg.Database.Backend, "outputs", len(cfg.Pipeline.Outputs))
+	slog.Info("database provisioned", "backend", cfg.Database.Backend, "outputs", len(outsCfg.Outputs))
 
-	cat, err := catalog.New(all.Types())
-	if err != nil {
-		return fmt.Errorf("catalog: %w", err)
-	}
-
-	enricher, err := pipeline.NewEnricher(cfg.Pipeline.Enricher)
+	enricher, err := pipeline.NewEnricher(cfg.Enricher)
 	if err != nil {
 		return fmt.Errorf("enricher: %w", err)
 	}
 
-	outputs, err := createOutputs(cfg, cat, collector)
+	outputs, err := createOutputs(cfg, outsCfg.Outputs, cat, collector)
 	if err != nil {
 		return fmt.Errorf("outputs: %w", err)
 	}
@@ -205,10 +235,15 @@ func createDatabase(cfg core.DatabaseConfig) (core.Database, error) {
 	}
 }
 
-func createOutputs(cfg *config.Config, cat *catalog.Catalog, mc core.MetricsCollector) ([]*pipeline.Output, error) {
-	outputs := make([]*pipeline.Output, 0, len(cfg.Pipeline.Outputs))
+func createOutputs(
+	cfg *config.Config,
+	rawOutputs map[string]map[string]any,
+	cat *catalog.Catalog,
+	mc core.MetricsCollector,
+) ([]*pipeline.Output, error) {
+	outputs := make([]*pipeline.Output, 0, len(rawOutputs))
 
-	for name, outputCfg := range cfg.Pipeline.Outputs {
+	for name, outputCfg := range rawOutputs {
 		driver, err := cat.Create(name, outputCfg, output.Deps{Logger: slog.Default(), Metrics: mc})
 		if err != nil {
 			return nil, fmt.Errorf("output %q: %w", name, err)
@@ -217,7 +252,7 @@ func createOutputs(cfg *config.Config, cat *catalog.Catalog, mc core.MetricsColl
 			return nil, fmt.Errorf("output %q init: %w", name, err)
 		}
 
-		outCfg, err := cfg.Pipeline.ResolveOutputConfig(name)
+		outCfg, err := config.MergeRuntimeConfig(cfg.RuntimeDefaults, name, driver.RuntimeConfig())
 		if err != nil {
 			return nil, fmt.Errorf("output %q config: %w", name, err)
 		}

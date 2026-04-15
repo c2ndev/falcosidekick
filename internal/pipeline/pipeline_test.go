@@ -27,6 +27,7 @@ import (
 
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
 
 func buildTestPipeline(t *testing.T, outputs []*Output) *Pipeline {
@@ -43,11 +44,11 @@ func buildTestPipeline(t *testing.T, outputs []*Output) *Pipeline {
 func TestProcessEventEnrichesAndDispatches(t *testing.T) {
 	var received atomic.Int64
 
-	cfg := defaultPipelineDefaults()
+	cfg := defaultRuntimeDefaults()
 	cfg.MinPriority = event.PriorityDebug
-	out := NewOutput(&mockOutput{
-		name: "test",
-		sendFunc: func(_ context.Context, _ *event.Event) error {
+	out := NewOutput(&testutil.MockDriver{
+		DriverName: "test",
+		SendFunc: func(_ context.Context, _ *event.Event) error {
 			received.Add(1)
 			return nil
 		},
@@ -80,16 +81,16 @@ func TestProcessEventEnrichesAndDispatches(t *testing.T) {
 func TestProcessEventRoutesByPriority(t *testing.T) {
 	var slackCalls, lokiCalls atomic.Int64
 
-	slackCfg := defaultPipelineDefaults()
+	slackCfg := defaultRuntimeDefaults()
 	slackCfg.MinPriority = event.PriorityCritical
-	slackOut := NewOutput(&mockOutput{name: "slack", sendFunc: func(_ context.Context, _ *event.Event) error {
+	slackOut := NewOutput(&testutil.MockDriver{DriverName: "slack", SendFunc: func(_ context.Context, _ *event.Event) error {
 		slackCalls.Add(1)
 		return nil
 	}}, slackCfg, nil)
 
-	lokiCfg := defaultPipelineDefaults()
+	lokiCfg := defaultRuntimeDefaults()
 	lokiCfg.MinPriority = event.PriorityDebug
-	lokiOut := NewOutput(&mockOutput{name: "loki", sendFunc: func(_ context.Context, _ *event.Event) error {
+	lokiOut := NewOutput(&testutil.MockDriver{DriverName: "loki", SendFunc: func(_ context.Context, _ *event.Event) error {
 		lokiCalls.Add(1)
 		return nil
 	}}, lokiCfg, nil)
@@ -152,8 +153,8 @@ func TestProcessEventWithNoOutputsDoesNotPanic(t *testing.T) {
 
 func TestCollectOutputStatus(t *testing.T) {
 	p := buildTestPipeline(t, []*Output{
-		NewOutput(&mockOutput{name: "slack"}, defaultPipelineDefaults(), nil),
-		NewOutput(&mockOutput{name: "loki"}, defaultPipelineDefaults(), nil),
+		NewOutput(&testutil.MockDriver{DriverName: "slack"}, defaultRuntimeDefaults(), nil),
+		NewOutput(&testutil.MockDriver{DriverName: "loki"}, defaultRuntimeDefaults(), nil),
 	})
 
 	statuses := p.CollectOutputStatus()

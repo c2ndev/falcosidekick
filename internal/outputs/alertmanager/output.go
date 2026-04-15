@@ -25,8 +25,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/mitchellh/mapstructure"
-
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
@@ -37,14 +35,15 @@ import (
 const defaultEndpoint = "/api/v2/alerts"
 
 type config struct {
-	shared.HTTPConfig `mapstructure:",squash"`
 	ExtraLabels       map[string]string `mapstructure:"extra_labels"`
 	ExtraAnnotations  map[string]string `mapstructure:"extra_annotations"`
 	CustomSeverityMap map[string]string `mapstructure:"custom_severity_map"`
 	GeneratorURL      string            `mapstructure:"generator_url"`
 	Endpoint          string            `mapstructure:"endpoint"`
-	Hosts             []string          `mapstructure:"hosts"`
-	ExpiresAfter      int               `mapstructure:"expires_after"`
+	shared.HTTPConfig `mapstructure:",squash"`
+	Hosts             []string             `mapstructure:"hosts"`
+	Runtime           output.RuntimeConfig `mapstructure:"runtime"`
+	ExpiresAfter      int                  `mapstructure:"expires_after"`
 }
 
 // OutputType describes the Alertmanager output for the catalog.
@@ -61,7 +60,7 @@ var OutputType = output.Type{
 			{Name: "extra_labels", Type: "map", Label: "Extra Labels"},
 			{Name: "extra_annotations", Type: "map", Label: "Extra Annotations"},
 			{Name: "custom_severity_map", Type: "map", Label: "Custom Severity Map"},
-		}, shared.HTTPConfigSchemaFields()...),
+		}, append(shared.HTTPConfigSchemaFields(), shared.RuntimeConfigSchemaFields()...)...),
 	},
 }
 
@@ -71,6 +70,8 @@ type driver struct {
 	hostURLs []string
 	cfg      config
 }
+
+func (d *driver) RuntimeConfig() output.RuntimeConfig { return d.cfg.Runtime }
 
 func (c *config) validate() utils.ValidationErrors {
 	var errs utils.ValidationErrors
@@ -91,7 +92,7 @@ func (c *config) validate() utils.ValidationErrors {
 
 func createOutput(raw map[string]any, deps output.Deps) (output.Driver, error) {
 	var cfg config
-	if err := mapstructure.Decode(raw, &cfg); err != nil {
+	if err := shared.DecodeDriverConfig(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("alertmanager config: %w", err)
 	}
 	if errs := cfg.validate(); len(errs) > 0 {

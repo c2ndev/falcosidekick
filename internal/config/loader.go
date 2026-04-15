@@ -20,11 +20,13 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/mitchellh/mapstructure"
 	"github.com/spf13/viper"
 )
 
 // Load reads configuration from a YAML file and environment variables.
-// Environment variables override file values. Prefix: FALCOSIDEKICK_.
+// When configPath is empty, only defaults and environment variables apply.
+// Prefix: FALCOSIDEKICK_.
 func Load(configPath string) (*Config, error) {
 	v := viper.New()
 
@@ -42,8 +44,15 @@ func Load(configPath string) (*Config, error) {
 	v.AutomaticEnv()
 
 	var cfg Config
-	if err := v.Unmarshal(&cfg); err != nil {
-		return nil, fmt.Errorf("config unmarshal: %w", err)
+	if err := v.Unmarshal(&cfg, viper.DecodeHook(
+		mapstructure.ComposeDecodeHookFunc(
+			mapstructure.StringToTimeDurationHookFunc(),
+			mapstructure.StringToSliceHookFunc(","),
+		),
+	), func(dc *mapstructure.DecoderConfig) {
+		dc.ErrorUnused = true
+	}); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
 	}
 
 	return &cfg, nil

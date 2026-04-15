@@ -55,9 +55,9 @@ type slackAttachmentField struct {
 	Short bool   `json:"short"`
 }
 
-func (o *driver) buildPayload(evt *event.Event) slackPayload {
+func (d *driver) buildPayload(evt *event.Event) slackPayload {
 	var fields []slackAttachmentField
-	format := o.cfg.OutputFormat
+	format := d.cfg.OutputFormat
 
 	if format == formatAll || format == formatFields {
 		fields = append(fields,
@@ -73,7 +73,7 @@ func (o *driver) buildPayload(evt *event.Event) slackPayload {
 		}
 		for _, k := range shared.SortMapKeys(evt.OutputFields) {
 			if len(fields) >= maxFieldsPerAttach {
-				o.logger.Warn("attachment field limit reached, remaining fields dropped",
+				d.logger.Warn("attachment field limit reached, remaining fields dropped",
 					"limit", maxFieldsPerAttach, "total_fields", len(evt.OutputFields))
 				break
 			}
@@ -90,7 +90,7 @@ func (o *driver) buildPayload(evt *event.Event) slackPayload {
 	attachment := slackAttachment{
 		Fallback: shared.TruncateRunes(evt.Output, maxTitleRunes),
 		Fields:   fields,
-		Footer:   shared.TruncateRunes(o.cfg.Footer, maxFooterRunes),
+		Footer:   shared.TruncateRunes(d.cfg.Footer, maxFooterRunes),
 		Color:    shared.PriorityColor(evt.Priority),
 		MrkdwnIn: []string{"fallback", "text"},
 	}
@@ -100,24 +100,24 @@ func (o *driver) buildPayload(evt *event.Event) slackPayload {
 	}
 
 	var messageText string
-	if o.messageTmpl != nil {
+	if d.messageTmpl != nil {
 		var buf bytes.Buffer
-		if err := o.messageTmpl.Execute(&buf, evt); err == nil {
+		if err := d.messageTmpl.Execute(&buf, evt); err == nil {
 			messageText = buf.String()
 		} else {
-			o.logger.Warn("message template execution failed", "error", err)
+			d.logger.Warn("message template execution failed", "error", err)
 		}
 	}
 
 	p := slackPayload{
 		Text:        messageText,
-		Username:    o.cfg.Username,
-		IconURL:     o.cfg.IconURL,
-		IconEmoji:   o.cfg.IconEmoji,
+		Username:    d.cfg.Username,
+		IconURL:     d.cfg.IconURL,
+		IconEmoji:   d.cfg.IconEmoji,
 		Attachments: []slackAttachment{attachment},
 	}
-	if o.cfg.Channel != "" {
-		p.Channel = o.cfg.Channel
+	if d.cfg.Channel != "" {
+		p.Channel = d.cfg.Channel
 	}
 	return p
 }

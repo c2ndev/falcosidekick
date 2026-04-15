@@ -24,8 +24,6 @@ import (
 	"net/http"
 	"text/template"
 
-	"github.com/mitchellh/mapstructure"
-
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
@@ -49,6 +47,7 @@ type config struct {
 	OutputFormat      string `mapstructure:"output_format"`
 	MessageFormat     string `mapstructure:"message_format"`
 	shared.HTTPConfig `mapstructure:",squash"`
+	Runtime           output.RuntimeConfig `mapstructure:"runtime"`
 }
 
 // OutputType describes the Slack output for the catalog.
@@ -66,7 +65,7 @@ var OutputType = output.Type{
 			{Name: "output_format", Type: "enum", Values: []string{"all", "fields", "text"}, Default: "all", Label: "Output Format"},
 			{Name: "message_format", Type: "string", Label: "Message Template"},
 			{Name: "footer", Type: "string", Label: "Footer"},
-		}, shared.HTTPConfigSchemaFields()...),
+		}, append(shared.HTTPConfigSchemaFields(), shared.RuntimeConfigSchemaFields()...)...),
 	},
 }
 
@@ -76,6 +75,8 @@ type driver struct {
 	messageTmpl *template.Template
 	cfg         config
 }
+
+func (d *driver) RuntimeConfig() output.RuntimeConfig { return d.cfg.Runtime }
 
 var validOutputFormats = map[string]bool{formatAll: true, formatFields: true, formatText: true}
 
@@ -104,7 +105,7 @@ func (c *config) validate() utils.ValidationErrors {
 
 func createOutput(raw map[string]any, deps output.Deps) (output.Driver, error) {
 	var cfg config
-	if err := mapstructure.Decode(raw, &cfg); err != nil {
+	if err := shared.DecodeDriverConfig(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("slack config: %w", err)
 	}
 	if errs := cfg.validate(); len(errs) > 0 {
@@ -133,22 +134,22 @@ func createOutput(raw map[string]any, deps output.Deps) (output.Driver, error) {
 	return o, nil
 }
 
-func (o *driver) Name() string { return "slack" }
+func (d *driver) Name() string { return "slack" }
 
-func (o *driver) Init(_ context.Context) error { return nil }
+func (d *driver) Init(_ context.Context) error { return nil }
 
 // Send delivers an event as a Slack attachment.
 // Checks the response body because Slack returns HTTP 200 with error text on failure.
-func (o *driver) Send(ctx context.Context, evt *event.Event) error {
-	return o.sender.SendJSONCheckBody(ctx, http.MethodPost, o.cfg.WebhookURL, o.buildPayload(evt), checkSlackResponse)
+func (d *driver) Send(ctx context.Context, evt *event.Event) error {
+	return d.sender.SendJSONCheckBody(ctx, http.MethodPost, d.cfg.WebhookURL, d.buildPayload(evt), checkSlackResponse)
 }
 
 // HealthCheck verifies connectivity to the Slack webhook.
-func (o *driver) HealthCheck(ctx context.Context) error {
-	return o.sender.HealthCheck(ctx, o.cfg.WebhookURL)
+func (d *driver) HealthCheck(ctx context.Context) error {
+	return d.sender.HealthCheck(ctx, d.cfg.WebhookURL)
 }
 
-func (o *driver) Close() error { return nil }
+func (d *driver) Close() error { return nil }
 
 // checkSlackResponse validates the Slack webhook response body.
 // Slack returns HTTP 200 with body "ok" on success, or error text like
