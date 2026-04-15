@@ -24,14 +24,15 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 )
 
-func newTestEvent() *domain.Event {
-	return &domain.Event{
+func newTestEvent() *event.Event {
+	return &event.Event{
 		Time:         time.Now(),
 		Rule:         "Test rule",
-		Priority:     domain.PriorityWarning,
+		Priority:     event.PriorityWarning,
 		Output:       "test output",
 		Source:       "syscall",
 		OutputFields: map[string]interface{}{"proc.name": "bash"},
@@ -40,8 +41,8 @@ func newTestEvent() *domain.Event {
 	}
 }
 
-func testEnricherConfig() EnricherConfig {
-	return EnricherConfig{
+func testEnricherConfig() output.EnricherConfig {
+	return output.EnricherConfig{
 		TruncateEventThreshold: 4096,
 		TruncateFieldThreshold: 512,
 	}
@@ -54,7 +55,7 @@ func TestNewEnricherWithValidConfig(t *testing.T) {
 }
 
 func TestNewEnricherInvalidTemplate(t *testing.T) {
-	_, err := NewEnricher(EnricherConfig{
+	_, err := NewEnricher(output.EnricherConfig{
 		TemplatedFields: map[string]string{"bad": "{{ .Invalid | "},
 	})
 	require.Error(t, err)
@@ -67,32 +68,32 @@ func TestEnricherConfigValidateValid(t *testing.T) {
 }
 
 func TestEnricherConfigValidateNegativeEventThreshold(t *testing.T) {
-	cfg := EnricherConfig{TruncateEventThreshold: -1}
+	cfg := output.EnricherConfig{TruncateEventThreshold: -1}
 	assert.NotEmpty(t, cfg.Validate())
 }
 
 func TestEnricherConfigValidateTooSmallFieldThreshold(t *testing.T) {
-	cfg := EnricherConfig{TruncateEventThreshold: 100, TruncateFieldThreshold: 3}
+	cfg := output.EnricherConfig{TruncateEventThreshold: 100, TruncateFieldThreshold: 3}
 	assert.NotEmpty(t, cfg.Validate())
 }
 
 func TestEnricherConfigValidateDisabledTruncation(t *testing.T) {
-	cfg := EnricherConfig{TruncateEventThreshold: 0, TruncateFieldThreshold: 0}
+	cfg := output.EnricherConfig{TruncateEventThreshold: 0, TruncateFieldThreshold: 0}
 	assert.Empty(t, cfg.Validate())
 }
 
 func TestEnricherConfigValidateZeroThresholds(t *testing.T) {
-	cfg := EnricherConfig{}
+	cfg := output.EnricherConfig{}
 	assert.Empty(t, cfg.Validate())
 }
 
 func TestEnrichGeneratesUUID(t *testing.T) {
 	e, _ := NewEnricher(testEnricherConfig())
-	event := newTestEvent()
+	evt := newTestEvent()
 
-	require.NoError(t, e.Enrich(event))
-	assert.NotEmpty(t, event.UUID)
-	assert.Len(t, event.UUID, 36)
+	require.NoError(t, e.Enrich(evt))
+	assert.NotEmpty(t, evt.UUID)
+	assert.Len(t, evt.UUID, 36)
 }
 
 func TestEnrichUUIDUniqueness(t *testing.T) {
@@ -109,12 +110,12 @@ func TestEnrichInjectsCustomFields(t *testing.T) {
 	cfg := testEnricherConfig()
 	cfg.CustomFields = map[string]string{"env": "prod", "cluster": "us-1"}
 	e, _ := NewEnricher(cfg)
-	event := newTestEvent()
+	evt := newTestEvent()
 
-	require.NoError(t, e.Enrich(event))
-	assert.Equal(t, "prod", event.OutputFields["env"])
-	assert.Equal(t, "us-1", event.OutputFields["cluster"])
-	assert.Equal(t, "bash", event.OutputFields["proc.name"])
+	require.NoError(t, e.Enrich(evt))
+	assert.Equal(t, "prod", evt.OutputFields["env"])
+	assert.Equal(t, "us-1", evt.OutputFields["cluster"])
+	assert.Equal(t, "bash", evt.OutputFields["proc.name"])
 }
 
 func TestEnrichEvaluatesTemplatedFields(t *testing.T) {
@@ -123,10 +124,10 @@ func TestEnrichEvaluatesTemplatedFields(t *testing.T) {
 		"proc_info": `process={{ index . "proc.name" }}`,
 	}
 	e, _ := NewEnricher(cfg)
-	event := newTestEvent()
+	evt := newTestEvent()
 
-	require.NoError(t, e.Enrich(event))
-	assert.Equal(t, "process=bash", event.OutputFields["proc_info"])
+	require.NoError(t, e.Enrich(evt))
+	assert.Equal(t, "process=bash", evt.OutputFields["proc_info"])
 }
 
 func TestEnrichTemplateErrorContinues(t *testing.T) {
@@ -135,10 +136,10 @@ func TestEnrichTemplateErrorContinues(t *testing.T) {
 		"bad": `{{ call . }}`,
 	}
 	e, _ := NewEnricher(cfg)
-	event := newTestEvent()
+	evt := newTestEvent()
 
-	require.NoError(t, e.Enrich(event))
-	_, exists := event.OutputFields["bad"]
+	require.NoError(t, e.Enrich(evt))
+	_, exists := evt.OutputFields["bad"]
 	assert.False(t, exists)
 }
 
@@ -146,74 +147,74 @@ func TestEnrichInjectsCustomTags(t *testing.T) {
 	cfg := testEnricherConfig()
 	cfg.CustomTags = []string{"security", "falco"}
 	e, _ := NewEnricher(cfg)
-	event := newTestEvent()
+	evt := newTestEvent()
 
-	require.NoError(t, e.Enrich(event))
-	assert.Equal(t, []string{"falco", "security", "tag1"}, event.Tags)
+	require.NoError(t, e.Enrich(evt))
+	assert.Equal(t, []string{"falco", "security", "tag1"}, evt.Tags)
 }
 
 func TestEnrichNoCustomTagsPreservesOriginal(t *testing.T) {
 	e, _ := NewEnricher(testEnricherConfig())
-	event := newTestEvent()
-	original := make([]string, len(event.Tags))
-	copy(original, event.Tags)
+	evt := newTestEvent()
+	original := make([]string, len(evt.Tags))
+	copy(original, evt.Tags)
 
-	require.NoError(t, e.Enrich(event))
-	assert.Equal(t, original, event.Tags)
+	require.NoError(t, e.Enrich(evt))
+	assert.Equal(t, original, evt.Tags)
 }
 
 func TestEnrichDefaultHostname(t *testing.T) {
 	e, _ := NewEnricher(testEnricherConfig())
-	event := newTestEvent()
-	event.Hostname = ""
+	evt := newTestEvent()
+	evt.Hostname = ""
 
-	require.NoError(t, e.Enrich(event))
-	assert.Equal(t, defaultHostname, event.Hostname)
+	require.NoError(t, e.Enrich(evt))
+	assert.Equal(t, defaultHostname, evt.Hostname)
 }
 
 func TestEnrichPreservesExistingHostname(t *testing.T) {
 	e, _ := NewEnricher(testEnricherConfig())
-	event := newTestEvent()
+	evt := newTestEvent()
 
-	require.NoError(t, e.Enrich(event))
-	assert.Equal(t, "node-1", event.Hostname)
+	require.NoError(t, e.Enrich(evt))
+	assert.Equal(t, "node-1", evt.Hostname)
 }
 
 func TestEnrichReplacesBrackets(t *testing.T) {
 	cfg := testEnricherConfig()
 	cfg.BracketReplacer = "_"
 	e, _ := NewEnricher(cfg)
-	event := newTestEvent()
+	evt := newTestEvent()
 	const testPath = "/dev/null"
-	event.OutputFields["fd[0]"] = testPath
+	evt.OutputFields["fd[0]"] = testPath
 
-	require.NoError(t, e.Enrich(event))
-	assert.Equal(t, testPath, event.OutputFields["fd_0_"])
-	_, hasBrackets := event.OutputFields["fd[0]"]
+	require.NoError(t, e.Enrich(evt))
+	assert.Equal(t, testPath, evt.OutputFields["fd_0_"])
+	_, hasBrackets := evt.OutputFields["fd[0]"]
 	assert.False(t, hasBrackets)
 }
 
 func TestEnrichNoBracketReplacerSkips(t *testing.T) {
 	e, _ := NewEnricher(testEnricherConfig())
-	event := newTestEvent()
+	evt := newTestEvent()
 	const testPath = "/dev/null"
-	event.OutputFields["fd[0]"] = testPath
+	evt.OutputFields["fd[0]"] = testPath
 
-	require.NoError(t, e.Enrich(event))
-	assert.Equal(t, testPath, event.OutputFields["fd[0]"])
+	require.NoError(t, e.Enrich(evt))
+	assert.Equal(t, testPath, evt.OutputFields["fd[0]"])
 }
 
 func TestEnrichTruncatesLargeEvents(t *testing.T) {
 	e, _ := NewEnricher(testEnricherConfig())
-	event := newTestEvent()
+	evt := newTestEvent()
 	for i := 0; i < 10; i++ {
-		event.OutputFields[strings.Repeat("field", i+1)] = strings.Repeat("x", 1000)
+		evt.OutputFields[strings.Repeat("field", i+1)] = strings.Repeat("x", 1000)
 	}
 
-	require.NoError(t, e.Enrich(event))
+	require.NoError(t, e.Enrich(evt))
 
 	truncated := false
-	for _, v := range event.OutputFields {
+	for _, v := range evt.OutputFields {
 		s, ok := v.(string)
 		if ok && strings.HasSuffix(s, truncateFieldSuffix) {
 			truncated = true
@@ -224,16 +225,16 @@ func TestEnrichTruncatesLargeEvents(t *testing.T) {
 }
 
 func TestEnrichCustomTruncateThresholds(t *testing.T) {
-	e, _ := NewEnricher(EnricherConfig{
+	e, _ := NewEnricher(output.EnricherConfig{
 		TruncateEventThreshold: 200,
 		TruncateFieldThreshold: 50,
 	})
-	event := newTestEvent()
-	event.OutputFields["data"] = strings.Repeat("a", 100)
+	evt := newTestEvent()
+	evt.OutputFields["data"] = strings.Repeat("a", 100)
 
-	require.NoError(t, e.Enrich(event))
+	require.NoError(t, e.Enrich(evt))
 
-	val := event.OutputFields["data"].(string)
+	val := evt.OutputFields["data"].(string)
 	assert.LessOrEqual(t, len(val), 50)
 	assert.True(t, strings.HasSuffix(val, truncateFieldSuffix))
 }
@@ -247,9 +248,9 @@ func TestEnrichTruncateThresholdsFromConfig(t *testing.T) {
 
 func TestEnrichDoesNotTruncateSmallEvents(t *testing.T) {
 	e, _ := NewEnricher(testEnricherConfig())
-	event := newTestEvent()
-	event.OutputFields["small"] = "tiny"
+	evt := newTestEvent()
+	evt.OutputFields["small"] = "tiny"
 
-	require.NoError(t, e.Enrich(event))
-	assert.Equal(t, "tiny", event.OutputFields["small"])
+	require.NoError(t, e.Enrich(evt))
+	assert.Equal(t, "tiny", evt.OutputFields["small"])
 }

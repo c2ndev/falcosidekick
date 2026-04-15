@@ -29,7 +29,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
 
@@ -45,13 +46,13 @@ func TestSendBatchUsesCreateAction(t *testing.T) {
 		"url":          server.URL,
 		"index":        "test",
 		"index_suffix": "none",
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	require.NoError(t, err)
 
-	batchDriver, ok := driver.(domain.BatchSender)
+	batchDriver, ok := driver.(output.BatchSender)
 	require.True(t, ok)
 
-	events := []*domain.Event{testutil.CreateValidEvent(), testutil.CreateValidEvent()}
+	events := []*event.Event{testutil.CreateValidEvent(), testutil.CreateValidEvent()}
 	require.NoError(t, batchDriver.SendBatch(context.Background(), events))
 
 	lines := strings.Split(strings.TrimSpace(string(capturedBody)), "\n")
@@ -73,11 +74,11 @@ func TestSendBatchIncludesFilterPath(t *testing.T) {
 	driver, err := createOutput(map[string]any{
 		"url":          server.URL,
 		"index_suffix": "none",
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	require.NoError(t, err)
 
-	batchDriver := driver.(domain.BatchSender)
-	require.NoError(t, batchDriver.SendBatch(context.Background(), []*domain.Event{testutil.CreateValidEvent()}))
+	batchDriver := driver.(output.BatchSender)
+	require.NoError(t, batchDriver.SendBatch(context.Background(), []*event.Event{testutil.CreateValidEvent()}))
 
 	assert.Contains(t, capturedURL, "filter_path=")
 }
@@ -94,29 +95,29 @@ func TestSendBatchWithPipeline(t *testing.T) {
 		"url":          server.URL,
 		"index_suffix": "none",
 		"pipeline":     "enrich",
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	require.NoError(t, err)
 
-	batchDriver := driver.(domain.BatchSender)
-	require.NoError(t, batchDriver.SendBatch(context.Background(), []*domain.Event{testutil.CreateValidEvent()}))
+	batchDriver := driver.(output.BatchSender)
+	require.NoError(t, batchDriver.SendBatch(context.Background(), []*event.Event{testutil.CreateValidEvent()}))
 
 	assert.Contains(t, capturedURL, "pipeline=enrich")
 }
 
 func TestParseBulkResponseAllSuccess(t *testing.T) {
-	o := &output{logger: slog.Default()}
+	o := &driver{logger: slog.Default()}
 	body := []byte(`{"errors":false,"items":[{"create":{"status":201}},{"create":{"status":201}}]}`)
 	assert.NoError(t, o.parseBulkResponse(body, 2))
 }
 
 func TestParseBulkResponseEmptyBody(t *testing.T) {
-	o := &output{logger: slog.Default()}
+	o := &driver{logger: slog.Default()}
 	assert.NoError(t, o.parseBulkResponse(nil, 0))
 	assert.NoError(t, o.parseBulkResponse([]byte{}, 0))
 }
 
 func TestParseBulkResponsePartialFailure(t *testing.T) {
-	o := &output{logger: slog.Default()}
+	o := &driver{logger: slog.Default()}
 	body := []byte(`{"errors":true,"items":[
 		{"create":{"status":201}},
 		{"create":{"status":400,"error":{"type":"document_parsing_exception","reason":"field mapping"}}},
@@ -130,7 +131,7 @@ func TestParseBulkResponsePartialFailure(t *testing.T) {
 }
 
 func TestParseBulkResponseAllFailed(t *testing.T) {
-	o := &output{logger: slog.Default()}
+	o := &driver{logger: slog.Default()}
 	body := []byte(`{"errors":true,"items":[
 		{"create":{"status":429,"error":{"type":"es_rejected_execution_exception","reason":"queue full"}}},
 		{"create":{"status":429,"error":{"type":"es_rejected_execution_exception","reason":"queue full"}}}
@@ -143,7 +144,7 @@ func TestParseBulkResponseAllFailed(t *testing.T) {
 }
 
 func TestParseBulkResponseFastPathNoErrors(t *testing.T) {
-	o := &output{logger: slog.Default()}
+	o := &driver{logger: slog.Default()}
 	// Response without "errors":true - fast path skips JSON parsing.
 	body := []byte(`{"errors":false,"items":[{"create":{"status":201}}]}`)
 	assert.NoError(t, o.parseBulkResponse(body, 1))
@@ -161,11 +162,11 @@ func TestSendBatchBulkFormatAndIndex(t *testing.T) {
 		"url":          server.URL,
 		"index":        "alerts",
 		"index_suffix": "none",
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	require.NoError(t, err)
 
-	batchDriver := driver.(domain.BatchSender)
-	events := []*domain.Event{testutil.CreateValidEvent(), testutil.CreateValidEvent(), testutil.CreateValidEvent()}
+	batchDriver := driver.(output.BatchSender)
+	events := []*event.Event{testutil.CreateValidEvent(), testutil.CreateValidEvent(), testutil.CreateValidEvent()}
 	require.NoError(t, batchDriver.SendBatch(context.Background(), events))
 
 	lines := strings.Split(strings.TrimSpace(string(capturedBody)), "\n")

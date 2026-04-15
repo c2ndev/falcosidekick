@@ -20,8 +20,8 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
-	"github.com/falcosecurity/falcosidekick/internal/outputs/sdk"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
 )
 
 // Slack API limits (from https://api.slack.com/reference/surfaces/formatting).
@@ -55,54 +55,54 @@ type slackAttachmentField struct {
 	Short bool   `json:"short"`
 }
 
-func (o *output) buildPayload(event *domain.Event) slackPayload {
+func (o *driver) buildPayload(evt *event.Event) slackPayload {
 	var fields []slackAttachmentField
 	format := o.cfg.OutputFormat
 
 	if format == formatAll || format == formatFields {
 		fields = append(fields,
-			slackAttachmentField{Title: "rule", Value: sdk.TruncateRunes(event.Rule, maxTitleRunes), Short: true},
-			slackAttachmentField{Title: "priority", Value: string(event.Priority), Short: true},
-			slackAttachmentField{Title: "source", Value: event.Source, Short: true},
+			slackAttachmentField{Title: "rule", Value: shared.TruncateRunes(evt.Rule, maxTitleRunes), Short: true},
+			slackAttachmentField{Title: "priority", Value: string(evt.Priority), Short: true},
+			slackAttachmentField{Title: "source", Value: evt.Source, Short: true},
 		)
-		if event.Hostname != "" {
-			fields = append(fields, slackAttachmentField{Title: "hostname", Value: event.Hostname, Short: true})
+		if evt.Hostname != "" {
+			fields = append(fields, slackAttachmentField{Title: "hostname", Value: evt.Hostname, Short: true})
 		}
-		if tags := sdk.FormatTags(event.Tags, ", "); tags != "" {
+		if tags := shared.FormatTags(evt.Tags, ", "); tags != "" {
 			fields = append(fields, slackAttachmentField{Title: "tags", Value: tags, Short: true})
 		}
-		for _, k := range sdk.SortMapKeys(event.OutputFields) {
+		for _, k := range shared.SortMapKeys(evt.OutputFields) {
 			if len(fields) >= maxFieldsPerAttach {
 				o.logger.Warn("attachment field limit reached, remaining fields dropped",
-					"limit", maxFieldsPerAttach, "total_fields", len(event.OutputFields))
+					"limit", maxFieldsPerAttach, "total_fields", len(evt.OutputFields))
 				break
 			}
-			v := fmt.Sprintf("%v", event.OutputFields[k])
+			v := fmt.Sprintf("%v", evt.OutputFields[k])
 			fields = append(fields, slackAttachmentField{
 				Title: k,
 				Value: v,
 				Short: len([]rune(v)) < 36,
 			})
 		}
-		fields = append(fields, slackAttachmentField{Title: "time", Value: event.Time.String()})
+		fields = append(fields, slackAttachmentField{Title: "time", Value: evt.Time.String()})
 	}
 
 	attachment := slackAttachment{
-		Fallback: sdk.TruncateRunes(event.Output, maxTitleRunes),
+		Fallback: shared.TruncateRunes(evt.Output, maxTitleRunes),
 		Fields:   fields,
-		Footer:   sdk.TruncateRunes(o.cfg.Footer, maxFooterRunes),
-		Color:    sdk.PriorityColor(event.Priority),
+		Footer:   shared.TruncateRunes(o.cfg.Footer, maxFooterRunes),
+		Color:    shared.PriorityColor(evt.Priority),
 		MrkdwnIn: []string{"fallback", "text"},
 	}
 
 	if format == formatAll || format == formatText {
-		attachment.Text = event.Output
+		attachment.Text = evt.Output
 	}
 
 	var messageText string
 	if o.messageTmpl != nil {
 		var buf bytes.Buffer
-		if err := o.messageTmpl.Execute(&buf, event); err == nil {
+		if err := o.messageTmpl.Execute(&buf, evt); err == nil {
 			messageText = buf.String()
 		} else {
 			o.logger.Warn("message template execution failed", "error", err)

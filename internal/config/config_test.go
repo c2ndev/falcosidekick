@@ -61,7 +61,7 @@ func TestDefaultUIFromConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.False(t, cfg.UI.Enabled)
-	assert.Equal(t, "memory", cfg.UI.Backend)
+	assert.Equal(t, "inmemory", cfg.UI.EventSource)
 }
 
 func TestDefaultTLSFromConfig(t *testing.T) {

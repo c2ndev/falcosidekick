@@ -22,66 +22,87 @@ import (
 
 	"github.com/mitchellh/mapstructure"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
-	"github.com/falcosecurity/falcosidekick/internal/outputs/sdk"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
+	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
 const defaultMethod = "POST"
 
 type config struct {
-	URL            string `mapstructure:"url"`
-	Method         string `mapstructure:"method"`
-	sdk.HTTPConfig `mapstructure:",squash"`
+	URL               string `mapstructure:"url"`
+	Method            string `mapstructure:"method"`
+	shared.HTTPConfig `mapstructure:",squash"`
 }
 
-// Type describes the webhook output for the catalog.
-var Type = domain.OutputType{
+// OutputType describes the webhook output for the catalog.
+var OutputType = output.Type{
 	New:      createOutput,
 	Name:     "webhook",
 	Category: "webhook",
-	Schema: domain.OutputSchema{
-		Fields: append([]domain.SchemaField{
+	Schema: output.Schema{
+		Fields: append([]output.SchemaField{
 			{Name: "url", Type: "string", Required: true, Label: "URL"},
 			{Name: "method", Type: "enum", Values: []string{"POST", "PUT"}, Default: "POST", Label: "HTTP Method"},
-		}, sdk.HTTPConfigSchemaFields()...),
+		}, shared.HTTPConfigSchemaFields()...),
 	},
 }
 
-type output struct {
-	sender *sdk.Sender
+type driver struct {
+	sender *shared.Sender
 	cfg    config
 }
 
-func createOutput(raw map[string]any, _ domain.OutputDeps) (domain.OutputDriver, error) {
+var validMethods = map[string]bool{"POST": true, "PUT": true}
+
+func (c *config) validate() utils.ValidationErrors {
+	var errs utils.ValidationErrors
+	errs.Merge("", c.HTTPConfig.Validate())
+	errs.Merge("url", shared.ValidateURL(c.URL))
+	if c.Method == "" {
+		c.Method = defaultMethod
+	} else if !validMethods[c.Method] {
+		errs.Add("method", fmt.Sprintf("must be POST or PUT, got %q", c.Method))
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
+
+func createOutput(raw map[string]any, _ output.Deps) (output.Driver, error) {
 	var cfg config
 	if err := mapstructure.Decode(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("webhook config: %w", err)
 	}
-	if cfg.URL == "" {
-		return nil, fmt.Errorf("webhook: url is required")
-	}
-	if cfg.Method == "" {
-		cfg.Method = defaultMethod
+	if errs := cfg.validate(); len(errs) > 0 {
+		return nil, fmt.Errorf("webhook: %s", errs.Error())
 	}
 
-	return &output{
+	sender, err := shared.NewSender("webhook", &cfg.HTTPConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	return &driver{
 		cfg:    cfg,
-		sender: sdk.NewSender("webhook", &cfg.HTTPConfig),
+		sender: sender,
 	}, nil
 }
 
-func (o *output) Name() string { return "webhook" }
+func (d *driver) Name() string { return "webhook" }
 
-func (o *output) Init(_ context.Context) error { return nil }
+func (d *driver) Init(_ context.Context) error { return nil }
 
 // Send delivers an event as JSON to the webhook address.
-func (o *output) Send(ctx context.Context, event *domain.Event) error {
-	return o.sender.SendJSON(ctx, o.cfg.Method, o.cfg.URL, event)
+func (d *driver) Send(ctx context.Context, evt *event.Event) error {
+	return d.sender.SendJSON(ctx, d.cfg.Method, d.cfg.URL, evt)
 }
 
 // HealthCheck verifies connectivity to the webhook address.
-func (o *output) HealthCheck(ctx context.Context) error {
-	return o.sender.HealthCheck(ctx, o.cfg.URL)
+func (d *driver) HealthCheck(ctx context.Context) error {
+	return d.sender.HealthCheck(ctx, d.cfg.URL)
 }
 
-func (o *output) Close() error { return nil }
+func (d *driver) Close() error { return nil }

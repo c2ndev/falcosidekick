@@ -41,6 +41,8 @@ linters:
     goconst:
       min-len: 2
       min-occurrences: 2
+    staticcheck:
+      checks: ["all", "-QF1008"]
     gocritic:
       enabled-tags:
         - diagnostic

@@ -19,7 +19,7 @@
 package all
 
 import (
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/alertmanager"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/elasticsearch"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/inmemory"
@@ -30,14 +30,14 @@ import (
 )
 
 // Types returns all registered output types.
-func Types() []domain.OutputType {
-	return []domain.OutputType{
-		alertmanager.Type,
-		elasticsearch.Type,
-		kafka.Type,
-		loki.Type,
-		inmemory.Type,
-		slack.Type,
-		webhook.Type,
+func Types() []output.Type {
+	return []output.Type{
+		alertmanager.OutputType,
+		elasticsearch.OutputType,
+		kafka.OutputType,
+		loki.OutputType,
+		inmemory.OutputType,
+		slack.OutputType,
+		webhook.OutputType,
 	}
 }

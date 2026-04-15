@@ -21,19 +21,21 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 )
 
 func TestBatchingConfigValidation(t *testing.T) {
 	tests := []struct {
 		name    string
-		cfg     BatchingConfig
+		cfg     output.BatchingConfig
 		wantErr bool
 	}{
-		{"disabled skips validation", BatchingConfig{Enabled: false}, false},
-		{"valid enabled", BatchingConfig{Enabled: true, BatchSize: 100, FlushInterval: time.Second}, false},
-		{"zero batch size", BatchingConfig{Enabled: true, BatchSize: 0, FlushInterval: time.Second}, true},
-		{"negative batch size", BatchingConfig{Enabled: true, BatchSize: -1, FlushInterval: time.Second}, true},
-		{"zero flush interval", BatchingConfig{Enabled: true, BatchSize: 100, FlushInterval: 0}, true},
+		{"disabled skips validation", output.BatchingConfig{Enabled: false}, false},
+		{"valid enabled", output.BatchingConfig{Enabled: true, BatchSize: 100, FlushInterval: time.Second}, false},
+		{"zero batch size", output.BatchingConfig{Enabled: true, BatchSize: 0, FlushInterval: time.Second}, true},
+		{"negative batch size", output.BatchingConfig{Enabled: true, BatchSize: -1, FlushInterval: time.Second}, true},
+		{"zero flush interval", output.BatchingConfig{Enabled: true, BatchSize: 100, FlushInterval: 0}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

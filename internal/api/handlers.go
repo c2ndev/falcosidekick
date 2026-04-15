@@ -21,28 +21,29 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/version"
 )
 
 func (s *Server) handlePostEvent(c fiber.Ctx) error {
-	var event domain.Event
-	if err := c.Bind().JSON(&event); err != nil {
+	var evt event.Event
+	if err := c.Bind().JSON(&evt); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "invalid JSON: " + err.Error(),
 		})
 	}
 
-	if err := event.Validate(); err != nil {
+	if err := evt.Validate(); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": err.Error(),
 		})
 	}
 
 	if s.metrics != nil {
-		s.metrics.RecordInput(context.Background(), event.Source, "accepted")
+		s.metrics.RecordInput(context.Background(), evt.Source, "accepted")
 	}
 
-	s.pipeline.ProcessEvent(context.Background(), &event)
+	s.pipeline.ProcessEvent(context.Background(), &evt)
 	return c.SendStatus(fiber.StatusOK)
 }
 
@@ -50,4 +51,45 @@ func (s *Server) handleGetHealthz(c fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
 		"status": "ok",
 	})
+}
+
+func (s *Server) handleGetVersion(c fiber.Ctx) error {
+	return c.Status(fiber.StatusOK).JSON(version.GetInfo())
+}
+
+func (s *Server) handleGetConfig(c fiber.Ctx) error {
+	if s.database == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "database not configured",
+		})
+	}
+
+	entry, err := s.database.GetConfig(c.Context())
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "read config: " + err.Error(),
+		})
+	}
+	if entry == nil {
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(entry)
+}
+
+func (s *Server) handleGetOutputs(c fiber.Ctx) error {
+	if s.database == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "database not configured",
+		})
+	}
+
+	entries, err := s.database.GetOutputConfigs(c.Context())
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "read outputs: " + err.Error(),
+		})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(entries)
 }

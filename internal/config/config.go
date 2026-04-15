@@ -17,44 +17,27 @@
 package config
 
 import (
-	"fmt"
-
-	"github.com/falcosecurity/falcosidekick/internal/logging"
+	"github.com/falcosecurity/falcosidekick/internal/domain/core"
 	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
 // Config holds the complete falcosidekick configuration.
 type Config struct {
-	TLS           *TLSConfig        `mapstructure:"tls,omitempty"`
-	LogFormat     logging.LogFormat `mapstructure:"log_format"`
-	LogLevel      logging.LogLevel  `mapstructure:"log_level"`
-	ListenAddress string            `mapstructure:"listen_address"`
-	UI            UIConfig          `mapstructure:"ui"`
-	Pipeline      PipelineConfig    `mapstructure:"pipeline"`
-	ListenPort    int               `mapstructure:"listen_port"`
-	Debug         bool              `mapstructure:"debug"`
+	core.Config `mapstructure:",squash"`
+	Pipeline    PipelineConfig `mapstructure:"pipeline"`
 }
 
-// Validate checks the configuration for errors. Calls each sub-config's
-// own Validate method. Returns all errors found.
+// Validate checks the configuration for errors.
 func (cfg *Config) Validate() utils.ValidationErrors {
 	var errs utils.ValidationErrors
 
-	if cfg.ListenPort < 1 || cfg.ListenPort > 65535 {
-		errs.Add("listen_port", fmt.Sprintf("must be 1-65535, got %d", cfg.ListenPort))
-	}
-
-	errs.Merge("", cfg.LogLevel.Validate())
-
-	errs.Merge("", cfg.LogFormat.Validate())
+	errs.Merge("", cfg.Config.Validate())
 
 	if cfg.TLS != nil {
-		errs.Merge("tls", cfg.TLS.Validate())
+		errs.Merge("tls", validateTLS(cfg.TLS))
 	}
 
 	errs.Merge("pipeline", cfg.Pipeline.Validate())
-
-	errs.Merge("ui", cfg.UI.Validate())
 
 	if len(errs) > 0 {
 		return errs

@@ -20,14 +20,15 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/falcosecurity/falcosidekick/internal/domain/core"
 )
 
 func TestValidateTLSServerEnabled(t *testing.T) {
 	cfg := loadDefaults(t)
-	cfg.TLS = &TLSConfig{
-		Server: TLSServerConfig{
-			Enabled: true,
-		},
+	cfg.TLS = &core.TLSConfig{
+
+		Enabled: true,
 	}
 
 	errs := cfg.Validate()
@@ -36,12 +37,11 @@ func TestValidateTLSServerEnabled(t *testing.T) {
 
 func TestValidateTLSServerWithFiles(t *testing.T) {
 	cfg := loadDefaults(t)
-	cfg.TLS = &TLSConfig{
-		Server: TLSServerConfig{
-			Enabled:  true,
-			CertFile: "/nonexistent/cert.pem",
-			KeyFile:  "/nonexistent/key.pem",
-		},
+	cfg.TLS = &core.TLSConfig{
+
+		Enabled:  true,
+		CertFile: "/nonexistent/cert.pem",
+		KeyFile:  "/nonexistent/key.pem",
 	}
 
 	errs := cfg.Validate()
@@ -51,46 +51,8 @@ func TestValidateTLSServerWithFiles(t *testing.T) {
 
 func TestValidateTLSDisabledPassesWithoutFiles(t *testing.T) {
 	cfg := loadDefaults(t)
-	cfg.TLS = &TLSConfig{
-		Server: TLSServerConfig{Enabled: false},
-	}
-
-	errs := cfg.Validate()
-	assert.Empty(t, errs)
-}
-
-func TestValidateTLSClientMutualTLS(t *testing.T) {
-	cfg := loadDefaults(t)
-	cfg.TLS = &TLSConfig{
-		Client: TLSClientConfig{
-			MutualTLS: true,
-		},
-	}
-
-	errs := cfg.Validate()
-	assert.NotEmpty(t, errs, "mutual TLS without cert/key/ca should fail")
-}
-
-func TestValidateTLSClientMutualTLSWithNonexistentFiles(t *testing.T) {
-	cfg := loadDefaults(t)
-	cfg.TLS = &TLSConfig{
-		Client: TLSClientConfig{
-			MutualTLS:  true,
-			CertFile:   "/nonexistent/client.pem",
-			KeyFile:    "/nonexistent/client-key.pem",
-			CACertFile: "/nonexistent/ca.pem",
-		},
-	}
-
-	errs := cfg.Validate()
-	assert.NotEmpty(t, errs, "client mutual TLS with nonexistent files should fail")
-	assert.GreaterOrEqual(t, len(errs), 3)
-}
-
-func TestValidateTLSClientDisabledPasses(t *testing.T) {
-	cfg := loadDefaults(t)
-	cfg.TLS = &TLSConfig{
-		Client: TLSClientConfig{MutualTLS: false},
+	cfg.TLS = &core.TLSConfig{
+		Enabled: false,
 	}
 
 	errs := cfg.Validate()
@@ -99,19 +61,18 @@ func TestValidateTLSClientDisabledPasses(t *testing.T) {
 
 func TestValidateTLSServerMutualTLSRequiresCA(t *testing.T) {
 	cfg := loadDefaults(t)
-	cfg.TLS = &TLSConfig{
-		Server: TLSServerConfig{
-			Enabled:   true,
-			MutualTLS: true,
-			CertFile:  "/nonexistent/cert.pem",
-			KeyFile:   "/nonexistent/key.pem",
-		},
+	cfg.TLS = &core.TLSConfig{
+
+		Enabled:   true,
+		MutualTLS: true,
+		CertFile:  "/nonexistent/cert.pem",
+		KeyFile:   "/nonexistent/key.pem",
 	}
 
 	errs := cfg.Validate()
 	found := false
 	for _, e := range errs {
-		if e.Field == "tls.server.cacertfile" || e.Field == "server.cacertfile" || e.Field == "cacertfile" {
+		if e.Field == "tls.ca_file" || e.Field == "ca_file" {
 			found = true
 			break
 		}

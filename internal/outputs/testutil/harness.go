@@ -26,7 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 )
 
 // OutputTestCase defines a test scenario for an output.
@@ -41,7 +41,7 @@ type OutputTestCase struct {
 }
 
 // RunOutputTests executes test cases against an output type using a mock HTTP server.
-func RunOutputTests(t *testing.T, outputType domain.OutputType, cases []OutputTestCase) {
+func RunOutputTests(t *testing.T, outputType output.Type, cases []OutputTestCase) {
 	t.Helper()
 
 	for _, tc := range cases {
@@ -74,12 +74,12 @@ func RunOutputTests(t *testing.T, outputType domain.OutputType, cases []OutputTe
 				}
 			}
 
-			output, err := outputType.New(cfg, domain.OutputDeps{})
+			driver, err := outputType.New(cfg, output.Deps{})
 			require.NoError(t, err)
 
-			require.NoError(t, output.Init(context.Background()))
+			require.NoError(t, driver.Init(context.Background()))
 
-			err = output.Send(context.Background(), CreateValidEvent())
+			err = driver.Send(context.Background(), CreateValidEvent())
 
 			if tc.ExpectError {
 				assert.Error(t, err)

@@ -26,14 +26,14 @@ import (
 )
 
 func TestResolveTopicDefault(t *testing.T) {
-	o := &output{cfg: config{Topic: "default-topic"}}
+	o := &driver{cfg: config{Topic: "default-topic"}}
 	event := testutil.CreateValidEvent()
 
 	assert.Equal(t, "default-topic", o.resolveTopic(event))
 }
 
 func TestResolveTopicFromField(t *testing.T) {
-	o := &output{cfg: config{Topic: "default", TopicField: "k8s.ns.name"}}
+	o := &driver{cfg: config{Topic: "default", TopicField: "k8s.ns.name"}}
 	event := testutil.CreateValidEvent()
 	event.OutputFields["k8s.ns.name"] = "production"
 
@@ -41,14 +41,14 @@ func TestResolveTopicFromField(t *testing.T) {
 }
 
 func TestResolveTopicFieldMissingFallsBack(t *testing.T) {
-	o := &output{cfg: config{Topic: "default", TopicField: "nonexistent"}}
+	o := &driver{cfg: config{Topic: "default", TopicField: "nonexistent"}}
 	event := testutil.CreateValidEvent()
 
 	assert.Equal(t, "default", o.resolveTopic(event))
 }
 
 func TestResolveTopicFieldNonStringFallsBack(t *testing.T) {
-	o := &output{cfg: config{Topic: "default", TopicField: "count"}}
+	o := &driver{cfg: config{Topic: "default", TopicField: "count"}}
 	event := testutil.CreateValidEvent()
 	event.OutputFields["count"] = 42
 
@@ -56,14 +56,14 @@ func TestResolveTopicFieldNonStringFallsBack(t *testing.T) {
 }
 
 func TestResolveKeyStatic(t *testing.T) {
-	o := &output{cfg: config{MessageKey: "static-key"}}
+	o := &driver{cfg: config{MessageKey: "static-key"}}
 	event := testutil.CreateValidEvent()
 
 	assert.Equal(t, []byte("static-key"), o.resolveKey(event))
 }
 
 func TestResolveKeyFromField(t *testing.T) {
-	o := &output{cfg: config{MessageKeyField: "hostname"}}
+	o := &driver{cfg: config{MessageKeyField: "hostname"}}
 	event := testutil.CreateValidEvent()
 	event.OutputFields["hostname"] = testutil.CreateValidEvent().Hostname
 
@@ -71,7 +71,7 @@ func TestResolveKeyFromField(t *testing.T) {
 }
 
 func TestResolveKeyFieldOverridesStatic(t *testing.T) {
-	o := &output{cfg: config{MessageKey: "static", MessageKeyField: "hostname"}}
+	o := &driver{cfg: config{MessageKey: "static", MessageKeyField: "hostname"}}
 	event := testutil.CreateValidEvent()
 	event.OutputFields["hostname"] = testutil.CreateValidEvent().Hostname
 
@@ -79,7 +79,7 @@ func TestResolveKeyFieldOverridesStatic(t *testing.T) {
 }
 
 func TestResolveKeyNilWhenUnconfigured(t *testing.T) {
-	o := &output{cfg: config{}}
+	o := &driver{cfg: config{}}
 	event := testutil.CreateValidEvent()
 
 	assert.Nil(t, o.resolveKey(event))
@@ -101,7 +101,7 @@ func TestBuildHeadersIncludesExpectedKeys(t *testing.T) {
 }
 
 func TestBuildRecordCombinesAllFields(t *testing.T) {
-	o := &output{cfg: config{
+	o := &driver{cfg: config{
 		Topic:           "events",
 		MessageKey:      "my-key",
 		MessageKeyField: "",

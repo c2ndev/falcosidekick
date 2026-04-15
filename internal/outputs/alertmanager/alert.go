@@ -20,8 +20,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
-	"github.com/falcosecurity/falcosidekick/internal/outputs/sdk"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
 )
 
 // alertPayload matches the Alertmanager v2 API POST /api/v2/alerts schema.
@@ -34,59 +34,59 @@ type alertPayload struct {
 	GeneratorURL string            `json:"generatorURL,omitempty"`
 }
 
-func (o *output) buildAlert(event *domain.Event) alertPayload {
+func (d *driver) buildAlert(evt *event.Event) alertPayload {
 	labels := map[string]string{
-		"alertname": sdk.SanitizeLabel(event.Rule),
-		"source":    event.Source,
-		"rule":      sdk.SanitizeLabel(event.Rule),
-		"priority":  string(event.Priority),
-		"severity":  o.resolveSeverity(event.Priority),
+		"alertname": shared.SanitizeLabel(evt.Rule),
+		"source":    evt.Source,
+		"rule":      shared.SanitizeLabel(evt.Rule),
+		"priority":  string(evt.Priority),
+		"severity":  d.resolveSeverity(evt.Priority),
 	}
 
-	if event.Hostname != "" {
-		labels["hostname"] = event.Hostname
+	if evt.Hostname != "" {
+		labels["hostname"] = evt.Hostname
 	}
 
-	if tags := sdk.FormatTags(event.Tags, ","); tags != "" {
+	if tags := shared.FormatTags(evt.Tags, ","); tags != "" {
 		labels["tags"] = tags
 	}
 
-	for k, v := range o.cfg.ExtraLabels {
-		labels[sdk.SanitizeLabel(k)] = sdk.SanitizeLabel(v)
+	for k, v := range d.cfg.ExtraLabels {
+		labels[shared.SanitizeLabel(k)] = shared.SanitizeLabel(v)
 	}
 
 	annotations := map[string]string{
-		"info":        event.Output,
-		"description": event.Output,
-		"summary":     event.Rule,
+		"info":        evt.Output,
+		"description": evt.Output,
+		"summary":     evt.Rule,
 	}
-	for k, v := range o.cfg.ExtraAnnotations {
+	for k, v := range d.cfg.ExtraAnnotations {
 		annotations[k] = v
 	}
 
 	alert := alertPayload{
 		Labels:      labels,
 		Annotations: annotations,
-		StartsAt:    event.Time.UTC().Format(time.RFC3339),
+		StartsAt:    evt.Time.UTC().Format(time.RFC3339),
 	}
 
-	if o.cfg.GeneratorURL != "" {
-		alert.GeneratorURL = o.cfg.GeneratorURL
+	if d.cfg.GeneratorURL != "" {
+		alert.GeneratorURL = d.cfg.GeneratorURL
 	}
 
-	if o.cfg.ExpiresAfter > 0 {
-		alert.EndsAt = event.Time.Add(time.Duration(o.cfg.ExpiresAfter) * time.Second).UTC().Format(time.RFC3339)
+	if d.cfg.ExpiresAfter > 0 {
+		alert.EndsAt = evt.Time.Add(time.Duration(d.cfg.ExpiresAfter) * time.Second).UTC().Format(time.RFC3339)
 	}
 
 	return alert
 }
 
-func (o *output) resolveSeverity(priority domain.Priority) string {
+func (d *driver) resolveSeverity(priority event.Priority) string {
 	p := strings.ToLower(string(priority))
-	if o.cfg.CustomSeverityMap != nil {
-		if s, ok := o.cfg.CustomSeverityMap[p]; ok {
+	if d.cfg.CustomSeverityMap != nil {
+		if s, ok := d.cfg.CustomSeverityMap[p]; ok {
 			return s
 		}
 	}
-	return sdk.PrioritySeverity(priority)
+	return shared.PrioritySeverity(priority)
 }

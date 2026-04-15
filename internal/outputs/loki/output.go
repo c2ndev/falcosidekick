@@ -25,59 +25,79 @@ import (
 
 	"github.com/mitchellh/mapstructure"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
-	"github.com/falcosecurity/falcosidekick/internal/outputs/sdk"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
+	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
 const defaultEndpoint = "/loki/api/v1/push"
 
 type config struct {
-	URL            string `mapstructure:"url"`
-	Tenant         string `mapstructure:"tenant"`
-	Endpoint       string `mapstructure:"endpoint"`
-	LogFormat      string `mapstructure:"log_format"`
-	ExtraLabels    string `mapstructure:"extra_labels"`
-	sdk.HTTPConfig `mapstructure:",squash"`
+	URL               string `mapstructure:"url"`
+	Tenant            string `mapstructure:"tenant"`
+	Endpoint          string `mapstructure:"endpoint"`
+	LogFormat         string `mapstructure:"log_format"`
+	ExtraLabels       string `mapstructure:"extra_labels"`
+	shared.HTTPConfig `mapstructure:",squash"`
 }
 
-// Type describes the Loki output for the catalog.
-var Type = domain.OutputType{
+// OutputType describes the Loki output for the catalog.
+var OutputType = output.Type{
 	New:      createOutput,
 	Name:     "loki",
 	Category: "logs",
-	Schema: domain.OutputSchema{
-		Fields: append([]domain.SchemaField{
+	Schema: output.Schema{
+		Fields: append([]output.SchemaField{
 			{Name: "url", Type: "string", Required: true, Label: "URL"},
 			{Name: "tenant", Type: "string", Label: "Tenant (X-Scope-OrgID)"},
 			{Name: "log_format", Type: "enum", Values: []string{"json", "text"}, Default: "json", Label: "Log Format"},
 			{Name: "extra_labels", Type: "string", Label: "Extra Labels (comma-separated field names)"},
-		}, sdk.HTTPConfigSchemaFields()...),
+		}, shared.HTTPConfigSchemaFields()...),
 	},
 }
 
-type output struct {
-	sender      *sdk.Sender
+type driver struct {
+	sender      *shared.Sender
 	logger      *slog.Logger
 	cfg         config
 	extraLabels []string
 }
 
-func createOutput(raw map[string]any, deps domain.OutputDeps) (domain.OutputDriver, error) {
+var validLogFormats = map[string]bool{formatJSON: true, "text": true}
+
+func (c *config) validate() utils.ValidationErrors {
+	var errs utils.ValidationErrors
+	errs.Merge("", c.HTTPConfig.Validate())
+	errs.Merge("url", shared.ValidateURL(c.URL))
+	errs.Merge("endpoint", shared.ValidateEndpoint(c.Endpoint))
+	if c.Endpoint == "" {
+		c.Endpoint = defaultEndpoint
+	}
+	if c.LogFormat == "" {
+		c.LogFormat = formatJSON
+	} else if !validLogFormats[c.LogFormat] {
+		errs.Add("log_format", fmt.Sprintf("must be json/text, got %q", c.LogFormat))
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
+
+func createOutput(raw map[string]any, deps output.Deps) (output.Driver, error) {
 	var cfg config
 	if err := mapstructure.Decode(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("loki config: %w", err)
 	}
-	if cfg.URL == "" {
-		return nil, fmt.Errorf("loki: url is required")
-	}
-	if cfg.Endpoint == "" {
-		cfg.Endpoint = defaultEndpoint
-	}
-	if cfg.LogFormat == "" {
-		cfg.LogFormat = formatJSON
+	if errs := cfg.validate(); len(errs) > 0 {
+		return nil, fmt.Errorf("loki: %s", errs.Error())
 	}
 
-	sender := sdk.NewSender("loki", &cfg.HTTPConfig)
+	sender, err := shared.NewSender("loki", &cfg.HTTPConfig)
+	if err != nil {
+		return nil, err
+	}
 	if cfg.Tenant != "" {
 		sender.SetHeader("X-Scope-OrgID", cfg.Tenant)
 	}
@@ -92,39 +112,39 @@ func createOutput(raw map[string]any, deps domain.OutputDeps) (domain.OutputDriv
 		}
 	}
 
-	return &output{
+	return &driver{
 		cfg:         cfg,
 		sender:      sender,
-		logger:      sdk.ResolveLogger(deps.Logger, "loki"),
+		logger:      shared.ResolveLogger(deps.Logger, "loki"),
 		extraLabels: extraLabels,
 	}, nil
 }
 
-func (o *output) Name() string { return "loki" }
+func (o *driver) Name() string { return "loki" }
 
-func (o *output) Init(_ context.Context) error { return nil }
+func (o *driver) Init(_ context.Context) error { return nil }
 
 // Send delivers a single event to Loki with gzip compression.
-func (o *output) Send(ctx context.Context, event *domain.Event) error {
-	payload := buildPayload(o.cfg.LogFormat, o.extraLabels, event)
+func (o *driver) Send(ctx context.Context, evt *event.Event) error {
+	payload := buildPayload(o.cfg.LogFormat, o.extraLabels, evt)
 	return o.sender.SendGzipJSON(ctx, http.MethodPost, o.pushURL(), payload)
 }
 
 // SendBatch delivers multiple events to Loki in a single push request.
 // Events with identical label sets are grouped into the same stream.
 // Entries within each stream are ordered by timestamp.
-func (o *output) SendBatch(ctx context.Context, events []*domain.Event) error {
+func (o *driver) SendBatch(ctx context.Context, events []*event.Event) error {
 	payload := buildBatchPayload(o.cfg.LogFormat, o.extraLabels, events)
 	return o.sender.SendGzipJSON(ctx, http.MethodPost, o.pushURL(), payload)
 }
 
 // HealthCheck verifies connectivity to Loki.
-func (o *output) HealthCheck(ctx context.Context) error {
+func (o *driver) HealthCheck(ctx context.Context) error {
 	return o.sender.HealthCheck(ctx, o.cfg.URL+"/ready")
 }
 
-func (o *output) Close() error { return nil }
+func (o *driver) Close() error { return nil }
 
-func (o *output) pushURL() string {
+func (o *driver) pushURL() string {
 	return o.cfg.URL + o.cfg.Endpoint
 }

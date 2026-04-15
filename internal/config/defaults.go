@@ -25,12 +25,13 @@ import (
 func applyDefaults(v *viper.Viper) {
 	v.SetDefault("listen_address", "0.0.0.0")
 	v.SetDefault("listen_port", 2801)
-	v.SetDefault("debug", false)
 	v.SetDefault("log_level", "info")
 	v.SetDefault("log_format", "text")
 
 	v.SetDefault("ui.enabled", false)
-	v.SetDefault("ui.backend", "memory")
+	v.SetDefault("ui.event_source", "inmemory")
+
+	v.SetDefault("database.backend", "inmemory")
 
 	v.SetDefault("pipeline.queue_size", 1000)
 	v.SetDefault("pipeline.workers", 2)

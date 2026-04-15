@@ -24,76 +24,127 @@ import (
 	"github.com/mitchellh/mapstructure"
 	"github.com/twmb/franz-go/pkg/kgo"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
-	"github.com/falcosecurity/falcosidekick/internal/outputs/sdk"
+	"github.com/falcosecurity/falcosidekick/internal/domain/core"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
+	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
 type config struct {
-	sdk.TLSConfig   `mapstructure:",squash"`
-	ClientID        string   `mapstructure:"client_id"`
-	Topic           string   `mapstructure:"topic"`
-	TopicField      string   `mapstructure:"topic_field"`
-	MessageKey      string   `mapstructure:"message_key"`
-	MessageKeyField string   `mapstructure:"message_key_field"`
-	SASL            string   `mapstructure:"sasl"`
-	Username        string   `mapstructure:"username"`
-	Password        string   `mapstructure:"password"`
-	Compression     string   `mapstructure:"compression"`
-	Balancer        string   `mapstructure:"balancer"`
-	RequiredACKs    string   `mapstructure:"required_acks"`
-	Brokers         []string `mapstructure:"brokers"`
-	TLSEnabled      bool     `mapstructure:"tls_enabled"`
-	Async           bool     `mapstructure:"async"`
-	TopicCreation   bool     `mapstructure:"auto_create_topic"`
+	Auth            kafkaAuth              `mapstructure:"auth"`
+	Topic           string                 `mapstructure:"topic"`
+	TopicField      string                 `mapstructure:"topic_field"`
+	MessageKey      string                 `mapstructure:"message_key"`
+	MessageKeyField string                 `mapstructure:"message_key_field"`
+	TLS             shared.TLSClientConfig `mapstructure:"tls"`
+	Producer        kafkaProducer          `mapstructure:"producer"`
+	Brokers         []string               `mapstructure:"brokers"`
+	TLSEnabled      bool                   `mapstructure:"tls_enabled"`
 }
 
-// Type describes the Kafka output for the catalog.
-var Type = domain.OutputType{
+type kafkaAuth struct {
+	SASL     string `mapstructure:"sasl"`
+	Username string `mapstructure:"username"`
+	Password string `mapstructure:"password"`
+}
+
+type kafkaProducer struct {
+	Compression   string `mapstructure:"compression"`
+	Balancer      string `mapstructure:"balancer"`
+	RequiredACKs  string `mapstructure:"required_acks"`
+	ClientID      string `mapstructure:"client_id"`
+	Async         bool   `mapstructure:"async"`
+	TopicCreation bool   `mapstructure:"auto_create_topic"`
+}
+
+// OutputType describes the Kafka output for the catalog.
+var OutputType = output.Type{
 	New:      createOutput,
 	Name:     "kafka",
 	Category: "queue",
-	Schema: domain.OutputSchema{
-		Fields: []domain.SchemaField{
+	Schema: output.Schema{
+		Fields: append([]output.SchemaField{
 			{Name: "brokers", Type: "string[]", Required: true, Label: "Broker addresses"},
 			{Name: "topic", Type: "string", Required: true, Label: "Default topic"},
 			{Name: "topic_field", Type: "string", Label: "Topic from event field (overrides default)"},
 			{Name: "message_key", Type: "string", Label: "Static message key (for partition affinity)"},
-			{Name: "message_key_field", Type: "string", Label: "Message key from event field (e.g., hostname, rule)"},
-			{Name: "sasl", Type: "enum", Values: []string{"", "plain", "scram_sha256", "scram_sha512"}, Label: "SASL Mechanism"},
-			{Name: "username", Type: "string", Label: "Username"},
-			{Name: "password", Type: "string", Secret: true, Label: "Password"},
+			{Name: "message_key_field", Type: "string", Label: "Message key from event field"},
 			{Name: "tls_enabled", Type: "bool", Default: false, Label: "Enable TLS"},
-			{Name: "insecure_skip_verify", Type: "bool", Default: false, Label: "Skip TLS Certificate Verification"},
-			{Name: "tls_ca", Type: "string", Label: "CA Certificate File"},
-			{Name: "tls_cert", Type: "string", Label: "Client Certificate File"},
-			{Name: "tls_key", Type: "string", Secret: true, Label: "Client Key File"},
-			{Name: "compression", Type: "enum", Values: []string{"none", "gzip", "snappy", "lz4", "zstd"}, Default: "none", Label: "Compression"},
-			{Name: "balancer", Type: "enum", Values: []string{"", "round_robin", "least_backup", "sticky"}, Default: "", Label: "Partition Balancer"},
-			{Name: "required_acks", Type: "enum", Values: []string{"all", "one", "none"}, Default: "all", Label: "Required ACKs"},
-			{Name: "client_id", Type: "string", Label: "Client ID"},
-			{Name: "async", Type: "bool", Default: false, Label: "Async Produce"},
-			{Name: "auto_create_topic", Type: "bool", Default: false, Label: "Allow Auto Topic Creation"},
-		},
+			{Name: "auth.sasl", Type: "enum", Values: []string{"", "plain", "scram_sha256", "scram_sha512"}, Label: "SASL Mechanism"},
+			{Name: "auth.username", Type: "string", Label: "SASL Username"},
+			{Name: "auth.password", Type: "string", Secret: true, Label: "SASL Password"},
+			{Name: "producer.compression", Type: "enum", Values: []string{"none", "gzip", "snappy", "lz4", "zstd"}, Default: "none", Label: "Compression"},
+			{Name: "producer.balancer", Type: "enum", Values: []string{"", "round_robin", "least_backup", "sticky"}, Default: "", Label: "Partition Balancer"},
+			{Name: "producer.required_acks", Type: "enum", Values: []string{"all", "one", "none"}, Default: "all", Label: "Required ACKs"},
+			{Name: "producer.client_id", Type: "string", Label: "Client ID"},
+			{Name: "producer.async", Type: "bool", Default: false, Label: "Async Produce"},
+			{Name: "producer.auto_create_topic", Type: "bool", Default: false, Label: "Allow Auto Topic Creation"},
+		}, shared.TLSClientSchemaFields()...),
 	},
 }
 
-type output struct {
+type driver struct {
 	client *kgo.Client
 	logger *slog.Logger
 	opts   []kgo.Opt
 	cfg    config
 }
 
-func createOutput(raw map[string]any, deps domain.OutputDeps) (domain.OutputDriver, error) {
+var (
+	validSASL         = map[string]bool{"": true, "plain": true, "scram_sha256": true, "scram_sha512": true}
+	validCompression  = map[string]bool{"": true, "none": true, "gzip": true, "snappy": true, "lz4": true, "zstd": true}
+	validBalancer     = map[string]bool{"": true, "round_robin": true, "least_backup": true, "sticky": true}
+	validRequiredACKs = map[string]bool{"": true, "all": true, "one": true, "none": true}
+)
+
+func (a *kafkaAuth) validate() utils.ValidationErrors {
+	var errs utils.ValidationErrors
+	if !validSASL[a.SASL] {
+		errs.Add("sasl", fmt.Sprintf("must be plain/scram_sha256/scram_sha512, got %q", a.SASL))
+	}
+	if a.SASL != "" && (a.Username == "" || a.Password == "") {
+		errs.Add("username", "username and password are required when sasl is set")
+	}
+	return errs
+}
+
+func (p *kafkaProducer) validate() utils.ValidationErrors {
+	var errs utils.ValidationErrors
+	if !validCompression[p.Compression] {
+		errs.Add("compression", fmt.Sprintf("must be none/gzip/snappy/lz4/zstd, got %q", p.Compression))
+	}
+	if !validBalancer[p.Balancer] {
+		errs.Add("balancer", fmt.Sprintf("must be round_robin/least_backup/sticky, got %q", p.Balancer))
+	}
+	if !validRequiredACKs[p.RequiredACKs] {
+		errs.Add("required_acks", fmt.Sprintf("must be all/one/none, got %q", p.RequiredACKs))
+	}
+	return errs
+}
+
+func (c *config) validate() utils.ValidationErrors {
+	var errs utils.ValidationErrors
+	errs.Merge("tls", c.TLS.Validate())
+	errs.Merge("brokers", shared.ValidateHosts(c.Brokers))
+	if c.Topic == "" {
+		errs.Add("topic", "is required")
+	}
+	errs.Merge("auth", c.Auth.validate())
+	errs.Merge("producer", c.Producer.validate())
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
+
+func createOutput(raw map[string]any, deps output.Deps) (output.Driver, error) {
 	var cfg config
 	if err := mapstructure.Decode(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("kafka config: %w", err)
 	}
-	if err := sdk.ValidateHosts("kafka", cfg.Brokers); err != nil {
-		return nil, err
-	}
-	if cfg.Topic == "" {
-		return nil, fmt.Errorf("kafka: topic is required")
+	if errs := cfg.validate(); len(errs) > 0 {
+		return nil, fmt.Errorf("kafka: %s", errs.Error())
 	}
 
 	opts, err := buildClientOpts(&cfg)
@@ -101,17 +152,17 @@ func createOutput(raw map[string]any, deps domain.OutputDeps) (domain.OutputDriv
 		return nil, err
 	}
 
-	return &output{
+	return &driver{
 		cfg:    cfg,
 		opts:   opts,
-		logger: sdk.ResolveLogger(deps.Logger, "kafka"),
+		logger: shared.ResolveLogger(deps.Logger, "kafka"),
 	}, nil
 }
 
-func (o *output) Name() string { return "kafka" }
+func (o *driver) Name() string { return "kafka" }
 
 // Init creates the Kafka client connection.
-func (o *output) Init(_ context.Context) error {
+func (o *driver) Init(_ context.Context) error {
 	client, err := kgo.NewClient(o.opts...)
 	if err != nil {
 		return fmt.Errorf("kafka client: %w", err)
@@ -121,16 +172,16 @@ func (o *output) Init(_ context.Context) error {
 }
 
 // Send delivers a single event to Kafka.
-func (o *output) Send(ctx context.Context, event *domain.Event) error {
+func (o *driver) Send(ctx context.Context, evt *event.Event) error {
 	if o.client == nil {
-		return fmt.Errorf("kafka: %w", domain.ErrNotReady)
+		return fmt.Errorf("kafka: %w", core.ErrNotReady)
 	}
-	record, err := o.buildRecord(event)
+	record, err := o.buildRecord(evt)
 	if err != nil {
 		return err
 	}
 
-	if o.cfg.Async {
+	if o.cfg.Producer.Async {
 		o.client.Produce(ctx, record, o.asyncCallback)
 		return nil
 	}
@@ -139,9 +190,9 @@ func (o *output) Send(ctx context.Context, event *domain.Event) error {
 }
 
 // SendBatch delivers multiple events to Kafka.
-func (o *output) SendBatch(ctx context.Context, events []*domain.Event) error {
+func (o *driver) SendBatch(ctx context.Context, events []*event.Event) error {
 	if o.client == nil {
-		return fmt.Errorf("kafka: %w", domain.ErrNotReady)
+		return fmt.Errorf("kafka: %w", core.ErrNotReady)
 	}
 	records := make([]*kgo.Record, 0, len(events))
 	for _, event := range events {
@@ -152,7 +203,7 @@ func (o *output) SendBatch(ctx context.Context, events []*domain.Event) error {
 		records = append(records, record)
 	}
 
-	if o.cfg.Async {
+	if o.cfg.Producer.Async {
 		for _, r := range records {
 			o.client.Produce(ctx, r, o.asyncCallback)
 		}
@@ -163,15 +214,15 @@ func (o *output) SendBatch(ctx context.Context, events []*domain.Event) error {
 }
 
 // HealthCheck tests the Kafka broker connection.
-func (o *output) HealthCheck(ctx context.Context) error {
+func (o *driver) HealthCheck(ctx context.Context) error {
 	if o.client == nil {
-		return fmt.Errorf("kafka: %w", domain.ErrNotReady)
+		return fmt.Errorf("kafka: %w", core.ErrNotReady)
 	}
 	return o.client.Ping(ctx)
 }
 
 // Close shuts down the Kafka producer. franz-go flushes buffered records internally.
-func (o *output) Close() error {
+func (o *driver) Close() error {
 	if o.client != nil {
 		o.client.Close()
 	}
@@ -179,7 +230,7 @@ func (o *output) Close() error {
 }
 
 // asyncCallback handles produce results for async mode.
-func (o *output) asyncCallback(_ *kgo.Record, err error) {
+func (o *driver) asyncCallback(_ *kgo.Record, err error) {
 	if err != nil {
 		o.logger.Error("async produce failed", "error", err)
 	}

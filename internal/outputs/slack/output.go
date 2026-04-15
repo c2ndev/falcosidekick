@@ -26,8 +26,10 @@ import (
 
 	"github.com/mitchellh/mapstructure"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
-	"github.com/falcosecurity/falcosidekick/internal/outputs/sdk"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
+	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
 const (
@@ -38,24 +40,24 @@ const (
 )
 
 type config struct {
-	WebhookURL     string `mapstructure:"webhook_url"`
-	Channel        string `mapstructure:"channel"`
-	Footer         string `mapstructure:"footer"`
-	IconURL        string `mapstructure:"icon_url"`
-	IconEmoji      string `mapstructure:"icon_emoji"`
-	Username       string `mapstructure:"username"`
-	OutputFormat   string `mapstructure:"output_format"`
-	MessageFormat  string `mapstructure:"message_format"`
-	sdk.HTTPConfig `mapstructure:",squash"`
+	WebhookURL        string `mapstructure:"webhook_url"`
+	Channel           string `mapstructure:"channel"`
+	Footer            string `mapstructure:"footer"`
+	IconURL           string `mapstructure:"icon_url"`
+	IconEmoji         string `mapstructure:"icon_emoji"`
+	Username          string `mapstructure:"username"`
+	OutputFormat      string `mapstructure:"output_format"`
+	MessageFormat     string `mapstructure:"message_format"`
+	shared.HTTPConfig `mapstructure:",squash"`
 }
 
-// Type describes the Slack output for the catalog.
-var Type = domain.OutputType{
+// OutputType describes the Slack output for the catalog.
+var OutputType = output.Type{
 	New:      createOutput,
 	Name:     "slack",
 	Category: "chat",
-	Schema: domain.OutputSchema{
-		Fields: append([]domain.SchemaField{
+	Schema: output.Schema{
+		Fields: append([]output.SchemaField{
 			{Name: "webhook_url", Type: "string", Required: true, Label: "Webhook URL", Secret: true},
 			{Name: "channel", Type: "string", Label: "Channel"},
 			{Name: "username", Type: "string", Label: "Bot Username"},
@@ -64,36 +66,60 @@ var Type = domain.OutputType{
 			{Name: "output_format", Type: "enum", Values: []string{"all", "fields", "text"}, Default: "all", Label: "Output Format"},
 			{Name: "message_format", Type: "string", Label: "Message Template"},
 			{Name: "footer", Type: "string", Label: "Footer"},
-		}, sdk.HTTPConfigSchemaFields()...),
+		}, shared.HTTPConfigSchemaFields()...),
 	},
 }
 
-type output struct {
-	sender      *sdk.Sender
+type driver struct {
+	sender      *shared.Sender
 	logger      *slog.Logger
 	messageTmpl *template.Template
 	cfg         config
 }
 
-func createOutput(raw map[string]any, deps domain.OutputDeps) (domain.OutputDriver, error) {
+var validOutputFormats = map[string]bool{formatAll: true, formatFields: true, formatText: true}
+
+func (c *config) validate() utils.ValidationErrors {
+	var errs utils.ValidationErrors
+	errs.Merge("", c.HTTPConfig.Validate())
+	errs.Merge("webhook_url", shared.ValidateURL(c.WebhookURL))
+	if c.OutputFormat == "" {
+		c.OutputFormat = formatAll
+	} else if !validOutputFormats[c.OutputFormat] {
+		errs.Add("output_format", fmt.Sprintf("must be all/fields/text, got %q", c.OutputFormat))
+	}
+	if c.MessageFormat != "" {
+		if _, err := template.New("").Parse(c.MessageFormat); err != nil {
+			errs.Add("message_format", fmt.Sprintf("invalid Go template: %v", err))
+		}
+	}
+	if c.Footer == "" {
+		c.Footer = defaultFooter
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
+
+func createOutput(raw map[string]any, deps output.Deps) (output.Driver, error) {
 	var cfg config
 	if err := mapstructure.Decode(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("slack config: %w", err)
 	}
-	if cfg.WebhookURL == "" {
-		return nil, fmt.Errorf("slack: webhook_url is required")
-	}
-	if cfg.OutputFormat == "" {
-		cfg.OutputFormat = formatAll
-	}
-	if cfg.Footer == "" {
-		cfg.Footer = defaultFooter
+	if errs := cfg.validate(); len(errs) > 0 {
+		return nil, fmt.Errorf("slack: %s", errs.Error())
 	}
 
-	o := &output{
+	sender, err := shared.NewSender("slack", &cfg.HTTPConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	o := &driver{
 		cfg:    cfg,
-		sender: sdk.NewSender("slack", &cfg.HTTPConfig),
-		logger: sdk.ResolveLogger(deps.Logger, "slack"),
+		sender: sender,
+		logger: shared.ResolveLogger(deps.Logger, "slack"),
 	}
 
 	if cfg.MessageFormat != "" {
@@ -107,22 +133,22 @@ func createOutput(raw map[string]any, deps domain.OutputDeps) (domain.OutputDriv
 	return o, nil
 }
 
-func (o *output) Name() string { return "slack" }
+func (o *driver) Name() string { return "slack" }
 
-func (o *output) Init(_ context.Context) error { return nil }
+func (o *driver) Init(_ context.Context) error { return nil }
 
 // Send delivers an event as a Slack attachment.
 // Checks the response body because Slack returns HTTP 200 with error text on failure.
-func (o *output) Send(ctx context.Context, event *domain.Event) error {
-	return o.sender.SendJSONCheckBody(ctx, http.MethodPost, o.cfg.WebhookURL, o.buildPayload(event), checkSlackResponse)
+func (o *driver) Send(ctx context.Context, evt *event.Event) error {
+	return o.sender.SendJSONCheckBody(ctx, http.MethodPost, o.cfg.WebhookURL, o.buildPayload(evt), checkSlackResponse)
 }
 
 // HealthCheck verifies connectivity to the Slack webhook.
-func (o *output) HealthCheck(ctx context.Context) error {
+func (o *driver) HealthCheck(ctx context.Context) error {
 	return o.sender.HealthCheck(ctx, o.cfg.WebhookURL)
 }
 
-func (o *output) Close() error { return nil }
+func (o *driver) Close() error { return nil }
 
 // checkSlackResponse validates the Slack webhook response body.
 // Slack returns HTTP 200 with body "ok" on success, or error text like

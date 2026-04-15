@@ -27,7 +27,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 )
 
 func TestInitTemplateAlreadyExists(t *testing.T) {
@@ -41,7 +41,9 @@ func TestInitTemplateAlreadyExists(t *testing.T) {
 	driver, err := createOutput(map[string]any{
 		"url":                   server.URL,
 		"create_index_template": true,
-	}, domain.OutputDeps{})
+		"number_of_shards":      3,
+		"number_of_replicas":    1,
+	}, output.Deps{})
 	require.NoError(t, err)
 
 	require.NoError(t, driver.Init(context.Background()))
@@ -75,7 +77,7 @@ func TestInitTemplateCreated(t *testing.T) {
 		"create_index_template": true,
 		"number_of_shards":      5,
 		"number_of_replicas":    2,
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	require.NoError(t, err)
 
 	require.NoError(t, driver.Init(context.Background()))
@@ -112,7 +114,7 @@ func TestInitTemplateSkipped(t *testing.T) {
 	driver, err := createOutput(map[string]any{
 		"url":                   server.URL,
 		"create_index_template": false,
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	require.NoError(t, err)
 
 	require.NoError(t, driver.Init(context.Background()))

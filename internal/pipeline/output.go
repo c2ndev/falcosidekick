@@ -18,13 +18,13 @@ package pipeline
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
-	"github.com/falcosecurity/falcosidekick/internal/utils"
+	"github.com/falcosecurity/falcosidekick/internal/domain/core"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 )
 
 // OutputStatus holds observable state for the UI pipeline view.
@@ -40,47 +40,17 @@ type OutputStatus struct {
 	FailedTotal   int       `json:"failed_total"`
 }
 
-// OutputConfig holds per-output settings including delivery and priority.
-type OutputConfig struct {
-	MinPriority    domain.Priority      `mapstructure:"minimumpriority"`
-	CircuitBreaker CircuitBreakerConfig `mapstructure:"circuit_breaker"`
-	Retry          RetryConfig          `mapstructure:"retry"`
-	Batching       BatchingConfig       `mapstructure:"batching"`
-	QueueSize      int                  `mapstructure:"queue_size"`
-	Workers        int                  `mapstructure:"workers"`
-}
-
-// Validate checks output settings for errors.
-func (c *OutputConfig) Validate() utils.ValidationErrors {
-	var errs utils.ValidationErrors
-
-	if c.QueueSize <= 0 {
-		errs.Add("queue_size", fmt.Sprintf("must be positive, got %d", c.QueueSize))
-	}
-	if c.Workers <= 0 {
-		errs.Add("workers", fmt.Sprintf("must be positive, got %d", c.Workers))
-	}
-	errs.Merge("circuit_breaker", c.CircuitBreaker.Validate())
-	errs.Merge("retry", c.Retry.Validate())
-	errs.Merge("batching", c.Batching.Validate())
-
-	if len(errs) > 0 {
-		return errs
-	}
-	return nil
-}
-
 // Output is the complete runtime delivery unit for one output destination.
 // It wraps an OutputDriver with a queue, worker pool, retry, and circuit breaker.
 type Output struct {
 	lastError      atomic.Value
 	lastSuccess    atomic.Value
-	driver         domain.OutputDriver
-	batchSender    domain.BatchSender
-	metrics        domain.MetricsCollector
-	queue          chan *domain.Event
+	driver         output.Driver
+	batchSender    output.BatchSender
+	metrics        core.MetricsCollector
+	queue          chan *event.Event
 	circuitBreaker *CircuitBreaker
-	config         OutputConfig
+	config         output.Config
 	workerDone     sync.WaitGroup
 	sentTotal      atomic.Int64
 	droppedTotal   atomic.Int64
@@ -88,15 +58,15 @@ type Output struct {
 }
 
 // NewOutput creates a complete Output from a driver and configuration.
-func NewOutput(driver domain.OutputDriver, cfg *OutputConfig, metrics domain.MetricsCollector) *Output {
+func NewOutput(driver output.Driver, cfg *output.Config, metrics core.MetricsCollector) *Output {
 	o := &Output{
 		driver:         driver,
 		config:         *cfg,
-		queue:          make(chan *domain.Event, cfg.QueueSize),
+		queue:          make(chan *event.Event, cfg.QueueSize),
 		circuitBreaker: NewCircuitBreaker(cfg.CircuitBreaker),
 		metrics:        metrics,
 	}
-	if bs, ok := driver.(domain.BatchSender); ok && cfg.Batching.Enabled {
+	if bs, ok := driver.(output.BatchSender); ok && cfg.Batching != nil && cfg.Batching.Enabled {
 		o.batchSender = bs
 	}
 	o.lastSuccess.Store(time.Time{})
@@ -110,7 +80,7 @@ func (o *Output) Name() string {
 }
 
 // Driver returns the underlying OutputDriver.
-func (o *Output) Driver() domain.OutputDriver {
+func (o *Output) Driver() output.Driver {
 	return o.driver
 }
 
@@ -130,9 +100,9 @@ func (o *Output) Start(ctx context.Context) {
 }
 
 // Enqueue adds an event to the output queue. Drops the event if the queue is full.
-func (o *Output) Enqueue(event *domain.Event) {
+func (o *Output) Enqueue(evt *event.Event) {
 	select {
-	case o.queue <- event:
+	case o.queue <- evt:
 	default:
 		o.droppedTotal.Add(1)
 		if o.metrics != nil {

@@ -20,22 +20,22 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 )
 
 // Catalog holds all known output types.
 type Catalog struct {
-	types map[string]domain.OutputType
+	types map[string]output.Type
 	mu    sync.RWMutex
 }
 
 // New creates a Catalog from an explicit list of output types.
-func New(types []domain.OutputType) (*Catalog, error) {
+func New(types []output.Type) (*Catalog, error) {
 	if len(types) == 0 {
 		return nil, fmt.Errorf("catalog: at least one output type required")
 	}
 
-	c := &Catalog{types: make(map[string]domain.OutputType, len(types))}
+	c := &Catalog{types: make(map[string]output.Type, len(types))}
 	for _, t := range types {
 		if t.Name == "" {
 			return nil, fmt.Errorf("catalog: output type with empty name")
@@ -52,7 +52,7 @@ func New(types []domain.OutputType) (*Catalog, error) {
 }
 
 // Get returns an output type by name.
-func (c *Catalog) Get(name string) (domain.OutputType, bool) {
+func (c *Catalog) Get(name string) (output.Type, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	t, ok := c.types[name]
@@ -60,10 +60,10 @@ func (c *Catalog) Get(name string) (domain.OutputType, bool) {
 }
 
 // All returns all known output types.
-func (c *Catalog) All() []domain.OutputType {
+func (c *Catalog) All() []output.Type {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	result := make([]domain.OutputType, 0, len(c.types))
+	result := make([]output.Type, 0, len(c.types))
 	for _, t := range c.types {
 		result = append(result, t)
 	}
@@ -71,16 +71,16 @@ func (c *Catalog) All() []domain.OutputType {
 }
 
 // Create instantiates a configured output by name.
-func (c *Catalog) Create(name string, cfg map[string]any, deps domain.OutputDeps) (domain.OutputDriver, error) {
+func (c *Catalog) Create(name string, cfg map[string]any, deps output.Deps) (output.Driver, error) {
 	t, ok := c.Get(name)
 	if !ok {
 		return nil, fmt.Errorf("catalog: unknown output type %q", name)
 	}
-	output, err := t.New(cfg, deps)
+	driver, err := t.New(cfg, deps)
 	if err != nil {
 		return nil, fmt.Errorf("catalog: create %q: %w", name, err)
 	}
-	return output, nil
+	return driver, nil
 }
 
 // Names returns the names of all known output types.

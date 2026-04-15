@@ -27,20 +27,21 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
-	"github.com/falcosecurity/falcosidekick/internal/outputs/sdk"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
 
 func TestSlackCommonCases(t *testing.T) {
-	testutil.RunOutputTests(t, Type, []testutil.OutputTestCase{
+	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
 		{Name: "sends valid event", AddressField: "webhook_url"},
 		{Name: "returns error on server 500", AddressField: "webhook_url", MockStatus: http.StatusInternalServerError, ExpectError: true},
 	})
 }
 
 func TestSlackPayloadFormat(t *testing.T) {
-	testutil.RunOutputTests(t, Type, []testutil.OutputTestCase{
+	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
 		{
 			Name:         "sends attachment with priority color",
 			AddressField: "webhook_url",
@@ -89,12 +90,12 @@ func TestSlackPayloadFormat(t *testing.T) {
 }
 
 func TestSlackCreateValidation(t *testing.T) {
-	_, err := createOutput(map[string]any{}, domain.OutputDeps{})
+	_, err := createOutput(map[string]any{}, output.Deps{})
 	assert.Error(t, err, "missing webhook_url must fail")
 }
 
 func TestSlackMessageTemplate(t *testing.T) {
-	testutil.RunOutputTests(t, Type, []testutil.OutputTestCase{
+	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
 		{
 			Name:         "renders message template",
 			AddressField: "webhook_url",
@@ -136,32 +137,32 @@ func TestCheckSlackResponse(t *testing.T) {
 }
 
 func TestBuildPayloadMrkdwnIn(t *testing.T) {
-	o := &output{cfg: config{OutputFormat: formatText, Footer: defaultFooter}, logger: slog.Default()}
-	event := testutil.CreateValidEvent()
+	o := &driver{cfg: config{OutputFormat: formatText, Footer: defaultFooter}, logger: slog.Default()}
+	evt := testutil.CreateValidEvent()
 
-	payload := o.buildPayload(event)
+	payload := o.buildPayload(evt)
 	require.Len(t, payload.Attachments, 1)
 	assert.Contains(t, payload.Attachments[0].MrkdwnIn, "text")
 	assert.Contains(t, payload.Attachments[0].MrkdwnIn, "fallback")
 }
 
 func TestBuildPayloadIconEmoji(t *testing.T) {
-	o := &output{cfg: config{
+	o := &driver{cfg: config{
 		OutputFormat: formatText,
 		Footer:       defaultFooter,
 		IconEmoji:    ":ghost:",
 	}, logger: slog.Default()}
-	event := testutil.CreateValidEvent()
+	evt := testutil.CreateValidEvent()
 
-	payload := o.buildPayload(event)
+	payload := o.buildPayload(evt)
 	assert.Equal(t, ":ghost:", payload.IconEmoji)
 }
 
 func TestBuildPayloadFieldsOnlyFormat(t *testing.T) {
-	o := &output{cfg: config{OutputFormat: formatFields, Footer: defaultFooter}, logger: slog.Default()}
-	event := testutil.CreateValidEvent()
+	o := &driver{cfg: config{OutputFormat: formatFields, Footer: defaultFooter}, logger: slog.Default()}
+	evt := testutil.CreateValidEvent()
 
-	payload := o.buildPayload(event)
+	payload := o.buildPayload(evt)
 	require.Len(t, payload.Attachments, 1)
 
 	att := payload.Attachments[0]
@@ -170,63 +171,63 @@ func TestBuildPayloadFieldsOnlyFormat(t *testing.T) {
 }
 
 func TestBuildPayloadAllFormat(t *testing.T) {
-	o := &output{cfg: config{OutputFormat: formatAll, Footer: defaultFooter}, logger: slog.Default()}
-	event := testutil.CreateValidEvent()
+	o := &driver{cfg: config{OutputFormat: formatAll, Footer: defaultFooter}, logger: slog.Default()}
+	evt := testutil.CreateValidEvent()
 
-	payload := o.buildPayload(event)
+	payload := o.buildPayload(evt)
 	att := payload.Attachments[0]
 	assert.NotEmpty(t, att.Fields, "all format must include fields")
 	assert.NotEmpty(t, att.Text, "all format must include text body")
 }
 
 func TestBuildPayloadEveryPriorityHasColor(t *testing.T) {
-	o := &output{cfg: config{OutputFormat: formatText, Footer: defaultFooter}, logger: slog.Default()}
+	o := &driver{cfg: config{OutputFormat: formatText, Footer: defaultFooter}, logger: slog.Default()}
 
-	priorities := []domain.Priority{
-		domain.PriorityDebug, domain.PriorityInformational, domain.PriorityNotice,
-		domain.PriorityWarning, domain.PriorityError, domain.PriorityCritical,
-		domain.PriorityAlert, domain.PriorityEmergency,
+	priorities := []event.Priority{
+		event.PriorityDebug, event.PriorityInformational, event.PriorityNotice,
+		event.PriorityWarning, event.PriorityError, event.PriorityCritical,
+		event.PriorityAlert, event.PriorityEmergency,
 	}
 	for _, p := range priorities {
 		t.Run(string(p), func(t *testing.T) {
-			event := testutil.CreateValidEvent()
-			event.Priority = p
-			payload := o.buildPayload(event)
+			evt := testutil.CreateValidEvent()
+			evt.Priority = p
+			payload := o.buildPayload(evt)
 			color := payload.Attachments[0].Color
 			assert.NotEmpty(t, color, "priority %s must produce a color", p)
-			assert.Equal(t, sdk.PriorityColor(p), color, "must use shared PriorityColor")
+			assert.Equal(t, shared.PriorityColor(p), color, "must use shared PriorityColor")
 		})
 	}
 }
 
 func TestBuildPayloadNoHostname(t *testing.T) {
-	o := &output{cfg: config{OutputFormat: formatAll, Footer: defaultFooter}, logger: slog.Default()}
-	event := testutil.CreateValidEvent()
-	event.Hostname = ""
+	o := &driver{cfg: config{OutputFormat: formatAll, Footer: defaultFooter}, logger: slog.Default()}
+	evt := testutil.CreateValidEvent()
+	evt.Hostname = ""
 
-	payload := o.buildPayload(event)
+	payload := o.buildPayload(evt)
 	for _, f := range payload.Attachments[0].Fields {
 		assert.NotEqual(t, "hostname", f.Title, "empty hostname must not produce a field")
 	}
 }
 
 func TestBuildPayloadNoTags(t *testing.T) {
-	o := &output{cfg: config{OutputFormat: formatAll, Footer: defaultFooter}, logger: slog.Default()}
-	event := testutil.CreateValidEvent()
-	event.Tags = nil
+	o := &driver{cfg: config{OutputFormat: formatAll, Footer: defaultFooter}, logger: slog.Default()}
+	evt := testutil.CreateValidEvent()
+	evt.Tags = nil
 
-	payload := o.buildPayload(event)
+	payload := o.buildPayload(evt)
 	for _, f := range payload.Attachments[0].Fields {
 		assert.NotEqual(t, "tags", f.Title, "nil tags must not produce a field")
 	}
 }
 
 func TestBuildPayloadTagsSorted(t *testing.T) {
-	o := &output{cfg: config{OutputFormat: formatAll, Footer: defaultFooter}, logger: slog.Default()}
-	event := testutil.CreateValidEvent()
-	event.Tags = []string{"z", "a", "m"}
+	o := &driver{cfg: config{OutputFormat: formatAll, Footer: defaultFooter}, logger: slog.Default()}
+	evt := testutil.CreateValidEvent()
+	evt.Tags = []string{"z", "a", "m"}
 
-	payload := o.buildPayload(event)
+	payload := o.buildPayload(evt)
 	var tagsField slackAttachmentField
 	for _, f := range payload.Attachments[0].Fields {
 		if f.Title == "tags" {
@@ -238,14 +239,14 @@ func TestBuildPayloadTagsSorted(t *testing.T) {
 }
 
 func TestBuildPayloadOutputFieldsOrder(t *testing.T) {
-	o := &output{cfg: config{OutputFormat: formatAll, Footer: defaultFooter}, logger: slog.Default()}
-	event := testutil.CreateValidEvent()
-	event.OutputFields = map[string]interface{}{
+	o := &driver{cfg: config{OutputFormat: formatAll, Footer: defaultFooter}, logger: slog.Default()}
+	evt := testutil.CreateValidEvent()
+	evt.OutputFields = map[string]interface{}{
 		"z.field": "zz",
 		"a.field": "aa",
 	}
 
-	payload := o.buildPayload(event)
+	payload := o.buildPayload(evt)
 	var fieldTitles []string
 	for _, f := range payload.Attachments[0].Fields {
 		if f.Title == "a.field" || f.Title == "z.field" {
@@ -261,13 +262,13 @@ func TestBuildPayloadMessageTemplateExec(t *testing.T) {
 	tmpl, err := template.New("slack").Parse("Rule: {{ .Rule }}")
 	require.NoError(t, err)
 
-	o := &output{
+	o := &driver{
 		cfg:         config{OutputFormat: formatText, Footer: defaultFooter},
 		messageTmpl: tmpl,
 		logger:      slog.Default(),
 	}
-	event := testutil.CreateValidEvent()
-	payload := o.buildPayload(event)
+	evt := testutil.CreateValidEvent()
+	payload := o.buildPayload(evt)
 	assert.Equal(t, "Rule: Write below binary dir", payload.Text)
 }
 
@@ -275,27 +276,27 @@ func TestBuildPayloadMessageTemplateBadField(t *testing.T) {
 	tmpl, err := template.New("slack").Parse("{{ .NonExistent }}")
 	require.NoError(t, err)
 
-	o := &output{
+	o := &driver{
 		cfg:         config{OutputFormat: formatText, Footer: defaultFooter},
 		messageTmpl: tmpl,
 		logger:      slog.Default(),
 	}
-	event := testutil.CreateValidEvent()
-	payload := o.buildPayload(event)
+	evt := testutil.CreateValidEvent()
+	payload := o.buildPayload(evt)
 	assert.Empty(t, payload.Text, "failed template must produce empty text")
 }
 
 func TestBuildPayloadChannel(t *testing.T) {
-	o := &output{cfg: config{OutputFormat: formatText, Footer: defaultFooter, Channel: "#security"}, logger: slog.Default()}
-	event := testutil.CreateValidEvent()
-	payload := o.buildPayload(event)
+	o := &driver{cfg: config{OutputFormat: formatText, Footer: defaultFooter, Channel: "#security"}, logger: slog.Default()}
+	evt := testutil.CreateValidEvent()
+	payload := o.buildPayload(evt)
 	assert.Equal(t, "#security", payload.Channel)
 }
 
 func TestBuildPayloadNoChannel(t *testing.T) {
-	o := &output{cfg: config{OutputFormat: formatText, Footer: defaultFooter}, logger: slog.Default()}
-	event := testutil.CreateValidEvent()
-	payload := o.buildPayload(event)
+	o := &driver{cfg: config{OutputFormat: formatText, Footer: defaultFooter}, logger: slog.Default()}
+	evt := testutil.CreateValidEvent()
+	payload := o.buildPayload(evt)
 	assert.Empty(t, payload.Channel)
 }
 
@@ -303,25 +304,25 @@ func TestCreateOutputInvalidTemplate(t *testing.T) {
 	_, err := createOutput(map[string]any{
 		"webhook_url":    "https://hooks.slack.com/test",
 		"message_format": "{{ .Broken",
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "parse message template")
+	assert.Contains(t, err.Error(), "invalid Go template")
 }
 
 func TestCreateOutputDefaults(t *testing.T) {
-	driver, err := createOutput(map[string]any{
+	d, err := createOutput(map[string]any{
 		"webhook_url": "https://hooks.slack.com/test",
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	require.NoError(t, err)
 
-	o, ok := driver.(*output)
+	o, ok := d.(*driver)
 	require.True(t, ok)
 	assert.Equal(t, formatAll, o.cfg.OutputFormat)
 	assert.Equal(t, defaultFooter, o.cfg.Footer)
 }
 
 func TestSlackHealthCheck(t *testing.T) {
-	testutil.RunOutputTests(t, Type, []testutil.OutputTestCase{
+	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
 		{
 			Name:         "health check sends GET",
 			AddressField: "webhook_url",
@@ -333,24 +334,24 @@ func TestSlackHealthCheck(t *testing.T) {
 }
 
 func TestSlackInit(t *testing.T) {
-	o := &output{}
+	o := &driver{}
 	assert.NoError(t, o.Init(context.Background()))
 }
 
 func TestSlackClose(t *testing.T) {
-	o := &output{}
+	o := &driver{}
 	assert.NoError(t, o.Close())
 }
 
 func TestBuildPayloadFieldShortDetection(t *testing.T) {
-	o := &output{cfg: config{OutputFormat: formatAll, Footer: defaultFooter}, logger: slog.Default()}
-	event := testutil.CreateValidEvent()
-	event.OutputFields = map[string]interface{}{
+	o := &driver{cfg: config{OutputFormat: formatAll, Footer: defaultFooter}, logger: slog.Default()}
+	evt := testutil.CreateValidEvent()
+	evt.OutputFields = map[string]interface{}{
 		"short": "x",
 		"long":  "this is a long value that exceeds thirty six runes easily",
 	}
 
-	payload := o.buildPayload(event)
+	payload := o.buildPayload(evt)
 	for _, f := range payload.Attachments[0].Fields {
 		if f.Title == "short" {
 			assert.True(t, f.Short)
@@ -362,7 +363,7 @@ func TestBuildPayloadFieldShortDetection(t *testing.T) {
 }
 
 func TestSlackFieldsFormat(t *testing.T) {
-	testutil.RunOutputTests(t, Type, []testutil.OutputTestCase{
+	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
 		{
 			Name:         "fields format sends fields without text",
 			AddressField: "webhook_url",

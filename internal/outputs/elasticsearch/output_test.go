@@ -23,19 +23,19 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
 
 func TestElasticsearchCommonCases(t *testing.T) {
-	testutil.RunOutputTests(t, Type, []testutil.OutputTestCase{
+	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
 		{Name: "sends valid event", AddressField: "url"},
 		{Name: "returns error on server 500", AddressField: "url", MockStatus: http.StatusInternalServerError, ExpectError: true},
 	})
 }
 
 func TestElasticsearchPayloadFormat(t *testing.T) {
-	testutil.RunOutputTests(t, Type, []testutil.OutputTestCase{
+	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
 		{
 			Name:         "includes @timestamp in body",
 			AddressField: "url",
@@ -90,12 +90,12 @@ func TestElasticsearchPayloadFormat(t *testing.T) {
 }
 
 func TestElasticsearchCreateValidation(t *testing.T) {
-	_, err := createOutput(map[string]any{}, domain.OutputDeps{})
+	_, err := createOutput(map[string]any{}, output.Deps{})
 	assert.Error(t, err, "missing url must fail")
 }
 
 func TestElasticsearchHealthCheck(t *testing.T) {
-	testutil.RunOutputTests(t, Type, []testutil.OutputTestCase{
+	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
 		{
 			Name:         "sends GET to base URL",
 			AddressField: "url",
@@ -107,7 +107,7 @@ func TestElasticsearchHealthCheck(t *testing.T) {
 }
 
 func TestElasticsearchClose(t *testing.T) {
-	o := &output{}
+	o := &driver{}
 	assert.NoError(t, o.Close())
 }
 
@@ -148,14 +148,14 @@ func TestResolveIndexSuffixes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			o := &output{cfg: config{Index: "falco", Suffix: tt.suffix}}
+			o := &driver{cfg: config{Index: "falco", Suffix: tt.suffix}}
 			tt.check(t, o.resolveIndex())
 		})
 	}
 }
 
 func TestFlattenFieldsReplacesDotsAndPreservesValues(t *testing.T) {
-	testutil.RunOutputTests(t, Type, []testutil.OutputTestCase{
+	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
 		{
 			Name:         "flattened field names use underscores",
 			AddressField: "url",

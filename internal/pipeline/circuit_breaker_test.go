@@ -21,10 +21,12 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 )
 
 func TestCircuitBreakerConfigValidateValid(t *testing.T) {
-	cfg := CircuitBreakerConfig{
+	cfg := output.CircuitBreakerConfig{
 		FailureThreshold: 5,
 		SuccessThreshold: 2,
 		ResetTimeout:     30 * time.Second,
@@ -33,25 +35,25 @@ func TestCircuitBreakerConfigValidateValid(t *testing.T) {
 }
 
 func TestCircuitBreakerConfigValidateZeroValues(t *testing.T) {
-	cfg := CircuitBreakerConfig{}
+	cfg := output.CircuitBreakerConfig{}
 	assert.NotEmpty(t, cfg.Validate())
 }
 
 func TestCircuitBreakerConfigValidateNegative(t *testing.T) {
-	cfg := CircuitBreakerConfig{FailureThreshold: -1, SuccessThreshold: 2, ResetTimeout: 30 * time.Second}
+	cfg := output.CircuitBreakerConfig{FailureThreshold: -1, SuccessThreshold: 2, ResetTimeout: 30 * time.Second}
 	errs := cfg.Validate()
 	assert.NotEmpty(t, errs)
 	assert.Len(t, errs, 1)
 }
 
 func TestCircuitBreakerStartsClosed(t *testing.T) {
-	cb := NewCircuitBreaker(CircuitBreakerConfig{})
+	cb := NewCircuitBreaker(&output.CircuitBreakerConfig{})
 	assert.Equal(t, CircuitClosed, cb.GetState())
 }
 
 func TestCircuitBreakerOpensAfterThreshold(t *testing.T) {
 	cb := NewCircuitBreaker(
-		CircuitBreakerConfig{
+		&output.CircuitBreakerConfig{
 			FailureThreshold: 3,
 			SuccessThreshold: 2,
 			ResetTimeout:     30 * time.Second,
@@ -67,7 +69,7 @@ func TestCircuitBreakerOpensAfterThreshold(t *testing.T) {
 }
 
 func TestCircuitBreakerTransitionsToHalfOpen(t *testing.T) {
-	cb := NewCircuitBreaker(CircuitBreakerConfig{
+	cb := NewCircuitBreaker(&output.CircuitBreakerConfig{
 		FailureThreshold: 1,
 		ResetTimeout:     50 * time.Millisecond,
 	})
@@ -80,7 +82,7 @@ func TestCircuitBreakerTransitionsToHalfOpen(t *testing.T) {
 }
 
 func TestCircuitBreakerClosesAfterSuccessInHalfOpen(t *testing.T) {
-	cb := NewCircuitBreaker(CircuitBreakerConfig{
+	cb := NewCircuitBreaker(&output.CircuitBreakerConfig{
 		FailureThreshold: 1,
 		SuccessThreshold: 2,
 		ResetTimeout:     50 * time.Millisecond,
@@ -97,7 +99,7 @@ func TestCircuitBreakerClosesAfterSuccessInHalfOpen(t *testing.T) {
 }
 
 func TestCircuitBreakerSuccessResetFailureCount(t *testing.T) {
-	cb := NewCircuitBreaker(CircuitBreakerConfig{FailureThreshold: 3})
+	cb := NewCircuitBreaker(&output.CircuitBreakerConfig{FailureThreshold: 3})
 
 	cb.RecordFailure()
 	cb.RecordFailure()
@@ -108,7 +110,7 @@ func TestCircuitBreakerSuccessResetFailureCount(t *testing.T) {
 }
 
 func TestCircuitBreakerReopensOnFailureInHalfOpen(t *testing.T) {
-	cb := NewCircuitBreaker(CircuitBreakerConfig{
+	cb := NewCircuitBreaker(&output.CircuitBreakerConfig{
 		FailureThreshold: 1,
 		ResetTimeout:     50 * time.Millisecond,
 	})
@@ -122,21 +124,21 @@ func TestCircuitBreakerReopensOnFailureInHalfOpen(t *testing.T) {
 }
 
 func TestAllowRequestClosedAlwaysAllows(t *testing.T) {
-	cb := NewCircuitBreaker(CircuitBreakerConfig{})
+	cb := NewCircuitBreaker(&output.CircuitBreakerConfig{FailureThreshold: 5, SuccessThreshold: 2, ResetTimeout: 30 * time.Second})
 	assert.True(t, cb.AllowRequest())
 	assert.True(t, cb.AllowRequest())
 	assert.True(t, cb.AllowRequest())
 }
 
 func TestAllowRequestOpenAlwaysBlocks(t *testing.T) {
-	cb := NewCircuitBreaker(CircuitBreakerConfig{FailureThreshold: 1, ResetTimeout: 5 * time.Second})
+	cb := NewCircuitBreaker(&output.CircuitBreakerConfig{FailureThreshold: 1, ResetTimeout: 5 * time.Second})
 	cb.RecordFailure()
 	assert.False(t, cb.AllowRequest())
 	assert.False(t, cb.AllowRequest())
 }
 
 func TestAllowRequestHalfOpenSingleProbe(t *testing.T) {
-	cb := NewCircuitBreaker(CircuitBreakerConfig{
+	cb := NewCircuitBreaker(&output.CircuitBreakerConfig{
 		FailureThreshold: 1,
 		SuccessThreshold: 1,
 		ResetTimeout:     50 * time.Millisecond,
@@ -156,7 +158,7 @@ func TestAllowRequestHalfOpenSingleProbe(t *testing.T) {
 }
 
 func TestAllowRequestHalfOpenProbeFailureReopens(t *testing.T) {
-	cb := NewCircuitBreaker(CircuitBreakerConfig{
+	cb := NewCircuitBreaker(&output.CircuitBreakerConfig{
 		FailureThreshold: 1,
 		ResetTimeout:     50 * time.Millisecond,
 	})

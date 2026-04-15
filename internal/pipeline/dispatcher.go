@@ -19,7 +19,7 @@ package pipeline
 import (
 	"context"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 )
 
 // Dispatcher manages outputs and routes events with priority filtering.
@@ -40,32 +40,25 @@ func (d *Dispatcher) Start(ctx context.Context) {
 }
 
 // DispatchEvent sends an event to all outputs that accept its priority.
-func (d *Dispatcher) DispatchEvent(event *domain.Event) {
+func (d *Dispatcher) DispatchEvent(evt *event.Event) {
 	for _, out := range d.outputs {
-		if acceptsPriority(out.config.MinPriority, event.Priority) {
-			out.Enqueue(event)
+		if acceptsPriority(out.config.MinPriority, evt.Priority) {
+			out.Enqueue(evt)
 		}
 	}
 }
 
-// DrainQueues closes all output queues and waits for workers to finish
-// processing remaining events.
-func (d *Dispatcher) DrainQueues(ctx context.Context) {
+// CloseQueues closes all output event channels. Workers finish remaining events then exit.
+func (d *Dispatcher) CloseQueues() {
 	for _, out := range d.outputs {
 		out.CloseQueue()
 	}
+}
 
-	done := make(chan struct{})
-	go func() {
-		for _, out := range d.outputs {
-			out.WaitDone()
-		}
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-ctx.Done():
+// WaitAll blocks until all output workers have exited.
+func (d *Dispatcher) WaitAll() {
+	for _, out := range d.outputs {
+		out.WaitDone()
 	}
 }
 
@@ -78,7 +71,7 @@ func (d *Dispatcher) CollectStatus() []OutputStatus {
 	return statuses
 }
 
-func acceptsPriority(minPriority, eventPriority domain.Priority) bool {
+func acceptsPriority(minPriority, eventPriority event.Priority) bool {
 	if minPriority == "" {
 		return true
 	}

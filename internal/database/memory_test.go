@@ -1,0 +1,374 @@
+// Copyright (C) 2026 The Falco Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package database
+
+import (
+	"context"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/falcosecurity/falcosidekick/internal/domain/core"
+)
+
+func TestImplementsDatabase(t *testing.T) {
+	var _ core.Database = NewMemory()
+}
+
+func TestProvisionCreatesEntries(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	err := s.Provision(ctx, &core.ProvisionRequest{
+		Outputs: map[string]map[string]any{
+			"slack":  {"webhookurl": "https://hooks.slack.com/test"},
+			"memory": {"capacity": 5000},
+		},
+	})
+	require.NoError(t, err)
+
+	entries, err := s.GetOutputConfigs(ctx)
+	require.NoError(t, err)
+	assert.Len(t, entries, 2)
+	assert.True(t, entries["slack"].Provisioned)
+	assert.True(t, entries["memory"].Provisioned)
+	assert.Equal(t, "https://hooks.slack.com/test", entries["slack"].Config["webhookurl"])
+}
+
+func TestProvisionOverwritesProvisioned(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
+		Outputs: map[string]map[string]any{
+			"slack": {"webhookurl": "old"},
+		},
+	}))
+
+	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
+		Outputs: map[string]map[string]any{
+			"slack": {"webhookurl": "new"},
+		},
+	}))
+
+	entry, err := s.GetOutputConfig(ctx, "slack")
+	require.NoError(t, err)
+	assert.Equal(t, "new", entry.Config["webhookurl"])
+}
+
+func TestProvisionRemovesStaleProvisioned(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
+		Outputs: map[string]map[string]any{
+			"slack": {"webhookurl": "url"},
+			"loki":  {"hostport": "http://loki:3100"},
+		},
+	}))
+
+	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
+		Outputs: map[string]map[string]any{
+			"slack": {"webhookurl": "url"},
+		},
+	}))
+
+	entries, err := s.GetOutputConfigs(ctx)
+	require.NoError(t, err)
+	assert.Len(t, entries, 1)
+	assert.Contains(t, entries, "slack")
+}
+
+func TestProvisionPreservesUICreatedEntries(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	require.NoError(t, s.SaveOutputConfig(ctx, "custom", map[string]any{"url": "http://custom"}))
+
+	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
+		Outputs: map[string]map[string]any{
+			"slack": {"webhookurl": "url"},
+		},
+	}))
+
+	entries, err := s.GetOutputConfigs(ctx)
+	require.NoError(t, err)
+	assert.Len(t, entries, 2)
+	assert.False(t, entries["custom"].Provisioned, "UI-created entry must not be marked provisioned")
+	assert.True(t, entries["slack"].Provisioned)
+}
+
+func TestProvisionNilRequest(t *testing.T) {
+	s := NewMemory()
+	err := s.Provision(context.Background(), nil)
+	assert.Error(t, err)
+}
+
+func TestGetOutputConfigNotFound(t *testing.T) {
+	s := NewMemory()
+	_, err := s.GetOutputConfig(context.Background(), "nonexistent")
+	assert.Error(t, err)
+}
+
+func TestSaveOutputConfigNotProvisioned(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	require.NoError(t, s.SaveOutputConfig(ctx, "custom", map[string]any{"url": "http://example.com"}))
+
+	entry, err := s.GetOutputConfig(ctx, "custom")
+	require.NoError(t, err)
+	assert.False(t, entry.Provisioned)
+	assert.Equal(t, "http://example.com", entry.Config["url"])
+	assert.False(t, entry.UpdatedAt.IsZero())
+}
+
+func TestDeleteOutputConfig(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	require.NoError(t, s.SaveOutputConfig(ctx, "temp", map[string]any{"x": 1}))
+	require.NoError(t, s.DeleteOutputConfig(ctx, "temp"))
+
+	_, err := s.GetOutputConfig(ctx, "temp")
+	assert.Error(t, err)
+}
+
+func TestDeleteOutputConfigNotFound(t *testing.T) {
+	s := NewMemory()
+	err := s.DeleteOutputConfig(context.Background(), "nonexistent")
+	assert.Error(t, err)
+}
+
+func TestPipelineLayoutRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	layout := &core.PipelineLayout{
+		Nodes: []core.LayoutNode{
+			{ID: "falco", X: 100, Y: 200},
+			{ID: "slack", X: 400, Y: 200},
+		},
+	}
+	require.NoError(t, s.SavePipelineLayout(ctx, layout))
+
+	got, err := s.GetPipelineLayout(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Len(t, got.Nodes, 2)
+	assert.Equal(t, "falco", got.Nodes[0].ID)
+	assert.False(t, got.UpdatedAt.IsZero())
+}
+
+func TestPipelineLayoutDefaultNil(t *testing.T) {
+	s := NewMemory()
+	got, err := s.GetPipelineLayout(context.Background())
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+func TestGetOutputConfigsReturnsDefensiveCopy(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	require.NoError(t, s.SaveOutputConfig(ctx, "test", map[string]any{"key": "val"}))
+
+	entries1, _ := s.GetOutputConfigs(ctx)
+	entries1["injected"] = core.OutputConfigEntry{Name: "injected"}
+
+	entries2, _ := s.GetOutputConfigs(ctx)
+	assert.NotContains(t, entries2, "injected", "external mutation must not affect internal state")
+}
+
+func TestCloseIsIdempotent(t *testing.T) {
+	s := NewMemory()
+	assert.NoError(t, s.Close())
+	assert.NoError(t, s.Close())
+}
+
+func TestCoreConfigRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	require.NoError(t, s.SaveConfig(ctx, &core.Config{
+		ListenPort: 2801,
+		LogLevel:   core.LogLevelInfo,
+	}))
+
+	entry, err := s.GetConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, entry)
+	assert.Equal(t, 2801, entry.Config.ListenPort)
+	assert.Equal(t, core.LogLevelInfo, entry.Config.LogLevel)
+	assert.Equal(t, int64(1), entry.Version)
+	assert.False(t, entry.UpdatedAt.IsZero())
+}
+
+func TestCoreConfigDefaultNil(t *testing.T) {
+	s := NewMemory()
+	entry, err := s.GetConfig(context.Background())
+	require.NoError(t, err)
+	assert.Nil(t, entry)
+}
+
+func TestCoreConfigVersionIncrement(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	require.NoError(t, s.SaveConfig(ctx, &core.Config{ListenPort: 2801}))
+	require.NoError(t, s.SaveConfig(ctx, &core.Config{ListenPort: 8080}))
+
+	entry, err := s.GetConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), entry.Version)
+	assert.Equal(t, 8080, entry.Config.ListenPort)
+}
+
+func TestProvisionCoreConfig(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
+		Config:  &core.Config{ListenPort: 2801, LogLevel: core.LogLevelInfo},
+		Outputs: map[string]map[string]any{"slack": {"url": "test"}},
+	}))
+
+	entry, err := s.GetConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, entry)
+	assert.Equal(t, core.LogLevelInfo, entry.Config.LogLevel)
+	assert.Equal(t, int64(1), entry.Version)
+}
+
+func TestProvisionCoreConfigVersionIncrement(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
+		Config:  &core.Config{ListenPort: 2801},
+		Outputs: map[string]map[string]any{},
+	}))
+	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
+		Config:  &core.Config{ListenPort: 8080},
+		Outputs: map[string]map[string]any{},
+	}))
+
+	entry, err := s.GetConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), entry.Version)
+}
+
+func TestOutputConfigVersionIncrement(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	require.NoError(t, s.SaveOutputConfig(ctx, "slack", map[string]any{"v": 1}))
+	require.NoError(t, s.SaveOutputConfig(ctx, "slack", map[string]any{"v": 2}))
+
+	entry, err := s.GetOutputConfig(ctx, "slack")
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), entry.Version)
+	assert.Equal(t, 2, entry.Config["v"])
+}
+
+func TestConcurrentAccess(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 200; i++ {
+			_ = s.SaveOutputConfig(ctx, "out", map[string]any{"i": i})
+		}
+		close(done)
+	}()
+
+	for i := 0; i < 200; i++ {
+		_, _ = s.GetOutputConfigs(ctx)
+		_, _ = s.GetOutputConfig(ctx, "out")
+	}
+	<-done
+
+	_, err := s.GetOutputConfig(ctx, "out")
+	assert.NoError(t, err)
+}
+
+func TestOutputConfigDeepCopyOnProvision(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	original := map[string]any{"nested": map[string]any{"key": "original"}}
+	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
+		Outputs: map[string]map[string]any{"test": original},
+	}))
+
+	original["nested"].(map[string]any)["key"] = "changed-by-caller"
+
+	entry, err := s.GetOutputConfig(ctx, "test")
+	require.NoError(t, err)
+	assert.Equal(t, "original", entry.Config["nested"].(map[string]any)["key"], "provision must deep-copy")
+}
+
+func TestOutputConfigDeepCopyOnGet(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	require.NoError(t, s.SaveOutputConfig(ctx, "test", map[string]any{"nested": map[string]any{"key": "original"}}))
+
+	entry, _ := s.GetOutputConfig(ctx, "test")
+	entry.Config["nested"].(map[string]any)["key"] = "changed-after-get"
+
+	entry2, _ := s.GetOutputConfig(ctx, "test")
+	assert.Equal(t, "original", entry2.Config["nested"].(map[string]any)["key"], "get must return deep copy")
+}
+
+func TestCoreConfigDeepCopyTLS(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	cfg := &core.Config{
+		ListenPort: 2801,
+		TLS: &core.TLSConfig{
+			CertFile: "/original/cert.pem",
+			Enabled:  true,
+		},
+	}
+	require.NoError(t, s.SaveConfig(ctx, cfg))
+
+	cfg.TLS.CertFile = "/mutated/cert.pem"
+
+	entry, err := s.GetConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "/original/cert.pem", entry.Config.TLS.CertFile, "save must deep-copy TLS pointer")
+}
+
+func TestCoreConfigDeepCopyOnGet(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	require.NoError(t, s.SaveConfig(ctx, &core.Config{
+		ListenPort: 2801,
+		TLS:        &core.TLSConfig{CertFile: "/original/cert.pem"},
+	}))
+
+	entry, _ := s.GetConfig(ctx)
+	entry.Config.TLS.CertFile = "/mutated"
+
+	entry2, _ := s.GetConfig(ctx)
+	assert.Equal(t, "/original/cert.pem", entry2.Config.TLS.CertFile, "get must return deep copy")
+}

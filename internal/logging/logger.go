@@ -21,60 +21,11 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/falcosecurity/falcosidekick/internal/utils"
+	"github.com/falcosecurity/falcosidekick/internal/domain/core"
 )
-
-// LogLevel identifies a logging verbosity level.
-type LogLevel string
-
-// Supported log levels.
-const (
-	TraceLevel LogLevel = "trace"
-	DebugLevel LogLevel = "debug"
-	InfoLevel  LogLevel = "info"
-	WarnLevel  LogLevel = "warning"
-	ErrorLevel LogLevel = "error"
-)
-
-// ValidLogLevels holds the set of accepted log level values.
-var ValidLogLevels = map[LogLevel]bool{
-	TraceLevel: true, DebugLevel: true, InfoLevel: true, WarnLevel: true, ErrorLevel: true,
-}
-
-// Validate checks the log level for correctness.
-func (l LogLevel) Validate() utils.ValidationErrors {
-	var errs utils.ValidationErrors
-	if !ValidLogLevels[l] {
-		errs.Add("log_level", fmt.Sprintf("must be trace/debug/info/warn/warning/error, got %q", l))
-	}
-	return errs
-}
-
-// LogFormat identifies a log output format.
-type LogFormat string
-
-// Supported log formats.
-const (
-	JSONFormat LogFormat = "json"
-	TextFormat LogFormat = "text"
-)
-
-// ValidLogFormats holds the set of accepted log format values.
-var ValidLogFormats = map[LogFormat]bool{
-	TextFormat: true, JSONFormat: true,
-}
-
-// Validate checks the log format for correctness.
-func (f LogFormat) Validate() utils.ValidationErrors {
-	var errs utils.ValidationErrors
-	if !ValidLogFormats[f] {
-		errs.Add("log_format", fmt.Sprintf("must be text/json, got %q", f))
-	}
-	return errs
-}
 
 // NewLogger creates a slog.Logger configured for the given level and format.
-func NewLogger(level LogLevel, format LogFormat) (*slog.Logger, error) {
+func NewLogger(level core.LogLevel, format core.LogFormat) (*slog.Logger, error) {
 	slogLevel, err := parseLevel(string(level))
 	if err != nil {
 		return nil, err
@@ -84,9 +35,9 @@ func NewLogger(level LogLevel, format LogFormat) (*slog.Logger, error) {
 
 	var handler slog.Handler
 	switch format {
-	case "json":
+	case core.LogFormatJSON:
 		handler = slog.NewJSONHandler(os.Stdout, opts)
-	case "text":
+	case core.LogFormatText:
 		handler = slog.NewTextHandler(os.Stdout, opts)
 	default:
 		return nil, fmt.Errorf("logging: unsupported format %q", format)

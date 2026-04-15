@@ -31,20 +31,24 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/api"
 	"github.com/falcosecurity/falcosidekick/internal/catalog"
 	"github.com/falcosecurity/falcosidekick/internal/config"
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/database"
+	"github.com/falcosecurity/falcosidekick/internal/domain/core"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/logging"
 	"github.com/falcosecurity/falcosidekick/internal/metrics"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/all"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
+	"github.com/falcosecurity/falcosidekick/internal/version"
 )
 
 func main() {
 	configPath := flag.String("c", "", "config file path")
 	showVersion := flag.Bool("v", false, "print version and exit")
+	flag.BoolVar(showVersion, "version", false, "print version and exit")
 	flag.Parse()
 
 	if *showVersion {
-		v := GetVersionInfo()
+		v := version.GetInfo()
 		fmt.Printf("falcosidekick %s (commit: %s, built: %s, go: %s)\n",
 			v.Version, v.Commit, v.BuildDate, v.GoVersion)
 		return
@@ -57,6 +61,8 @@ func main() {
 }
 
 func run(configPath string) error {
+	v := version.GetInfo()
+
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("config load: %w", err)
@@ -66,13 +72,12 @@ func run(configPath string) error {
 		return fmt.Errorf("config validation: %s", errs.Error())
 	}
 
-	logger, err := logging.NewLogger(logging.LogLevel(cfg.LogLevel), logging.LogFormat(cfg.LogFormat))
+	logger, err := logging.NewLogger(cfg.LogLevel, cfg.LogFormat)
 	if err != nil {
 		return fmt.Errorf("logger: %w", err)
 	}
 	slog.SetDefault(logger)
 
-	v := GetVersionInfo()
 	slog.Info("starting falcosidekick",
 		"version", v.Version,
 		"commit", v.Commit,
@@ -81,6 +86,18 @@ func run(configPath string) error {
 	)
 
 	collector := metrics.NewCollector()
+
+	db, err := createDatabase(cfg.Database)
+	if err != nil {
+		return fmt.Errorf("database: %w", err)
+	}
+	if err := db.Provision(context.Background(), &core.ProvisionRequest{
+		Config:  &cfg.Config,
+		Outputs: cfg.Pipeline.Outputs,
+	}); err != nil {
+		return fmt.Errorf("database provision: %w", err)
+	}
+	slog.Info("database provisioned", "backend", cfg.Database.Backend, "outputs", len(cfg.Pipeline.Outputs))
 
 	cat, err := catalog.New(all.Types())
 	if err != nil {
@@ -109,11 +126,13 @@ func run(configPath string) error {
 		return fmt.Errorf("pipeline: %w", err)
 	}
 
-	srv, err := api.NewServer(api.ServerConfig{
+	srv, err := api.NewServer(&api.ServerConfig{
 		Pipeline:  pipe,
 		ReadStore: readStore,
+		Database:  db,
 		Metrics:   collector,
 		Registry:  collector.Registry(),
+		TLS:       cfg.TLS,
 		Address:   cfg.ListenAddress,
 		Port:      cfg.ListenPort,
 	})
@@ -121,16 +140,7 @@ func run(configPath string) error {
 		return fmt.Errorf("server: %w", err)
 	}
 
-	// Two-context shutdown: drainCtx is parent, workerCtx is child.
-	// SIGTERM -> shutdown server -> close queues (drain)
-	// -> if drain timeout fires -> drainCtx canceled -> workerCtx canceled -> workers force-stop
-	drainCtx, drainCancel := context.WithCancel(context.Background())
-	defer drainCancel()
-
-	workerCtx, workerCancel := context.WithCancel(drainCtx)
-	defer workerCancel()
-
-	pipe.Start(workerCtx)
+	pipe.Start()
 
 	go func() {
 		slog.Info("listening", "address", cfg.ListenAddress, "port", cfg.ListenPort, "outputs", len(outputs))
@@ -150,9 +160,9 @@ func run(configPath string) error {
 		slog.Error("server shutdown", "error", shutdownErr)
 	}
 
-	drainTimeout, drainTimeoutCancel := context.WithTimeout(drainCtx, 10*time.Second)
-	defer drainTimeoutCancel()
-	pipe.DrainQueues(drainTimeout)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	pipe.Shutdown(shutdownCtx)
 
 	for _, out := range outputs {
 		if closeErr := out.Close(); closeErr != nil {
@@ -160,33 +170,46 @@ func run(configPath string) error {
 		}
 	}
 
+	if closeErr := db.Close(); closeErr != nil {
+		slog.Error("database close", "error", closeErr)
+	}
+
 	slog.Info("stopped")
 	return nil
 }
 
-func resolveReadableStore(outputs []*pipeline.Output, ui config.UIConfig) (domain.ReadableStore, error) {
-	if !ui.Enabled || ui.Backend == "" {
+func resolveReadableStore(outputs []*pipeline.Output, ui core.UIConfig) (output.ReadableStore, error) {
+	if !ui.Enabled || ui.EventSource == "" {
 		return nil, nil
 	}
 
 	for _, out := range outputs {
-		if out.Name() == ui.Backend {
-			rs, ok := out.Driver().(domain.ReadableStore)
+		if out.Name() == ui.EventSource {
+			rs, ok := out.Driver().(output.ReadableStore)
 			if !ok {
-				return nil, fmt.Errorf("output %q does not implement ReadableStore", ui.Backend)
+				return nil, fmt.Errorf("output %q does not implement ReadableStore", ui.EventSource)
 			}
 			return rs, nil
 		}
 	}
 
-	return nil, fmt.Errorf("ui.backend %q not found in configured outputs", ui.Backend)
+	return nil, fmt.Errorf("ui.event_source %q not found in configured outputs", ui.EventSource)
 }
 
-func createOutputs(cfg *config.Config, cat *catalog.Catalog, mc domain.MetricsCollector) ([]*pipeline.Output, error) {
+func createDatabase(cfg core.DatabaseConfig) (core.Database, error) {
+	switch cfg.Backend {
+	case core.DatabaseInMemory:
+		return database.NewMemory(), nil
+	default:
+		return nil, fmt.Errorf("database backend %q not implemented", cfg.Backend)
+	}
+}
+
+func createOutputs(cfg *config.Config, cat *catalog.Catalog, mc core.MetricsCollector) ([]*pipeline.Output, error) {
 	outputs := make([]*pipeline.Output, 0, len(cfg.Pipeline.Outputs))
 
 	for name, outputCfg := range cfg.Pipeline.Outputs {
-		driver, err := cat.Create(name, outputCfg, domain.OutputDeps{Logger: slog.Default(), Metrics: mc})
+		driver, err := cat.Create(name, outputCfg, output.Deps{Logger: slog.Default(), Metrics: mc})
 		if err != nil {
 			return nil, fmt.Errorf("output %q: %w", name, err)
 		}
@@ -194,7 +217,10 @@ func createOutputs(cfg *config.Config, cat *catalog.Catalog, mc domain.MetricsCo
 			return nil, fmt.Errorf("output %q init: %w", name, err)
 		}
 
-		outCfg := cfg.Pipeline.ResolveOutputConfig(name)
+		outCfg, err := cfg.Pipeline.ResolveOutputConfig(name)
+		if err != nil {
+			return nil, fmt.Errorf("output %q config: %w", name, err)
+		}
 
 		out := pipeline.NewOutput(driver, &outCfg, mc)
 		outputs = append(outputs, out)

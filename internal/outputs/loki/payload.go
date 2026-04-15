@@ -22,7 +22,7 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 )
 
 const formatJSON = "json"
@@ -37,9 +37,9 @@ type lokiStream struct {
 }
 
 // buildPayload creates a Loki push payload for a single event.
-func buildPayload(logFormat string, extraLabels []string, event *domain.Event) lokiPayload {
-	labels := extractLabels(extraLabels, event)
-	entry := formatEntry(logFormat, event)
+func buildPayload(logFormat string, extraLabels []string, evt *event.Event) lokiPayload {
+	labels := extractLabels(extraLabels, evt)
+	entry := formatEntry(logFormat, evt)
 
 	return lokiPayload{
 		Streams: []lokiStream{
@@ -51,14 +51,14 @@ func buildPayload(logFormat string, extraLabels []string, event *domain.Event) l
 // buildBatchPayload creates a Loki push payload for multiple events.
 // Events with identical label sets are grouped into the same stream.
 // Entries within each stream are sorted by timestamp (Loki requirement).
-func buildBatchPayload(logFormat string, extraLabels []string, events []*domain.Event) lokiPayload {
+func buildBatchPayload(logFormat string, extraLabels []string, events []*event.Event) lokiPayload {
 	streamMap := make(map[string]*lokiStream)
 	streamOrder := make([]string, 0)
 
-	for _, event := range events {
-		labels := extractLabels(extraLabels, event)
+	for _, evt := range events {
+		labels := extractLabels(extraLabels, evt)
 		key := serializeLabels(labels)
-		entry := formatEntry(logFormat, event)
+		entry := formatEntry(logFormat, evt)
 
 		if s, ok := streamMap[key]; ok {
 			s.Values = append(s.Values, entry)
@@ -79,20 +79,20 @@ func buildBatchPayload(logFormat string, extraLabels []string, events []*domain.
 }
 
 // formatEntry creates a Loki entry [timestamp, line] pair.
-func formatEntry(logFormat string, event *domain.Event) []string {
-	ts := strconv.FormatInt(event.Time.UnixNano(), 10)
+func formatEntry(logFormat string, evt *event.Event) []string {
+	ts := strconv.FormatInt(evt.Time.UnixNano(), 10)
 
 	var line string
 	if logFormat == formatJSON {
-		data, err := json.Marshal(event)
+		data, err := json.Marshal(evt)
 		if err == nil {
 			line = string(data)
 		} else {
 			slog.Warn("loki: json marshal failed, using raw output", "error", err)
-			line = event.Output
+			line = evt.Output
 		}
 	} else {
-		line = event.Output
+		line = evt.Output
 	}
 
 	return []string{ts, line}

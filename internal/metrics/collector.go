@@ -22,12 +22,12 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 )
 
 const namespace = "falcosidekick"
 
-// Collector implements domain.MetricsCollector using Prometheus client_golang.
+// Collector implements core.MetricsCollector using Prometheus client_golang.
 type Collector struct {
 	reg           *prometheus.Registry
 	inputTotal    *prometheus.CounterVec
@@ -117,6 +117,6 @@ func (c *Collector) RecordError(_ context.Context, component string, _ error) {
 }
 
 // RecordEvent increments the event counter.
-func (c *Collector) RecordEvent(_ context.Context, rule string, priority domain.Priority, source string) {
+func (c *Collector) RecordEvent(_ context.Context, rule string, priority event.Priority, source string) {
 	c.eventTotal.WithLabelValues(rule, string(priority), source).Inc()
 }
