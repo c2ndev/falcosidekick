@@ -25,7 +25,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/twmb/franz-go/pkg/kgo"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 )
 
 func TestKafkaCreateValidation(t *testing.T) {
@@ -39,7 +40,7 @@ func TestKafkaCreateValidation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := createOutput(tt.config, domain.OutputDeps{})
+			_, err := createOutput(tt.config, output.Deps{})
 			assert.Error(t, err)
 		})
 	}
@@ -49,7 +50,7 @@ func TestKafkaCreateSuccess(t *testing.T) {
 	driver, err := createOutput(map[string]any{
 		"brokers": []string{"http://localhost:9092"},
 		"topic":   "falco-events",
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	require.NoError(t, err)
 	assert.Equal(t, "kafka", driver.Name())
 }
@@ -58,10 +59,10 @@ func TestKafkaImplementsBatchSender(t *testing.T) {
 	driver, err := createOutput(map[string]any{
 		"brokers": []string{"http://localhost:9092"},
 		"topic":   "falco-events",
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	require.NoError(t, err)
 
-	_, ok := driver.(domain.BatchSender)
+	_, ok := driver.(output.BatchSender)
 	assert.True(t, ok, "kafka must implement BatchSender")
 }
 
@@ -99,7 +100,7 @@ func TestResolveSASL(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := &config{SASL: tt.sasl, Username: "user", Password: "pass"}
+			cfg := &config{Auth: kafkaAuth{SASL: tt.sasl, Username: "user", Password: "pass"}}
 			opt, err := resolveSASL(cfg)
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -157,16 +158,16 @@ func TestResolveBalancer(t *testing.T) {
 }
 
 func TestCreateOutputAsync(t *testing.T) {
-	driver, err := createOutput(map[string]any{
-		"brokers": []string{"http://localhost:9092"},
-		"topic":   "events",
-		"async":   true,
-	}, domain.OutputDeps{})
+	out, err := createOutput(map[string]any{
+		"brokers":  []string{"http://localhost:9092"},
+		"topic":    "events",
+		"producer": map[string]any{"async": true},
+	}, output.Deps{})
 	require.NoError(t, err)
 
-	o, ok := driver.(*output)
+	o, ok := out.(*driver)
 	require.True(t, ok)
-	assert.True(t, o.cfg.Async)
+	assert.True(t, o.cfg.Producer.Async)
 }
 
 func TestCreateOutputTopicCreation(t *testing.T) {
@@ -179,25 +180,25 @@ func TestCreateOutputTopicCreation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			driver, err := createOutput(map[string]any{
-				"brokers":           []string{"http://localhost:9092"},
-				"topic":             "events",
-				"auto_create_topic": tt.topicCreation,
-			}, domain.OutputDeps{})
+			out, err := createOutput(map[string]any{
+				"brokers":  []string{"http://localhost:9092"},
+				"topic":    "events",
+				"producer": map[string]any{"auto_create_topic": tt.topicCreation},
+			}, output.Deps{})
 			require.NoError(t, err)
-			assert.Equal(t, "kafka", driver.Name())
+			assert.Equal(t, "kafka", out.Name())
 		})
 	}
 }
 
 func TestCreateOutputClientID(t *testing.T) {
-	driver, err := createOutput(map[string]any{
-		"brokers":   []string{"http://localhost:9092"},
-		"topic":     "events",
-		"client_id": "my-producer",
-	}, domain.OutputDeps{})
+	out, err := createOutput(map[string]any{
+		"brokers":  []string{"http://localhost:9092"},
+		"topic":    "events",
+		"producer": map[string]any{"client_id": "my-producer"},
+	}, output.Deps{})
 	require.NoError(t, err)
-	assert.NotNil(t, driver)
+	assert.NotNil(t, out)
 }
 
 func TestCreateOutputTLS(t *testing.T) {
@@ -225,7 +226,7 @@ func TestCreateOutputTLS(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			driver, err := createOutput(tt.config, domain.OutputDeps{})
+			driver, err := createOutput(tt.config, output.Deps{})
 			require.NoError(t, err)
 			assert.NotNil(t, driver)
 		})
@@ -244,12 +245,10 @@ func TestCreateOutputSASLVariants(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			driver, err := createOutput(map[string]any{
-				"brokers":  []string{"http://localhost:9092"},
-				"topic":    "events",
-				"sasl":     tt.sasl,
-				"username": "user",
-				"password": "pass",
-			}, domain.OutputDeps{})
+				"brokers": []string{"http://localhost:9092"},
+				"topic":   "events",
+				"auth":    map[string]any{"sasl": tt.sasl, "username": "user", "password": "pass"},
+			}, output.Deps{})
 			require.NoError(t, err)
 			assert.NotNil(t, driver)
 		})
@@ -260,37 +259,30 @@ func TestCreateOutputSASLInvalid(t *testing.T) {
 	_, err := createOutput(map[string]any{
 		"brokers": []string{"http://localhost:9092"},
 		"topic":   "events",
-		"sasl":    "kerberos",
-	}, domain.OutputDeps{})
+		"auth":    map[string]any{"sasl": "kerberos"},
+	}, output.Deps{})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "unsupported SASL")
+	assert.Contains(t, err.Error(), "must be plain/scram_sha256/scram_sha512")
 }
 
 func TestCreateOutputAllOptions(t *testing.T) {
-	driver, err := createOutput(map[string]any{
-		"brokers":           []string{"http://broker1:9092", "http://broker2:9092"},
-		"topic":             "falco",
-		"sasl":              "plain",
-		"username":          "u",
-		"password":          "p",
-		"tls_enabled":       true,
-		"client_id":         "cid",
-		"compression":       "zstd",
-		"balancer":          "round_robin",
-		"required_acks":     "one",
-		"async":             true,
-		"auto_create_topic": true,
-	}, domain.OutputDeps{})
+	d, err := createOutput(map[string]any{
+		"brokers":     []string{"http://broker1:9092", "http://broker2:9092"},
+		"topic":       "falco",
+		"auth":        map[string]any{"sasl": "plain", "username": "u", "password": "p"},
+		"tls_enabled": true,
+		"producer":    map[string]any{"client_id": "cid", "compression": "zstd", "balancer": "round_robin", "required_acks": "one", "async": true, "auto_create_topic": true},
+	}, output.Deps{})
 	require.NoError(t, err)
 
-	o, ok := driver.(*output)
+	o, ok := d.(*driver)
 	require.True(t, ok)
 	assert.Equal(t, "falco", o.cfg.Topic)
-	assert.True(t, o.cfg.Async)
+	assert.True(t, o.cfg.Producer.Async)
 }
 
 func TestCloseNilClient(t *testing.T) {
-	o := &output{cfg: config{Topic: "test"}}
+	o := &driver{cfg: config{Topic: "test"}}
 	err := o.Close()
 	assert.NoError(t, err)
 }
@@ -299,19 +291,19 @@ func TestCreateOutputMultiBroker(t *testing.T) {
 	driver, err := createOutput(map[string]any{
 		"brokers": []string{"http://b1:9092", "http://b2:9092", "http://b3:9092"},
 		"topic":   "t",
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	require.NoError(t, err)
 	assert.Equal(t, "kafka", driver.Name())
 }
 
 func TestInitCreateClient(t *testing.T) {
-	driver, err := createOutput(map[string]any{
+	d, err := createOutput(map[string]any{
 		"brokers": []string{"http://localhost:19092"},
 		"topic":   "events",
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	require.NoError(t, err)
 
-	o, ok := driver.(*output)
+	o, ok := d.(*driver)
 	require.True(t, ok)
 	assert.Nil(t, o.client, "client must be nil before Init")
 
@@ -322,13 +314,13 @@ func TestInitCreateClient(t *testing.T) {
 }
 
 func TestCloseWithClient(t *testing.T) {
-	driver, err := createOutput(map[string]any{
+	d, err := createOutput(map[string]any{
 		"brokers": []string{"http://localhost:19092"},
 		"topic":   "events",
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	require.NoError(t, err)
 
-	o := driver.(*output)
+	o := d.(*driver)
 	require.NoError(t, o.Init(context.Background()))
 	assert.NotNil(t, o.client)
 
@@ -337,22 +329,22 @@ func TestCloseWithClient(t *testing.T) {
 }
 
 func TestSendSyncWithClient(t *testing.T) {
-	driver, err := createOutput(map[string]any{
+	d, err := createOutput(map[string]any{
 		"brokers": []string{"http://localhost:19092"},
 		"topic":   "events",
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	require.NoError(t, err)
 
-	o := driver.(*output)
+	o := d.(*driver)
 	require.NoError(t, o.Init(context.Background()))
 	defer func() { _ = o.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	err = o.Send(ctx, &domain.Event{
+	err = o.Send(ctx, &event.Event{
 		Rule:         "test",
-		Priority:     domain.PriorityWarning,
+		Priority:     event.PriorityWarning,
 		Time:         time.Now(),
 		Source:       "syscall",
 		OutputFields: map[string]interface{}{"a": "b"},
@@ -362,20 +354,20 @@ func TestSendSyncWithClient(t *testing.T) {
 }
 
 func TestSendAsyncWithClient(t *testing.T) {
-	driver, err := createOutput(map[string]any{
-		"brokers": []string{"http://localhost:19092"},
-		"topic":   "events",
-		"async":   true,
-	}, domain.OutputDeps{})
+	d, err := createOutput(map[string]any{
+		"brokers":  []string{"http://localhost:19092"},
+		"topic":    "events",
+		"producer": map[string]any{"async": true},
+	}, output.Deps{})
 	require.NoError(t, err)
 
-	o := driver.(*output)
+	o := d.(*driver)
 	require.NoError(t, o.Init(context.Background()))
 	defer func() { _ = o.Close() }()
 
-	err = o.Send(context.Background(), &domain.Event{
+	err = o.Send(context.Background(), &event.Event{
 		Rule:         "test",
-		Priority:     domain.PriorityWarning,
+		Priority:     event.PriorityWarning,
 		Time:         time.Now(),
 		Source:       "syscall",
 		OutputFields: map[string]interface{}{"a": "b"},
@@ -385,22 +377,22 @@ func TestSendAsyncWithClient(t *testing.T) {
 }
 
 func TestSendBatchSyncWithClient(t *testing.T) {
-	driver, err := createOutput(map[string]any{
+	d, err := createOutput(map[string]any{
 		"brokers": []string{"http://localhost:19092"},
 		"topic":   "events",
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	require.NoError(t, err)
 
-	o := driver.(*output)
+	o := d.(*driver)
 	require.NoError(t, o.Init(context.Background()))
 	defer func() { _ = o.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	events := []*domain.Event{
-		{Rule: "r1", Priority: domain.PriorityWarning, Time: time.Now(), Source: "syscall", OutputFields: map[string]interface{}{"a": "b"}},
-		{Rule: "r2", Priority: domain.PriorityError, Time: time.Now(), Source: "syscall", OutputFields: map[string]interface{}{"c": "d"}},
+	events := []*event.Event{
+		{Rule: "r1", Priority: event.PriorityWarning, Time: time.Now(), Source: "syscall", OutputFields: map[string]interface{}{"a": "b"}},
+		{Rule: "r2", Priority: event.PriorityError, Time: time.Now(), Source: "syscall", OutputFields: map[string]interface{}{"c": "d"}},
 	}
 	err = o.SendBatch(ctx, events)
 	// error expected - no broker
@@ -408,32 +400,32 @@ func TestSendBatchSyncWithClient(t *testing.T) {
 }
 
 func TestSendBatchAsyncWithClient(t *testing.T) {
-	driver, err := createOutput(map[string]any{
-		"brokers": []string{"http://localhost:19092"},
-		"topic":   "events",
-		"async":   true,
-	}, domain.OutputDeps{})
+	d, err := createOutput(map[string]any{
+		"brokers":  []string{"http://localhost:19092"},
+		"topic":    "events",
+		"producer": map[string]any{"async": true},
+	}, output.Deps{})
 	require.NoError(t, err)
 
-	o := driver.(*output)
+	o := d.(*driver)
 	require.NoError(t, o.Init(context.Background()))
 	defer func() { _ = o.Close() }()
 
-	events := []*domain.Event{
-		{Rule: "r1", Priority: domain.PriorityWarning, Time: time.Now(), Source: "syscall", OutputFields: map[string]interface{}{"a": "b"}},
+	events := []*event.Event{
+		{Rule: "r1", Priority: event.PriorityWarning, Time: time.Now(), Source: "syscall", OutputFields: map[string]interface{}{"a": "b"}},
 	}
 	err = o.SendBatch(context.Background(), events)
 	assert.NoError(t, err)
 }
 
 func TestHealthCheckWithClient(t *testing.T) {
-	driver, err := createOutput(map[string]any{
+	d, err := createOutput(map[string]any{
 		"brokers": []string{"http://localhost:19092"},
 		"topic":   "events",
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	require.NoError(t, err)
 
-	o := driver.(*output)
+	o := d.(*driver)
 	require.NoError(t, o.Init(context.Background()))
 	defer func() { _ = o.Close() }()
 

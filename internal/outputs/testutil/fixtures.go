@@ -19,19 +19,20 @@ package testutil
 import (
 	"time"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
 )
 
 // CreateValidEvent returns a complete test event.
-func CreateValidEvent() *domain.Event {
-	return &domain.Event{
+func CreateValidEvent() *event.Event {
+	return &event.Event{
 		Time:     time.Date(2026, 4, 1, 10, 30, 0, 0, time.UTC),
 		UUID:     "test-uuid-001",
 		Output:   "File below a known binary directory opened for writing",
 		Rule:     "Write below binary dir",
 		Source:   "syscall",
 		Hostname: "node-1",
-		Priority: domain.PriorityError,
+		Priority: event.PriorityError,
 		Tags:     []string{"filesystem", "mitre_persistence"},
 		OutputFields: map[string]interface{}{
 			"fd.name":      "/bin/hack",
@@ -39,4 +40,17 @@ func CreateValidEvent() *domain.Event {
 			"user.name":    "root",
 		},
 	}
+}
+
+// MustNewSender creates a Sender with empty config or fails the test.
+func MustNewSender(t interface {
+	Helper()
+	Fatalf(string, ...any)
+}, name string) *shared.Sender {
+	t.Helper()
+	s, err := shared.NewSender(name, &shared.HTTPConfig{})
+	if err != nil {
+		t.Fatalf("mustNewSender(%s): %v", name, err)
+	}
+	return s
 }

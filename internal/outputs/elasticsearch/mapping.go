@@ -25,30 +25,30 @@ import (
 // createIndexTemplate creates a composable index template using the
 // _index_template API (ES 7.8+, composable templates).
 // since ES 7.8 and will be removed in ES 9.x.
-func (o *output) createIndexTemplate(ctx context.Context) error {
-	templateURL := fmt.Sprintf("%s/_index_template/%s", o.cfg.URL, o.cfg.Index)
+func (d *driver) createIndexTemplate(ctx context.Context) error {
+	templateURL := fmt.Sprintf("%s/_index_template/%s", d.cfg.URL, d.cfg.Index)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, templateURL, http.NoBody)
 	if err != nil {
 		return fmt.Errorf("elasticsearch index template check: %w", err)
 	}
-	if checkErr := o.sender.Do(ctx, req); checkErr == nil {
-		o.logger.Info("index template already exists", "index", o.cfg.Index)
+	if checkErr := d.sender.Do(ctx, req); checkErr == nil {
+		d.logger.Info("index template already exists", "index", d.cfg.Index)
 		return nil
 	}
 
-	shards := o.cfg.NumberOfShards
+	shards := d.cfg.NumberOfShards
 	if shards <= 0 {
 		shards = 3
 	}
-	replicas := o.cfg.NumberOfReplicas
+	replicas := d.cfg.NumberOfReplicas
 	if replicas < 0 {
 		replicas = 3
 	}
 
-	pattern := o.cfg.Index + "-*"
-	if o.cfg.Suffix == suffixNone {
-		pattern = o.cfg.Index
+	pattern := d.cfg.Index + "-*"
+	if d.cfg.Suffix == suffixNone {
+		pattern = d.cfg.Index
 	}
 
 	tmpl := map[string]any{
@@ -62,11 +62,11 @@ func (o *output) createIndexTemplate(ctx context.Context) error {
 		},
 	}
 
-	if err := o.sender.SendJSON(ctx, http.MethodPut, templateURL, tmpl); err != nil {
+	if err := d.sender.SendJSON(ctx, http.MethodPut, templateURL, tmpl); err != nil {
 		return fmt.Errorf("elasticsearch index template create: %w", err)
 	}
 
-	o.logger.Info("index template created", "index", o.cfg.Index)
+	d.logger.Info("index template created", "index", d.cfg.Index)
 	return nil
 }
 

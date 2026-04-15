@@ -26,25 +26,25 @@ import (
 )
 
 func resolveSASL(cfg *config) (kgo.Opt, error) {
-	switch strings.ToLower(cfg.SASL) {
+	switch strings.ToLower(cfg.Auth.SASL) {
 	case "plain":
 		return kgo.SASL(plain.Auth{
-			User: cfg.Username,
-			Pass: cfg.Password,
+			User: cfg.Auth.Username,
+			Pass: cfg.Auth.Password,
 		}.AsMechanism()), nil
 	case "scram_sha256":
 		return kgo.SASL(scram.Auth{
-			User: cfg.Username,
-			Pass: cfg.Password,
+			User: cfg.Auth.Username,
+			Pass: cfg.Auth.Password,
 		}.AsSha256Mechanism()), nil
 	case "scram_sha512":
 		return kgo.SASL(scram.Auth{
-			User: cfg.Username,
-			Pass: cfg.Password,
+			User: cfg.Auth.Username,
+			Pass: cfg.Auth.Password,
 		}.AsSha512Mechanism()), nil
 	case "", configNone:
 		return nil, nil
 	default:
-		return nil, fmt.Errorf("kafka: unsupported SASL mechanism %q", cfg.SASL)
+		return nil, fmt.Errorf("kafka: unsupported SASL mechanism %q", cfg.Auth.SASL)
 	}
 }

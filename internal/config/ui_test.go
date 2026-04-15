@@ -15,3 +15,33 @@
 // SPDX-License-Identifier: Apache-2.0
 
 package config
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+
+	"github.com/falcosecurity/falcosidekick/internal/domain/core"
+)
+
+func TestUIConfigValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     core.UIConfig
+		wantErr bool
+	}{
+		{"disabled", core.UIConfig{Enabled: false}, false},
+		{"enabled with backend", core.UIConfig{Enabled: true, EventSource: "memory"}, false},
+		{"enabled no backend", core.UIConfig{Enabled: true, EventSource: ""}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := tt.cfg.Validate()
+			if tt.wantErr {
+				assert.NotEmpty(t, errs)
+			} else {
+				assert.Empty(t, errs)
+			}
+		})
+	}
+}

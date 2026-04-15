@@ -17,18 +17,20 @@
 package config
 
 import (
-	"time"
+	"fmt"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
-	"github.com/falcosecurity/falcosidekick/internal/pipeline"
+	"github.com/mitchellh/mapstructure"
+
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
 // PipelineConfig holds event pipeline settings.
 type PipelineConfig struct {
-	Outputs               map[string]map[string]any `mapstructure:"outputs"`
-	Enricher              pipeline.EnricherConfig   `mapstructure:"enricher"`
-	pipeline.OutputConfig `mapstructure:",squash"`
+	Outputs       map[string]map[string]any `mapstructure:"outputs"`
+	output.Config `mapstructure:",squash"`
+	Enricher      output.EnricherConfig `mapstructure:"enricher"`
 }
 
 // Validate checks the pipeline configuration for errors.
@@ -36,7 +38,7 @@ func (c *PipelineConfig) Validate() utils.ValidationErrors {
 	var errs utils.ValidationErrors
 
 	errs.Merge("enricher", c.Enricher.Validate())
-	errs.Merge("", c.OutputConfig.Validate())
+	errs.Merge("", c.Config.Validate())
 
 	if len(errs) > 0 {
 		return errs
@@ -44,51 +46,55 @@ func (c *PipelineConfig) Validate() utils.ValidationErrors {
 	return nil
 }
 
-// ResolveOutputConfig returns a fully resolved OutputConfig for the named output,
-// merging pipeline defaults with per-output overrides and priority.
-func (c *PipelineConfig) ResolveOutputConfig(name string) pipeline.OutputConfig {
-	resolved := c.OutputConfig
+// ResolveOutputConfig deep-merges pipeline defaults with per-output overrides.
+// Only fields present in the per-output config override defaults.
+func (c *PipelineConfig) ResolveOutputConfig(name string) (output.Config, error) {
+	resolved := c.deepCopyDefaults()
 
-	outputCfg, ok := c.Outputs[name]
+	raw, ok := c.Outputs[name]
 	if !ok {
-		return resolved
+		return resolved, nil
 	}
 
-	if v, ok := outputCfg["queue_size"]; ok {
-		if n, ok := v.(int); ok && n > 0 {
-			resolved.QueueSize = n
-		}
+	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+		DecodeHook:       mapstructure.StringToTimeDurationHookFunc(),
+		WeaklyTypedInput: true,
+		Result:           &resolved,
+	})
+	if err != nil {
+		return resolved, err
 	}
-	if v, ok := outputCfg["workers"]; ok {
-		if n, ok := v.(int); ok && n > 0 {
-			resolved.Workers = n
-		}
-	}
-	if v, ok := outputCfg["minimumpriority"]; ok {
-		if s, ok := v.(string); ok && s != "" {
-			resolved.MinPriority = domain.Priority(s)
-		}
+	if err := dec.Decode(raw); err != nil {
+		return resolved, err
 	}
 
-	if v, ok := outputCfg["batching"]; ok {
-		if bm, ok := v.(map[string]any); ok {
-			if enabled, ok := bm["enabled"]; ok {
-				if b, ok := enabled.(bool); ok {
-					resolved.Batching.Enabled = b
-				}
-			}
-			if bs, ok := bm["batch_size"]; ok {
-				if n, ok := bs.(int); ok && n > 0 {
-					resolved.Batching.BatchSize = n
-				}
-			}
-			if fi, ok := bm["flush_interval"]; ok {
-				if d, ok := fi.(time.Duration); ok && d > 0 {
-					resolved.Batching.FlushInterval = d
-				}
-			}
+	if resolved.MinPriority != "" {
+		if _, err := event.ParsePriority(string(resolved.MinPriority)); err != nil {
+			return resolved, fmt.Errorf("output %q: %w", name, err)
 		}
 	}
 
-	return resolved
+	if errs := resolved.Validate(); len(errs) > 0 {
+		return resolved, fmt.Errorf("output %q: %s", name, errs.Error())
+	}
+
+	return resolved, nil
+}
+
+// deepCopyDefaults returns a deep copy of the pipeline defaults so decoding.
+func (c *PipelineConfig) deepCopyDefaults() output.Config {
+	cp := c.Config
+	if c.Config.Retry != nil {
+		r := *c.Config.Retry
+		cp.Retry = &r
+	}
+	if c.Config.CircuitBreaker != nil {
+		cb := *c.Config.CircuitBreaker
+		cp.CircuitBreaker = &cb
+	}
+	if c.Config.Batching != nil {
+		b := *c.Config.Batching
+		cp.Batching = &b
+	}
+	return cp
 }

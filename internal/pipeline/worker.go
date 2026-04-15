@@ -20,7 +20,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 )
 
 func (o *Output) runWorker(ctx context.Context) {
@@ -28,12 +28,12 @@ func (o *Output) runWorker(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case event, ok := <-o.queue:
+		case evt, ok := <-o.queue:
 			if !ok {
 				return
 			}
 			o.executeWithRetry(ctx, 1, func(ctx context.Context) error {
-				return o.driver.Send(ctx, event)
+				return o.driver.Send(ctx, evt)
 			})
 		}
 	}
@@ -41,7 +41,7 @@ func (o *Output) runWorker(ctx context.Context) {
 
 func (o *Output) runBatchWorker(ctx context.Context) {
 	batchCfg := o.config.Batching
-	buffer := make([]*domain.Event, 0, batchCfg.BatchSize)
+	buffer := make([]*event.Event, 0, batchCfg.BatchSize)
 	ticker := time.NewTicker(batchCfg.FlushInterval)
 	defer ticker.Stop()
 
@@ -52,12 +52,12 @@ func (o *Output) runBatchWorker(ctx context.Context) {
 			return
 		case <-ticker.C:
 			buffer = o.flushBatch(ctx, buffer)
-		case event, ok := <-o.queue:
+		case evt, ok := <-o.queue:
 			if !ok {
 				o.flushBatch(ctx, buffer)
 				return
 			}
-			buffer = append(buffer, event)
+			buffer = append(buffer, evt)
 			if len(buffer) >= batchCfg.BatchSize {
 				buffer = o.flushBatch(ctx, buffer)
 				ticker.Reset(batchCfg.FlushInterval)
@@ -66,12 +66,12 @@ func (o *Output) runBatchWorker(ctx context.Context) {
 	}
 }
 
-func (o *Output) flushBatch(ctx context.Context, buffer []*domain.Event) []*domain.Event {
+func (o *Output) flushBatch(ctx context.Context, buffer []*event.Event) []*event.Event {
 	if len(buffer) == 0 {
 		return buffer[:0]
 	}
 
-	snapshot := make([]*domain.Event, len(buffer))
+	snapshot := make([]*event.Event, len(buffer))
 	copy(snapshot, buffer)
 
 	count := int64(len(snapshot))

@@ -22,30 +22,30 @@ import (
 
 	"github.com/twmb/franz-go/pkg/kgo"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 )
 
 // buildRecord creates a Kafka record from a Falco event with key, headers, and topic resolution.
-func (o *output) buildRecord(event *domain.Event) (*kgo.Record, error) {
-	data, err := json.Marshal(event)
+func (o *driver) buildRecord(evt *event.Event) (*kgo.Record, error) {
+	data, err := json.Marshal(evt)
 	if err != nil {
 		return nil, fmt.Errorf("kafka marshal: %w", err)
 	}
 
 	return &kgo.Record{
-		Topic:   o.resolveTopic(event),
+		Topic:   o.resolveTopic(evt),
 		Value:   data,
-		Key:     o.resolveKey(event),
-		Headers: buildHeaders(event),
+		Key:     o.resolveKey(evt),
+		Headers: buildHeaders(evt),
 	}, nil
 }
 
 // resolveTopic returns the topic for this event.
 // If topic_field is configured and the field exists in the event, use it.
 // Otherwise use the default static topic.
-func (o *output) resolveTopic(event *domain.Event) string {
+func (o *driver) resolveTopic(evt *event.Event) string {
 	if o.cfg.TopicField != "" {
-		if v, ok := event.OutputFields[o.cfg.TopicField]; ok {
+		if v, ok := evt.OutputFields[o.cfg.TopicField]; ok {
 			if s, ok := v.(string); ok && s != "" {
 				return s
 			}
@@ -56,9 +56,9 @@ func (o *output) resolveTopic(event *domain.Event) string {
 
 // resolveKey returns the message key for partition affinity.
 // Priority: message_key_field (dynamic) > message_key (static) > nil (round-robin).
-func (o *output) resolveKey(event *domain.Event) []byte {
+func (o *driver) resolveKey(evt *event.Event) []byte {
 	if o.cfg.MessageKeyField != "" {
-		if v, ok := event.OutputFields[o.cfg.MessageKeyField]; ok {
+		if v, ok := evt.OutputFields[o.cfg.MessageKeyField]; ok {
 			if s, ok := v.(string); ok && s != "" {
 				return []byte(s)
 			}
@@ -71,11 +71,11 @@ func (o *output) resolveKey(event *domain.Event) []byte {
 }
 
 // buildHeaders creates Kafka record headers for consumer-side routing/filtering.
-func buildHeaders(event *domain.Event) []kgo.RecordHeader {
+func buildHeaders(evt *event.Event) []kgo.RecordHeader {
 	return []kgo.RecordHeader{
 		{Key: "content-type", Value: []byte("application/json")},
-		{Key: "falco.rule", Value: []byte(event.Rule)},
-		{Key: "falco.priority", Value: []byte(string(event.Priority))},
-		{Key: "falco.source", Value: []byte(event.Source)},
+		{Key: "falco.rule", Value: []byte(evt.Rule)},
+		{Key: "falco.priority", Value: []byte(string(evt.Priority))},
+		{Key: "falco.source", Value: []byte(evt.Source)},
 	}
 }

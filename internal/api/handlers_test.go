@@ -30,20 +30,23 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/database"
+	"github.com/falcosecurity/falcosidekick/internal/domain/core"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
 )
 
-var defaultTestOutputConfig = pipeline.OutputConfig{
+var defaultTestOutputConfig = output.Config{
 	QueueSize: 100,
 	Workers:   1,
-	Retry: pipeline.RetryConfig{
+	Retry: &output.RetryConfig{
 		MaxAttempts:     1,
 		InitialInterval: 10 * time.Millisecond,
 		MaxInterval:     100 * time.Millisecond,
 		Multiplier:      2.0,
 	},
-	CircuitBreaker: pipeline.CircuitBreakerConfig{
+	CircuitBreaker: &output.CircuitBreakerConfig{
 		FailureThreshold: 5,
 		SuccessThreshold: 2,
 		ResetTimeout:     30 * time.Second,
@@ -51,7 +54,7 @@ var defaultTestOutputConfig = pipeline.OutputConfig{
 }
 
 type testOutput struct {
-	sendFunc func(ctx context.Context, event *domain.Event) error
+	sendFunc func(ctx context.Context, evt *event.Event) error
 	name     string
 }
 
@@ -59,16 +62,16 @@ func (m *testOutput) Name() string                        { return m.name }
 func (m *testOutput) Init(_ context.Context) error        { return nil }
 func (m *testOutput) HealthCheck(_ context.Context) error { return nil }
 func (m *testOutput) Close() error                        { return nil }
-func (m *testOutput) Send(ctx context.Context, event *domain.Event) error {
+func (m *testOutput) Send(ctx context.Context, evt *event.Event) error {
 	if m.sendFunc != nil {
-		return m.sendFunc(ctx, event)
+		return m.sendFunc(ctx, evt)
 	}
 	return nil
 }
 
 func buildTestServer(t *testing.T, outputs []*pipeline.Output) *Server {
 	t.Helper()
-	enricher, _ := pipeline.NewEnricher(pipeline.EnricherConfig{
+	enricher, _ := pipeline.NewEnricher(output.EnricherConfig{
 		TruncateEventThreshold: 4096,
 		TruncateFieldThreshold: 512,
 	})
@@ -79,10 +82,9 @@ func buildTestServer(t *testing.T, outputs []*pipeline.Output) *Server {
 		t.Fatalf("build pipeline: %v", err)
 	}
 
-	ctx := context.Background()
-	p.Start(ctx)
+	p.Start()
 
-	srv, err := NewServer(ServerConfig{Pipeline: p})
+	srv, err := NewServer(&ServerConfig{Pipeline: p})
 	if err != nil {
 		t.Fatalf("build server: %v", err)
 	}
@@ -90,7 +92,7 @@ func buildTestServer(t *testing.T, outputs []*pipeline.Output) *Server {
 }
 
 func createValidEventJSON() []byte {
-	event := domain.Event{
+	evt := event.Event{
 		Time:         time.Now().UTC(),
 		OutputFields: map[string]interface{}{"proc.name": "bash"},
 		Tags:         []string{"test"},
@@ -98,25 +100,24 @@ func createValidEventJSON() []byte {
 		Output:       "test output",
 		Source:       "syscall",
 		Hostname:     "node-1",
-		Priority:     domain.PriorityWarning,
+		Priority:     event.PriorityWarning,
 	}
-	data, _ := event.MarshalJSON()
+	data, _ := evt.MarshalJSON()
 	return data
 }
 
 func TestHandlePostEventValid(t *testing.T) {
 	var received atomic.Int64
 	cfg := defaultTestOutputConfig
-	cfg.MinPriority = domain.PriorityDebug
-	out := pipeline.NewOutput(&testOutput{name: "test", sendFunc: func(_ context.Context, _ *domain.Event) error {
+	cfg.MinPriority = event.PriorityDebug
+	out := pipeline.NewOutput(&testOutput{name: "test", sendFunc: func(_ context.Context, _ *event.Event) error {
 		received.Add(1)
 		return nil
 	}}, &cfg, nil)
 
 	srv := buildTestServer(t, []*pipeline.Output{out})
 
-	ctx := context.Background()
-	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/", bytes.NewReader(createValidEventJSON()))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", bytes.NewReader(createValidEventJSON()))
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := srv.app.Test(req)
@@ -131,8 +132,7 @@ func TestHandlePostEventValid(t *testing.T) {
 func TestHandlePostEventInvalidJSON(t *testing.T) {
 	srv := buildTestServer(t, nil)
 
-	ctx := context.Background()
-	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/", bytes.NewReader([]byte(`{invalid`)))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", bytes.NewReader([]byte(`{invalid`)))
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := srv.app.Test(req)
@@ -147,14 +147,13 @@ func TestHandlePostEventInvalidJSON(t *testing.T) {
 func TestHandlePostEventMissingRule(t *testing.T) {
 	srv := buildTestServer(t, nil)
 
-	event := map[string]interface{}{
+	evt := map[string]interface{}{
 		"time":   time.Now().UTC(),
 		"source": "syscall",
 	}
-	data, _ := json.Marshal(event)
+	data, _ := json.Marshal(evt)
 
-	ctx := context.Background()
-	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/", bytes.NewReader(data))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := srv.app.Test(req)
@@ -169,8 +168,7 @@ func TestHandlePostEventMissingRule(t *testing.T) {
 func TestHandleGetHealthz(t *testing.T) {
 	srv := buildTestServer(t, nil)
 
-	ctx := context.Background()
-	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/healthz", http.NoBody)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", http.NoBody)
 
 	resp, err := srv.app.Test(req)
 	require.NoError(t, err)
@@ -182,7 +180,7 @@ func TestHandleGetHealthz(t *testing.T) {
 }
 
 func TestServerDefaults(t *testing.T) {
-	enricher, err := pipeline.NewEnricher(pipeline.EnricherConfig{
+	enricher, err := pipeline.NewEnricher(output.EnricherConfig{
 		TruncateEventThreshold: 4096,
 		TruncateFieldThreshold: 512,
 	})
@@ -190,13 +188,112 @@ func TestServerDefaults(t *testing.T) {
 	p, err := pipeline.NewPipeline(enricher, pipeline.NewDispatcher(nil), nil)
 	require.NoError(t, err)
 
-	srv, err := NewServer(ServerConfig{Pipeline: p})
+	srv, err := NewServer(&ServerConfig{Pipeline: p})
 	require.NoError(t, err)
 	assert.Equal(t, "0.0.0.0:2801", srv.address)
 }
 
 func TestNewServerRejectsNilPipeline(t *testing.T) {
-	_, err := NewServer(ServerConfig{})
+	_, err := NewServer(&ServerConfig{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "pipeline is required")
+}
+
+func buildTestServerWithDB(t *testing.T, db core.Database) *Server {
+	t.Helper()
+	enricher, _ := pipeline.NewEnricher(output.EnricherConfig{
+		TruncateEventThreshold: 4096,
+		TruncateFieldThreshold: 512,
+	})
+	dispatcher := pipeline.NewDispatcher(nil)
+	p, err := pipeline.NewPipeline(enricher, dispatcher, nil)
+	require.NoError(t, err)
+	p.Start()
+
+	srv, err := NewServer(&ServerConfig{Pipeline: p, Database: db})
+	require.NoError(t, err)
+	return srv
+}
+
+func TestHandleGetConfigProvisioned(t *testing.T) {
+	db := database.NewMemory()
+	require.NoError(t, db.Provision(t.Context(), &core.ProvisionRequest{
+		Config:  &core.Config{ListenPort: 2801, LogLevel: core.LogLevelInfo},
+		Outputs: map[string]map[string]any{},
+	}))
+
+	srv := buildTestServerWithDB(t, db)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/config", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, 200, resp.StatusCode)
+
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "listen_port")
+}
+
+func TestHandleGetConfigEmpty(t *testing.T) {
+	db := database.NewMemory()
+	srv := buildTestServerWithDB(t, db)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/config", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, 200, resp.StatusCode)
+}
+
+func TestHandleGetConfigNoDatabase(t *testing.T) {
+	srv := buildTestServerWithDB(t, nil)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/config", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, 503, resp.StatusCode)
+}
+
+func TestHandleGetOutputsProvisioned(t *testing.T) {
+	db := database.NewMemory()
+	require.NoError(t, db.Provision(t.Context(), &core.ProvisionRequest{
+		Outputs: map[string]map[string]any{
+			"slack":  {"webhookurl": "https://test"},
+			"memory": {"capacity": 5000},
+		},
+	}))
+
+	srv := buildTestServerWithDB(t, db)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/outputs", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, 200, resp.StatusCode)
+
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "slack")
+	assert.Contains(t, string(body), "memory")
+}
+
+func TestHandleGetOutputsEmpty(t *testing.T) {
+	db := database.NewMemory()
+	srv := buildTestServerWithDB(t, db)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/outputs", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, 200, resp.StatusCode)
+}
+
+func TestHandleGetOutputsNoDatabase(t *testing.T) {
+	srv := buildTestServerWithDB(t, nil)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/outputs", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, 503, resp.StatusCode)
 }

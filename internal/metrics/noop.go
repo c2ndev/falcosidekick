@@ -20,10 +20,10 @@ import (
 	"context"
 	"time"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 )
 
-// NoopCollector implements domain.MetricsCollector with no-op methods.
+// NoopCollector implements core.MetricsCollector with no-op methods.
 type NoopCollector struct{}
 
 // RecordInput is a no-op.
@@ -39,4 +39,4 @@ func (NoopCollector) RecordDrop(_ context.Context, _ string) {}
 func (NoopCollector) RecordError(_ context.Context, _ string, _ error) {}
 
 // RecordEvent is a no-op.
-func (NoopCollector) RecordEvent(_ context.Context, _ string, _ domain.Priority, _ string) {}
+func (NoopCollector) RecordEvent(_ context.Context, _ string, _ event.Priority, _ string) {}

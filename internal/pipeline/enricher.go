@@ -26,8 +26,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
-	"github.com/falcosecurity/falcosidekick/internal/utils"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 )
 
 const (
@@ -35,43 +35,14 @@ const (
 	defaultHostname     = "unknown"
 )
 
-// EnricherConfig holds enrichment settings.
-type EnricherConfig struct {
-	CustomFields           map[string]string `mapstructure:"customfields"`
-	TemplatedFields        map[string]string `mapstructure:"templatedfields"`
-	BracketReplacer        string            `mapstructure:"bracketreplacer"`
-	CustomTags             []string          `mapstructure:"customtags"`
-	TruncateEventThreshold int               `mapstructure:"truncate_event_threshold"`
-	TruncateFieldThreshold int               `mapstructure:"truncate_field_threshold"`
-}
-
-// Validate checks enricher settings for errors.
-func (c *EnricherConfig) Validate() utils.ValidationErrors {
-	var errs utils.ValidationErrors
-	if c.TruncateEventThreshold < 0 {
-		errs.Add("truncate_event_threshold", fmt.Sprintf("must be >= 0, got %d", c.TruncateEventThreshold))
-	}
-	if c.TruncateFieldThreshold < 0 {
-		errs.Add("truncate_field_threshold", fmt.Sprintf("must be >= 0, got %d", c.TruncateFieldThreshold))
-	}
-	// TODO: consider allowing custom suffix
-	if c.TruncateEventThreshold > 0 && c.TruncateFieldThreshold <= len(truncateFieldSuffix) {
-		errs.Add("truncate_field_threshold", fmt.Sprintf("must be > %d when event truncation is enabled, got %d", len(truncateFieldSuffix), c.TruncateFieldThreshold))
-	}
-	if len(errs) > 0 {
-		return errs
-	}
-	return nil
-}
-
 // Enricher adds custom fields, tags, UUID, and applies transformations to events.
 type Enricher struct {
 	templatedFields map[string]*template.Template
-	cfg             EnricherConfig
+	cfg             output.EnricherConfig
 }
 
 // NewEnricher creates an Enricher from configuration.
-func NewEnricher(cfg EnricherConfig) (*Enricher, error) {
+func NewEnricher(cfg output.EnricherConfig) (*Enricher, error) {
 	templates := make(map[string]*template.Template, len(cfg.TemplatedFields))
 	for k, v := range cfg.TemplatedFields {
 		tmpl, err := template.New(k).Parse(v)
@@ -87,77 +58,77 @@ func NewEnricher(cfg EnricherConfig) (*Enricher, error) {
 	}, nil
 }
 
-// Enrich applies all enrichment steps to the event in place.
-func (e *Enricher) Enrich(event *domain.Event) error {
-	event.UUID = uuid.NewString()
+// Enrich applies all enrichment steps to the evt in place.
+func (e *Enricher) Enrich(evt *event.Event) error {
+	evt.UUID = uuid.NewString()
 
-	e.injectCustomFields(event)
-	e.evaluateTemplatedFields(event)
-	e.injectCustomTags(event)
-	e.applyDefaultHostname(event)
-	e.replaceBrackets(event)
-	e.truncateIfNeeded(event)
+	e.injectCustomFields(evt)
+	e.evaluateTemplatedFields(evt)
+	e.injectCustomTags(evt)
+	e.applyDefaultHostname(evt)
+	e.replaceBrackets(evt)
+	e.truncateIfNeeded(evt)
 
 	return nil
 }
 
-func (e *Enricher) injectCustomFields(event *domain.Event) {
+func (e *Enricher) injectCustomFields(evt *event.Event) {
 	for k, v := range e.cfg.CustomFields {
-		event.OutputFields[k] = v
+		evt.OutputFields[k] = v
 	}
 }
 
-func (e *Enricher) evaluateTemplatedFields(event *domain.Event) {
+func (e *Enricher) evaluateTemplatedFields(evt *event.Event) {
 	for k, tmpl := range e.templatedFields {
 		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, event.OutputFields); err != nil {
+		if err := tmpl.Execute(&buf, evt.OutputFields); err != nil {
 			continue
 		}
-		event.OutputFields[k] = buf.String()
+		evt.OutputFields[k] = buf.String()
 	}
 }
 
-func (e *Enricher) injectCustomTags(event *domain.Event) {
+func (e *Enricher) injectCustomTags(evt *event.Event) {
 	if len(e.cfg.CustomTags) == 0 {
 		return
 	}
-	event.Tags = append(event.Tags, e.cfg.CustomTags...)
-	sort.Strings(event.Tags)
+	evt.Tags = append(evt.Tags, e.cfg.CustomTags...)
+	sort.Strings(evt.Tags)
 }
 
-func (e *Enricher) applyDefaultHostname(event *domain.Event) {
-	if event.Hostname == "" {
-		event.Hostname = defaultHostname
+func (e *Enricher) applyDefaultHostname(evt *event.Event) {
+	if evt.Hostname == "" {
+		evt.Hostname = defaultHostname
 	}
 }
 
-func (e *Enricher) replaceBrackets(event *domain.Event) {
+func (e *Enricher) replaceBrackets(evt *event.Event) {
 	if e.cfg.BracketReplacer == "" {
 		return
 	}
 	replacer := strings.NewReplacer("[", e.cfg.BracketReplacer, "]", e.cfg.BracketReplacer)
-	replaced := make(map[string]interface{}, len(event.OutputFields))
-	for k, v := range event.OutputFields {
+	replaced := make(map[string]interface{}, len(evt.OutputFields))
+	for k, v := range evt.OutputFields {
 		replaced[replacer.Replace(k)] = v
 	}
-	event.OutputFields = replaced
+	evt.OutputFields = replaced
 }
 
-func (e *Enricher) truncateIfNeeded(event *domain.Event) {
+func (e *Enricher) truncateIfNeeded(evt *event.Event) {
 	if e.cfg.TruncateEventThreshold <= 0 || e.cfg.TruncateFieldThreshold <= len(truncateFieldSuffix) {
 		return
 	}
-	data, err := json.Marshal(event)
+	data, err := json.Marshal(evt)
 	if err != nil || len(data) <= e.cfg.TruncateEventThreshold {
 		return
 	}
-	for k, v := range event.OutputFields {
+	for k, v := range evt.OutputFields {
 		s, ok := v.(string)
 		if !ok {
 			continue
 		}
 		if len(s) > e.cfg.TruncateFieldThreshold {
-			event.OutputFields[k] = s[:e.cfg.TruncateFieldThreshold-len(truncateFieldSuffix)] + truncateFieldSuffix
+			evt.OutputFields[k] = s[:e.cfg.TruncateFieldThreshold-len(truncateFieldSuffix)] + truncateFieldSuffix
 		}
 	}
 }

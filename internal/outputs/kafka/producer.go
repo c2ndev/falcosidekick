@@ -22,7 +22,7 @@ import (
 
 	"github.com/twmb/franz-go/pkg/kgo"
 
-	"github.com/falcosecurity/falcosidekick/internal/outputs/sdk"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
 )
 
 const configNone = "none"
@@ -33,19 +33,19 @@ func buildClientOpts(cfg *config) ([]kgo.Opt, error) {
 		kgo.DefaultProduceTopic(cfg.Topic),
 	}
 
-	if cfg.TopicCreation {
+	if cfg.Producer.TopicCreation {
 		opts = append(opts, kgo.AllowAutoTopicCreation())
 	}
-	if cfg.ClientID != "" {
-		opts = append(opts, kgo.ClientID(cfg.ClientID))
+	if cfg.Producer.ClientID != "" {
+		opts = append(opts, kgo.ClientID(cfg.Producer.ClientID))
 	}
 
-	opts = append(opts, kgo.RequiredAcks(resolveACKs(cfg.RequiredACKs)))
-	opts = append(opts, resolveCompression(cfg.Compression)...)
-	opts = append(opts, resolveBalancer(cfg.Balancer)...)
+	opts = append(opts, kgo.RequiredAcks(resolveACKs(cfg.Producer.RequiredACKs)))
+	opts = append(opts, resolveCompression(cfg.Producer.Compression)...)
+	opts = append(opts, resolveBalancer(cfg.Producer.Balancer)...)
 
 	if cfg.TLSEnabled {
-		tlsCfg, err := sdk.BuildTLSConfig(&cfg.TLSConfig)
+		tlsCfg, err := shared.BuildTLSConfig(&cfg.TLS)
 		if err != nil {
 			return nil, fmt.Errorf("kafka tls: %w", err)
 		}
@@ -60,7 +60,7 @@ func buildClientOpts(cfg *config) ([]kgo.Opt, error) {
 		opts = append(opts, saslOpt)
 	}
 
-	if cfg.Async {
+	if cfg.Producer.Async {
 		opts = append(opts, kgo.DisableIdempotentWrite())
 	}
 

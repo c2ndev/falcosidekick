@@ -30,8 +30,8 @@ ifeq ($(DIFF), 1)
     GIT_TREESTATE = dirty
 endif
 
-PKG=main
-LDFLAGS=-X $(PKG).GitVersion=$(GIT_VERSION) -X $(PKG).gitCommit=$(GIT_HASH) -X $(PKG).gitTreeState=$(GIT_TREESTATE) -X $(PKG).buildDate=$(BUILD_DATE)
+VERSION_PKG=github.com/falcosecurity/falcosidekick/internal/version
+LDFLAGS=-X $(VERSION_PKG).Version=$(GIT_VERSION) -X $(VERSION_PKG).Commit=$(GIT_HASH) -X $(VERSION_PKG).BuildDate=$(BUILD_DATE)
 
 # Directories.
 ROOT_DIR:=$(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
@@ -94,6 +94,41 @@ lint-fix: ## Run golangci-lint with auto-fix and struct field alignment
 	golangci-lint run --fix ./...
 	golangci-lint fmt ./...
 	fieldalignment -fix ./internal/...
+
+## --------------------------------------
+## v3 Targets (scoped to internal/ and cmd/ only)
+## These will replace the root-level targets when v2 legacy is removed.
+## --------------------------------------
+
+V3_PACKAGES=./internal/... ./cmd/...
+
+.PHONY: v3-test
+v3-test: ## Run v3 unit tests with race detection
+	$(GO) vet $(V3_PACKAGES)
+	$(GO) test $(TEST_FLAGS) $(V3_PACKAGES)
+
+.PHONY: v3-lint
+v3-lint: ## Run golangci-lint on v3 packages
+	golangci-lint run $(V3_PACKAGES)
+
+.PHONY: v3-lint-fix
+v3-lint-fix: ## Run golangci-lint with auto-fix on v3 packages
+	golangci-lint run --fix $(V3_PACKAGES)
+	fieldalignment -fix ./internal/...
+
+.PHONY: v3-coverage
+v3-coverage: ## Run v3 tests with coverage report and threshold check
+	$(GO) test -race -coverprofile=coverage-v3.out -covermode=atomic $(V3_PACKAGES)
+	@$(GO) tool cover -func=coverage-v3.out | tail -1
+	@COVERAGE=$$($(GO) tool cover -func=coverage-v3.out | grep total | awk '{print $$3}' | tr -d '%'); \
+	if [ $$(echo "$$COVERAGE < 80" | bc -l) -eq 1 ]; then \
+		echo "FAIL: v3 coverage $$COVERAGE% is below 80% threshold"; exit 1; \
+	else \
+		echo "OK: v3 coverage $$COVERAGE%"; \
+	fi
+
+.PHONY: v3-verify
+v3-verify: v3-lint v3-test ui-build ui-lint ## Run all v3 Go and UI checks
 
 ## --------------------------------------
 ## Frontend (ui/)

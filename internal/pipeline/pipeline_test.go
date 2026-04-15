@@ -25,12 +25,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 )
 
 func buildTestPipeline(t *testing.T, outputs []*Output) *Pipeline {
 	t.Helper()
-	enricher, err := NewEnricher(EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
+	enricher, err := NewEnricher(output.EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
 	require.NoError(t, err)
 	dispatcher := NewDispatcher(outputs)
 
@@ -42,17 +43,17 @@ func buildTestPipeline(t *testing.T, outputs []*Output) *Pipeline {
 func TestProcessEventEnrichesAndDispatches(t *testing.T) {
 	var received atomic.Int64
 
-	cfg := defaultOutputConfig()
-	cfg.MinPriority = domain.PriorityDebug
+	cfg := defaultPipelineDefaults()
+	cfg.MinPriority = event.PriorityDebug
 	out := NewOutput(&mockOutput{
 		name: "test",
-		sendFunc: func(_ context.Context, _ *domain.Event) error {
+		sendFunc: func(_ context.Context, _ *event.Event) error {
 			received.Add(1)
 			return nil
 		},
 	}, cfg, nil)
 
-	enricher, _ := NewEnricher(EnricherConfig{
+	enricher, _ := NewEnricher(output.EnricherConfig{
 		CustomFields:           map[string]string{"env": "test"},
 		TruncateEventThreshold: 4096,
 		TruncateFieldThreshold: 512,
@@ -62,61 +63,59 @@ func TestProcessEventEnrichesAndDispatches(t *testing.T) {
 	p, err := NewPipeline(enricher, dispatcher, nil)
 	require.NoError(t, err)
 
-	ctx := context.Background()
-	p.Start(ctx)
+	p.Start()
 
-	event := newTestEvent()
-	p.ProcessEvent(ctx, event)
+	evt := newTestEvent()
+	p.ProcessEvent(t.Context(), evt)
 
-	drainCtx, drainCancel := context.WithTimeout(ctx, 2*time.Second)
+	drainCtx, drainCancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer drainCancel()
-	p.DrainQueues(drainCtx)
+	p.Shutdown(drainCtx)
 
 	assert.Equal(t, int64(1), received.Load())
-	assert.NotEmpty(t, event.UUID)
-	assert.Equal(t, "test", event.OutputFields["env"])
+	assert.NotEmpty(t, evt.UUID)
+	assert.Equal(t, "test", evt.OutputFields["env"])
 }
 
 func TestProcessEventRoutesByPriority(t *testing.T) {
 	var slackCalls, lokiCalls atomic.Int64
 
-	slackCfg := defaultOutputConfig()
-	slackCfg.MinPriority = domain.PriorityCritical
-	slackOut := NewOutput(&mockOutput{name: "slack", sendFunc: func(_ context.Context, _ *domain.Event) error {
+	slackCfg := defaultPipelineDefaults()
+	slackCfg.MinPriority = event.PriorityCritical
+	slackOut := NewOutput(&mockOutput{name: "slack", sendFunc: func(_ context.Context, _ *event.Event) error {
 		slackCalls.Add(1)
 		return nil
 	}}, slackCfg, nil)
 
-	lokiCfg := defaultOutputConfig()
-	lokiCfg.MinPriority = domain.PriorityDebug
-	lokiOut := NewOutput(&mockOutput{name: "loki", sendFunc: func(_ context.Context, _ *domain.Event) error {
+	lokiCfg := defaultPipelineDefaults()
+	lokiCfg.MinPriority = event.PriorityDebug
+	lokiOut := NewOutput(&mockOutput{name: "loki", sendFunc: func(_ context.Context, _ *event.Event) error {
 		lokiCalls.Add(1)
 		return nil
 	}}, lokiCfg, nil)
 
-	enricher, _ := NewEnricher(EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
+	enricher, _ := NewEnricher(output.EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
 	dispatcher := NewDispatcher([]*Output{slackOut, lokiOut})
 
 	p, err := NewPipeline(enricher, dispatcher, nil)
 	require.NoError(t, err)
 
-	ctx := context.Background()
-	p.Start(ctx)
+	p.Start()
 
-	event := newTestEvent()
-	event.Priority = domain.PriorityWarning
-	p.ProcessEvent(ctx, event)
+	evt := newTestEvent()
+	evt.Priority = event.PriorityWarning
+	p.ProcessEvent(t.Context(), evt)
 
-	drainCtx, drainCancel := context.WithTimeout(ctx, 2*time.Second)
+	drainCtx, drainCancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer drainCancel()
-	p.DrainQueues(drainCtx)
+	p.Shutdown(drainCtx)
 
 	assert.Equal(t, int64(0), slackCalls.Load(), "warning should not reach critical-only slack")
 	assert.Equal(t, int64(1), lokiCalls.Load(), "warning should reach debug-level loki")
 }
 
 func TestNewPipelineRejectsNilDependencies(t *testing.T) {
-	enricher, _ := NewEnricher(EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
+	enricher, _ := NewEnricher(output.EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
 	dispatcher := NewDispatcher(nil)
 
 	tests := []struct {
@@ -137,37 +136,35 @@ func TestNewPipelineRejectsNilDependencies(t *testing.T) {
 }
 
 func TestProcessEventWithNoOutputsDoesNotPanic(t *testing.T) {
-	enricher, err := NewEnricher(EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
+	enricher, err := NewEnricher(output.EnricherConfig{TruncateEventThreshold: 4096, TruncateFieldThreshold: 512})
 	require.NoError(t, err)
 	p, err := NewPipeline(enricher, NewDispatcher(nil), nil)
 	require.NoError(t, err)
 
-	ctx := context.Background()
-	p.Start(ctx)
+	p.Start()
 
-	p.ProcessEvent(ctx, newTestEvent())
+	p.ProcessEvent(t.Context(), newTestEvent())
 
-	drainCtx, drainCancel := context.WithTimeout(ctx, 1*time.Second)
+	drainCtx, drainCancel := context.WithTimeout(t.Context(), 1*time.Second)
 	defer drainCancel()
-	p.DrainQueues(drainCtx)
+	p.Shutdown(drainCtx)
 }
 
 func TestCollectOutputStatus(t *testing.T) {
 	p := buildTestPipeline(t, []*Output{
-		NewOutput(&mockOutput{name: "slack"}, defaultOutputConfig(), nil),
-		NewOutput(&mockOutput{name: "loki"}, defaultOutputConfig(), nil),
+		NewOutput(&mockOutput{name: "slack"}, defaultPipelineDefaults(), nil),
+		NewOutput(&mockOutput{name: "loki"}, defaultPipelineDefaults(), nil),
 	})
 
 	statuses := p.CollectOutputStatus()
 	assert.Len(t, statuses, 2)
 }
 
-func TestDrainQueuesCompletesWhenEmpty(t *testing.T) {
+func TestShutdownCompletesWhenEmpty(t *testing.T) {
 	p := buildTestPipeline(t, nil)
-	ctx := context.Background()
-	p.Start(ctx)
+	p.Start()
 
-	drainCtx, drainCancel := context.WithTimeout(ctx, 1*time.Second)
+	drainCtx, drainCancel := context.WithTimeout(t.Context(), 1*time.Second)
 	defer drainCancel()
-	p.DrainQueues(drainCtx)
+	p.Shutdown(drainCtx)
 }

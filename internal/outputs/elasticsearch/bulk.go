@@ -21,7 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 )
 
 // bulkFilterPath minimizes the ES bulk response payload by requesting only
@@ -51,13 +51,13 @@ type bulkItemResult struct {
 
 // buildBulkBody encodes events as NDJSON for the _bulk API.
 // Uses "create" action (append-only, required for data streams).
-func (o *output) buildBulkBody(events []*domain.Event) ([]byte, error) {
+func (d *driver) buildBulkBody(events []*event.Event) ([]byte, error) {
 	var buf bytes.Buffer
-	index := o.resolveIndex()
+	index := d.resolveIndex()
 
-	for _, event := range events {
+	for _, evt := range events {
 		action := fmt.Sprintf(`{"create":{"_index":%q}}`, index)
-		data, err := o.marshalEvent(event)
+		data, err := d.marshalEvent(evt)
 		if err != nil {
 			return nil, fmt.Errorf("elasticsearch marshal: %w", err)
 		}
@@ -73,7 +73,7 @@ func (o *output) buildBulkBody(events []*domain.Event) ([]byte, error) {
 // parseBulkResponse inspects the per-item results from a bulk response.
 // Fast-path: skips JSON parsing when no errors are present.
 // Item-level inspection: success is status <= 201 with no error.type.
-func (o *output) parseBulkResponse(body []byte, expectedItems int) error {
+func (d *driver) parseBulkResponse(body []byte, expectedItems int) error {
 	if len(body) == 0 {
 		return nil
 	}
@@ -93,7 +93,7 @@ func (o *output) parseBulkResponse(body []byte, expectedItems int) error {
 		r := item.Create
 		if r.Status > 201 || r.Error.Type != "" {
 			failed++
-			o.logger.Warn("bulk item failed",
+			d.logger.Warn("bulk item failed",
 				"status", r.Status,
 				"error_type", r.Error.Type,
 				"reason", r.Error.Reason,
@@ -106,7 +106,7 @@ func (o *output) parseBulkResponse(body []byte, expectedItems int) error {
 	}
 
 	succeeded := expectedItems - failed
-	o.logger.Error("bulk request partial failure",
+	d.logger.Error("bulk request partial failure",
 		"total", expectedItems,
 		"failed", failed,
 		"succeeded", succeeded,

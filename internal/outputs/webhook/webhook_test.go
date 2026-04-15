@@ -25,19 +25,19 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
 
 func TestWebhookCommonCases(t *testing.T) {
-	testutil.RunOutputTests(t, Type, []testutil.OutputTestCase{
+	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
 		{Name: "sends valid event", AddressField: "url"},
 		{Name: "returns error on server 500", AddressField: "url", MockStatus: http.StatusInternalServerError, ExpectError: true},
 	})
 }
 
 func TestWebhookSpecificCases(t *testing.T) {
-	testutil.RunOutputTests(t, Type, []testutil.OutputTestCase{
+	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
 		{
 			Name:         "sends POST by default",
 			AddressField: "url",
@@ -87,25 +87,25 @@ func TestWebhookCreateValidation(t *testing.T) {
 		}))
 		defer server.Close()
 
-		o, err := Type.New(map[string]any{"url": server.URL}, domain.OutputDeps{})
+		o, err := OutputType.New(map[string]any{"url": server.URL}, output.Deps{})
 		require.NoError(t, err)
 		assert.NoError(t, o.HealthCheck(context.Background()))
 	})
 
 	t.Run("healthcheck failure", func(t *testing.T) {
-		o, err := Type.New(map[string]any{"url": "http://127.0.0.1:1"}, domain.OutputDeps{})
+		o, err := OutputType.New(map[string]any{"url": "http://127.0.0.1:1"}, output.Deps{})
 		require.NoError(t, err)
 		assert.Error(t, o.HealthCheck(context.Background()))
 	})
 
 	t.Run("send to unreachable host", func(t *testing.T) {
-		o, err := Type.New(map[string]any{"url": "http://127.0.0.1:1"}, domain.OutputDeps{})
+		o, err := OutputType.New(map[string]any{"url": "http://127.0.0.1:1"}, output.Deps{})
 		require.NoError(t, err)
 		assert.Error(t, o.Send(context.Background(), testutil.CreateValidEvent()))
 	})
 
 	t.Run("init and close", func(t *testing.T) {
-		o, err := Type.New(map[string]any{"url": "http://example.com"}, domain.OutputDeps{})
+		o, err := OutputType.New(map[string]any{"url": "http://example.com"}, output.Deps{})
 		require.NoError(t, err)
 		assert.NoError(t, o.Init(context.Background()))
 		assert.NoError(t, o.Close())
@@ -133,7 +133,7 @@ func TestWebhookCreateValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			o, err := Type.New(tt.cfg, domain.OutputDeps{})
+			o, err := OutputType.New(tt.cfg, output.Deps{})
 			if tt.wantErr {
 				require.Error(t, err)
 				return
@@ -145,14 +145,37 @@ func TestWebhookCreateValidation(t *testing.T) {
 }
 
 func TestWebhookInsecureSkipVerifyDefaults(t *testing.T) {
-	o, err := Type.New(map[string]any{"url": "http://example.com"}, domain.OutputDeps{})
+	o, err := OutputType.New(map[string]any{"url": "http://example.com"}, output.Deps{})
 	require.NoError(t, err)
 
-	w := o.(*output)
-	assert.False(t, w.cfg.InsecureSkipVerify, "InsecureSkipVerify defaults to false")
+	w := o.(*driver)
+	assert.False(t, w.cfg.TLS.InsecureSkipVerify, "InsecureSkipVerify defaults to false")
 
-	o2, err := Type.New(map[string]any{"url": "http://example.com", "insecure_skip_verify": true}, domain.OutputDeps{})
+	o2, err := OutputType.New(map[string]any{"url": "http://example.com", "tls": map[string]any{"insecure_skip_verify": true}}, output.Deps{})
 	require.NoError(t, err)
-	w2 := o2.(*output)
-	assert.True(t, w2.cfg.InsecureSkipVerify, "InsecureSkipVerify explicitly true")
+	w2 := o2.(*driver)
+	assert.True(t, w2.cfg.TLS.InsecureSkipVerify, "InsecureSkipVerify explicitly true")
+}
+
+func TestCreateOutputInvalidTLSFailsConstruction(t *testing.T) {
+	_, err := OutputType.New(map[string]any{
+		"url": "https://example.com",
+		"tls": map[string]any{
+			"ca_file": "/nonexistent/ca.pem",
+		},
+	}, output.Deps{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ca_file")
+}
+
+func TestCreateOutputInvalidClientCertFailsConstruction(t *testing.T) {
+	_, err := OutputType.New(map[string]any{
+		"url": "https://example.com",
+		"tls": map[string]any{
+			"cert_file": "/nonexistent/cert.pem",
+			"key_file":  "/nonexistent/key.pem",
+		},
+	}, output.Deps{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cert_file")
 }

@@ -19,14 +19,14 @@ package inmemory
 import (
 	"context"
 	"fmt"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/mitchellh/mapstructure"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
 func decodeConfig(raw map[string]any, result *config) error {
@@ -48,22 +48,20 @@ const (
 	fieldHostname = "hostname"
 	fieldTags     = "tags"
 
-	// Defaults.
 	defaultCapacity   = 10000
-	defaultTTL        = 24 * time.Hour
 	defaultGCInterval = 10 * time.Second
 )
 
-// Type describes the in-memory event store for the output catalog.
-var Type = domain.OutputType{
+// OutputType describes the in-memory event store for the output catalog.
+var OutputType = output.Type{
 	New:      createOutput,
-	Name:     "memory",
+	Name:     "inmemory",
 	Category: "store",
-	Schema: domain.OutputSchema{
-		Fields: []domain.SchemaField{
+	Schema: output.Schema{
+		Fields: []output.SchemaField{
 			{Name: "capacity", Type: "int", Default: 10000, Required: true, Label: "Max Events"},
-			{Name: "ttl", Type: "string", Default: "24h", Label: "Event TTL"},
-			{Name: "gc_interval", Type: "string", Default: "10s", Label: "GC Interval"},
+			{Name: "ttl", Type: "string", Default: "0", Label: "Event TTL (0 = no expiry)"},
+			{Name: "gc_interval", Type: "string", Default: "10s", Label: "GC Interval (when TTL > 0)"},
 		},
 	},
 }
@@ -74,39 +72,65 @@ type config struct {
 	Capacity   int           `mapstructure:"capacity"`
 }
 
-type output struct {
+// driver implements a bounded ring buffer with optional TTL-based GC.
+//
+// Ring buffer invariants:
+//   - head: next write position (advances on each Send)
+//   - tail: oldest valid position (advances on overwrite or GC)
+//   - count: number of valid events (always == occupied slots, no holes)
+//   - When count < capacity: buffer has free slots, tail stays fixed
+//   - When count == capacity: buffer full, writing at head overwrites tail
+//   - GC only advances tail forward (never creates holes in the middle)
+type driver struct {
 	byRule     map[string]map[int]struct{}
 	byPriority map[string]map[int]struct{}
 	bySource   map[string]map[int]struct{}
 	byHostname map[string]map[int]struct{}
 	byTag      map[string]map[int]struct{}
 	stopGC     chan struct{}
-	events     []*domain.Event
+	events     []*event.Event
 	ttl        time.Duration
 	gcInterval time.Duration
 	head       int
+	tail       int
 	count      int
 	capacity   int
 	mu         sync.RWMutex
 }
 
-func createOutput(raw map[string]any, _ domain.OutputDeps) (domain.OutputDriver, error) {
+func (c *config) validate() utils.ValidationErrors {
+	var errs utils.ValidationErrors
+	if c.Capacity == 0 {
+		c.Capacity = defaultCapacity
+	} else if c.Capacity < 0 {
+		errs.Add("capacity", fmt.Sprintf("must be > 0, got %d", c.Capacity))
+	}
+	if c.TTL < 0 {
+		errs.Add("ttl", fmt.Sprintf("must be >= 0 (0 = no expiry), got %v", c.TTL))
+	}
+	if c.TTL > 0 && c.GCInterval == 0 {
+		c.GCInterval = defaultGCInterval
+	}
+	if c.GCInterval < 0 {
+		errs.Add("gc_interval", fmt.Sprintf("must be >= 0, got %v", c.GCInterval))
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
+
+func createOutput(raw map[string]any, _ output.Deps) (output.Driver, error) {
 	var cfg config
 	if err := decodeConfig(raw, &cfg); err != nil {
-		return nil, fmt.Errorf("memory config: %w", err)
+		return nil, fmt.Errorf("inmemory config: %w", err)
 	}
-	if cfg.Capacity <= 0 {
-		cfg.Capacity = defaultCapacity
-	}
-	if cfg.TTL < 0 {
-		cfg.TTL = defaultTTL
-	}
-	if cfg.GCInterval <= 0 {
-		cfg.GCInterval = defaultGCInterval
+	if errs := cfg.validate(); len(errs) > 0 {
+		return nil, fmt.Errorf("inmemory: %s", errs.Error())
 	}
 
-	return &output{
-		events:     make([]*domain.Event, cfg.Capacity),
+	return &driver{
+		events:     make([]*event.Event, cfg.Capacity),
 		capacity:   cfg.Capacity,
 		ttl:        cfg.TTL,
 		gcInterval: cfg.GCInterval,
@@ -119,79 +143,67 @@ func createOutput(raw map[string]any, _ domain.OutputDeps) (domain.OutputDriver,
 	}, nil
 }
 
-func (o *output) Name() string { return "memory" }
+func (d *driver) Name() string { return "inmemory" }
 
-func (o *output) Init(_ context.Context) error {
-	if o.ttl > 0 {
-		go o.runGC(o.gcInterval)
+func (d *driver) Init(_ context.Context) error {
+	if d.ttl > 0 {
+		go d.runGC(d.gcInterval)
 	}
 	return nil
 }
 
-func (o *output) Send(_ context.Context, event *domain.Event) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
+// Send appends an event to the ring buffer.
+// When full, overwrites the oldest event at head (which equals tail) and advances tail.
+func (d *driver) Send(_ context.Context, evt *event.Event) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 
-	pos := o.head
-
-	if o.events[pos] != nil {
-		o.removeFromIndexes(pos)
+	if d.count == d.capacity {
+		d.removeFromIndexes(d.head)
+		d.tail = (d.tail + 1) % d.capacity
+	} else {
+		d.count++
 	}
 
-	o.events[pos] = event
-
-	o.addToIndex(o.byRule, event.Rule, pos)
-	o.addToIndex(o.byPriority, string(event.Priority), pos)
-	o.addToIndex(o.bySource, event.Source, pos)
-	if event.Hostname != "" {
-		o.addToIndex(o.byHostname, event.Hostname, pos)
-	}
-	for _, tag := range event.Tags {
-		o.addToIndex(o.byTag, tag, pos)
-	}
-
-	o.head = (o.head + 1) % o.capacity
-	if o.count < o.capacity {
-		o.count++
-	}
+	d.events[d.head] = evt
+	d.addToIndexes(d.head, evt)
+	d.head = (d.head + 1) % d.capacity
 
 	return nil
 }
 
-func (o *output) HealthCheck(_ context.Context) error { return nil }
+func (d *driver) HealthCheck(_ context.Context) error { return nil }
 
-func (o *output) Close() error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
+func (d *driver) Close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	select {
-	case <-o.stopGC:
+	case <-d.stopGC:
 	default:
-		close(o.stopGC)
+		close(d.stopGC)
 	}
 	return nil
 }
 
 // --- ReadableStore ---
 
-func (o *output) Search(_ context.Context, query *domain.SearchQuery) (*domain.SearchResult, error) {
+func (d *driver) Search(_ context.Context, query *output.SearchQuery) (*output.SearchResult, error) {
 	if err := query.Normalize(); err != nil {
 		return nil, err
 	}
 
-	o.mu.RLock()
-	defer o.mu.RUnlock()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 
-	candidates := o.findMatchingEvents(&query.Filters, query.Filter)
+	candidates := d.findMatchingEvents(&query.Filters, query.Filter)
 
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].Time.After(candidates[j].Time)
-	})
+	sortEvents(candidates, query.SortBy, query.SortDesc)
 
 	total := int64(len(candidates))
 	offset := (query.Page - 1) * query.Limit
 	if offset >= len(candidates) {
-		return &domain.SearchResult{
-			Events: []domain.Event{}, Total: total,
+		return &output.SearchResult{
+			Events: []event.Event{}, Total: total,
 			Page: query.Page, Limit: query.Limit,
 		}, nil
 	}
@@ -201,46 +213,90 @@ func (o *output) Search(_ context.Context, query *domain.SearchQuery) (*domain.S
 		end = len(candidates)
 	}
 
-	page := make([]domain.Event, 0, end-offset)
+	page := make([]event.Event, 0, end-offset)
 	for _, e := range candidates[offset:end] {
 		page = append(page, *e)
 	}
 
-	return &domain.SearchResult{
+	return &output.SearchResult{
 		Events: page, Total: total,
 		Page: query.Page, Limit: query.Limit,
 	}, nil
 }
 
-func (o *output) Count(_ context.Context, filters *domain.Filters) (int64, error) {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
-	return int64(len(o.findMatchingEvents(filters, ""))), nil
+func (d *driver) Count(_ context.Context, filters *output.Filters) (int64, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return int64(len(d.findMatchingEvents(filters, ""))), nil
 }
 
-func (o *output) CountBy(_ context.Context, field string, filters *domain.Filters) (map[string]int64, error) {
-	if err := domain.ValidateGroupBy(field); err != nil {
+func (d *driver) CountBy(_ context.Context, field string, filters *output.Filters) (map[string]int64, error) {
+	if err := output.ValidateGroupBy(field); err != nil {
 		return nil, err
 	}
 
-	o.mu.RLock()
-	defer o.mu.RUnlock()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 
 	if hasNoFilters(filters) {
-		return o.countFromIndex(field), nil
+		return d.countFromIndex(field), nil
 	}
 
-	return countFromEvents(o.findMatchingEvents(filters, ""), field), nil
+	return countFromEvents(d.findMatchingEvents(filters, ""), field), nil
 }
 
-// --- Internal methods ---
+// --- Ring buffer internals ---
 
-func (o *output) findMatchingEvents(filters *domain.Filters, freeText string) []*domain.Event {
-	positions := o.findMatchingPositions(filters)
+func (d *driver) addToIndexes(pos int, evt *event.Event) {
+	addToIndex(d.byRule, evt.Rule, pos)
+	addToIndex(d.byPriority, string(evt.Priority), pos)
+	addToIndex(d.bySource, evt.Source, pos)
+	if evt.Hostname != "" {
+		addToIndex(d.byHostname, evt.Hostname, pos)
+	}
+	for _, tag := range evt.Tags {
+		addToIndex(d.byTag, tag, pos)
+	}
+}
 
-	var result []*domain.Event
+func (d *driver) removeFromIndexes(pos int) {
+	e := d.events[pos]
+	if e == nil {
+		return
+	}
+	removeFromIndex(d.byRule, e.Rule, pos)
+	removeFromIndex(d.byPriority, string(e.Priority), pos)
+	removeFromIndex(d.bySource, e.Source, pos)
+	removeFromIndex(d.byHostname, e.Hostname, pos)
+	for _, tag := range e.Tags {
+		removeFromIndex(d.byTag, tag, pos)
+	}
+}
+
+func addToIndex(idx map[string]map[int]struct{}, key string, pos int) {
+	if _, ok := idx[key]; !ok {
+		idx[key] = make(map[int]struct{})
+	}
+	idx[key][pos] = struct{}{}
+}
+
+func removeFromIndex(idx map[string]map[int]struct{}, key string, pos int) {
+	if set, ok := idx[key]; ok {
+		delete(set, pos)
+		if len(set) == 0 {
+			delete(idx, key)
+		}
+	}
+}
+
+// --- Query internals ---
+
+func (d *driver) findMatchingEvents(filters *output.Filters, freeText string) []*event.Event {
+	positions := d.findMatchingPositions(filters)
+
+	var result []*event.Event
 	for pos := range positions {
-		e := o.events[pos]
+		e := d.events[pos]
 		if e == nil {
 			continue
 		}
@@ -256,9 +312,9 @@ func (o *output) findMatchingEvents(filters *domain.Filters, freeText string) []
 	return result
 }
 
-func (o *output) findMatchingPositions(filters *domain.Filters) map[int]struct{} {
+func (d *driver) findMatchingPositions(filters *output.Filters) map[int]struct{} {
 	if hasNoStructuredFilters(filters) {
-		return o.collectAllPositions()
+		return d.collectAllPositions()
 	}
 
 	var result map[int]struct{}
@@ -277,25 +333,24 @@ func (o *output) findMatchingPositions(filters *domain.Filters) map[int]struct{}
 		}
 	}
 
-	narrow(o.byPriority, filters.Priority)
-	narrow(o.byRule, filters.Rule)
-	narrow(o.bySource, filters.Source)
-	narrow(o.byHostname, filters.Hostname)
-	narrow(o.byTag, filters.Tags)
+	narrow(d.byPriority, filters.Priority)
+	narrow(d.byRule, filters.Rule)
+	narrow(d.bySource, filters.Source)
+	narrow(d.byHostname, filters.Hostname)
+	narrow(d.byTag, filters.Tags)
 
 	if first {
-		return o.collectAllPositions()
+		return d.collectAllPositions()
 	}
 
 	return result
 }
 
-func (o *output) collectAllPositions() map[int]struct{} {
-	positions := make(map[int]struct{}, o.count)
-	for i := 0; i < o.capacity; i++ {
-		if o.events[i] != nil {
-			positions[i] = struct{}{}
-		}
+func (d *driver) collectAllPositions() map[int]struct{} {
+	positions := make(map[int]struct{}, d.count)
+	for i := 0; i < d.count; i++ {
+		pos := (d.tail + i) % d.capacity
+		positions[pos] = struct{}{}
 	}
 	return positions
 }
@@ -323,49 +378,19 @@ func intersectSets(a, b map[int]struct{}) map[int]struct{} {
 	return result
 }
 
-func (o *output) addToIndex(idx map[string]map[int]struct{}, key string, pos int) {
-	if _, ok := idx[key]; !ok {
-		idx[key] = make(map[int]struct{})
-	}
-	idx[key][pos] = struct{}{}
-}
-
-func (o *output) removeFromIndexes(pos int) {
-	e := o.events[pos]
-	if e == nil {
-		return
-	}
-	removeFromIndex(o.byRule, e.Rule, pos)
-	removeFromIndex(o.byPriority, string(e.Priority), pos)
-	removeFromIndex(o.bySource, e.Source, pos)
-	removeFromIndex(o.byHostname, e.Hostname, pos)
-	for _, tag := range e.Tags {
-		removeFromIndex(o.byTag, tag, pos)
-	}
-}
-
-func removeFromIndex(idx map[string]map[int]struct{}, key string, pos int) {
-	if set, ok := idx[key]; ok {
-		delete(set, pos)
-		if len(set) == 0 {
-			delete(idx, key)
-		}
-	}
-}
-
-func (o *output) countFromIndex(field string) map[string]int64 {
+func (d *driver) countFromIndex(field string) map[string]int64 {
 	var idx map[string]map[int]struct{}
 	switch field {
 	case fieldPriority:
-		idx = o.byPriority
+		idx = d.byPriority
 	case fieldRule:
-		idx = o.byRule
+		idx = d.byRule
 	case fieldSource:
-		idx = o.bySource
+		idx = d.bySource
 	case fieldHostname:
-		idx = o.byHostname
+		idx = d.byHostname
 	case fieldTags:
-		idx = o.byTag
+		idx = d.byTag
 	}
 
 	result := make(map[string]int64, len(idx))
@@ -375,7 +400,7 @@ func (o *output) countFromIndex(field string) map[string]int64 {
 	return result
 }
 
-func countFromEvents(events []*domain.Event, field string) map[string]int64 {
+func countFromEvents(events []*event.Event, field string) map[string]int64 {
 	result := make(map[string]int64)
 	for _, e := range events {
 		switch field {
@@ -396,54 +421,36 @@ func countFromEvents(events []*domain.Event, field string) map[string]int64 {
 	return result
 }
 
-func (o *output) runGC(interval time.Duration) {
+// --- GC ---
+
+func (d *driver) runGC(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-o.stopGC:
+		case <-d.stopGC:
 			return
 		case <-ticker.C:
-			o.removeExpired()
+			d.removeExpired()
 		}
 	}
 }
 
-func (o *output) removeExpired() {
-	o.mu.Lock()
-	defer o.mu.Unlock()
+// removeExpired advances tail past expired events.
+// Only removes from the oldest end - never creates holes.
+func (d *driver) removeExpired() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 
-	cutoff := time.Now().Add(-o.ttl)
-	for i := 0; i < o.capacity; i++ {
-		if o.events[i] != nil && o.events[i].Time.Before(cutoff) {
-			o.removeFromIndexes(i)
-			o.events[i] = nil
-			o.count--
+	cutoff := time.Now().Add(-d.ttl)
+	for d.count > 0 {
+		e := d.events[d.tail]
+		if e == nil || !e.Time.Before(cutoff) {
+			break
 		}
+		d.removeFromIndexes(d.tail)
+		d.events[d.tail] = nil
+		d.tail = (d.tail + 1) % d.capacity
+		d.count--
 	}
-}
-
-func hasNoFilters(f *domain.Filters) bool {
-	return len(f.Priority) == 0 && len(f.Rule) == 0 && len(f.Source) == 0 &&
-		len(f.Hostname) == 0 && len(f.Tags) == 0 && f.Since == 0
-}
-
-func hasNoStructuredFilters(f *domain.Filters) bool {
-	return len(f.Priority) == 0 && len(f.Rule) == 0 && len(f.Source) == 0 &&
-		len(f.Hostname) == 0 && len(f.Tags) == 0
-}
-
-func matchesFreeText(e *domain.Event, text string) bool {
-	lower := strings.ToLower(text)
-	for _, field := range []string{e.Output, e.Rule, string(e.Priority), e.Source, e.Hostname} {
-		if strings.Contains(strings.ToLower(field), lower) {
-			return true
-		}
-	}
-	for _, tag := range e.Tags {
-		if strings.Contains(strings.ToLower(tag), lower) {
-			return true
-		}
-	}
-	return false
 }

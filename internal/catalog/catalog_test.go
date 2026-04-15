@@ -24,34 +24,35 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 )
 
 type stubOutput struct{ name string }
 
-func (o *stubOutput) Name() string                                  { return o.name }
-func (o *stubOutput) Init(_ context.Context) error                  { return nil }
-func (o *stubOutput) Send(_ context.Context, _ *domain.Event) error { return nil }
-func (o *stubOutput) HealthCheck(_ context.Context) error           { return nil }
-func (o *stubOutput) Close() error                                  { return nil }
+func (o *stubOutput) Name() string                                 { return o.name }
+func (o *stubOutput) Init(_ context.Context) error                 { return nil }
+func (o *stubOutput) Send(_ context.Context, _ *event.Event) error { return nil }
+func (o *stubOutput) HealthCheck(_ context.Context) error          { return nil }
+func (o *stubOutput) Close() error                                 { return nil }
 
-func stubType(name, category string) domain.OutputType {
-	return domain.OutputType{
+func stubType(name, category string) output.Type {
+	return output.Type{
 		Name:     name,
 		Category: category,
-		Schema:   domain.OutputSchema{},
-		New: func(_ map[string]any, _ domain.OutputDeps) (domain.OutputDriver, error) {
+		Schema:   output.Schema{},
+		New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
 			return &stubOutput{name: name}, nil
 		},
 	}
 }
 
-func failingType(name string) domain.OutputType {
-	return domain.OutputType{
+func failingType(name string) output.Type {
+	return output.Type{
 		Name:     name,
 		Category: "test",
-		Schema:   domain.OutputSchema{},
-		New: func(_ map[string]any, _ domain.OutputDeps) (domain.OutputDriver, error) {
+		Schema:   output.Schema{},
+		New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
 			return nil, fmt.Errorf("constructor failed")
 		},
 	}
@@ -61,20 +62,20 @@ func TestNew(t *testing.T) {
 	tests := []struct {
 		name    string
 		errMsg  string
-		types   []domain.OutputType
+		types   []output.Type
 		wantErr bool
 	}{
 		{
 			name:  "valid single type",
-			types: []domain.OutputType{stubType("slack", "chat")},
+			types: []output.Type{stubType("slack", "chat")},
 		},
 		{
 			name:  "valid multiple types",
-			types: []domain.OutputType{stubType("slack", "chat"), stubType("loki", "logs")},
+			types: []output.Type{stubType("slack", "chat"), stubType("loki", "logs")},
 		},
 		{
 			name:    "empty list",
-			types:   []domain.OutputType{},
+			types:   []output.Type{},
 			wantErr: true,
 			errMsg:  "at least one",
 		},
@@ -86,7 +87,7 @@ func TestNew(t *testing.T) {
 		},
 		{
 			name: "duplicate name",
-			types: []domain.OutputType{
+			types: []output.Type{
 				stubType("slack", "chat"),
 				stubType("slack", "chat"),
 			},
@@ -95,8 +96,8 @@ func TestNew(t *testing.T) {
 		},
 		{
 			name: "empty name",
-			types: []domain.OutputType{
-				{Name: "", Category: "test", New: func(_ map[string]any, _ domain.OutputDeps) (domain.OutputDriver, error) {
+			types: []output.Type{
+				{Name: "", Category: "test", New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
 					return &stubOutput{}, nil
 				}},
 			},
@@ -105,7 +106,7 @@ func TestNew(t *testing.T) {
 		},
 		{
 			name: "nil constructor",
-			types: []domain.OutputType{
+			types: []output.Type{
 				{Name: "broken", Category: "test", New: nil},
 			},
 			wantErr: true,
@@ -129,7 +130,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestGet(t *testing.T) {
-	cat, err := New([]domain.OutputType{
+	cat, err := New([]output.Type{
 		stubType("slack", "chat"),
 		stubType("webhook", "webhook"),
 	})
@@ -157,7 +158,7 @@ func TestGet(t *testing.T) {
 }
 
 func TestAll(t *testing.T) {
-	cat, err := New([]domain.OutputType{
+	cat, err := New([]output.Type{
 		stubType("slack", "chat"),
 		stubType("loki", "logs"),
 		stubType("webhook", "webhook"),
@@ -177,11 +178,11 @@ func TestAll(t *testing.T) {
 }
 
 func TestAllReturnsCopy(t *testing.T) {
-	cat, err := New([]domain.OutputType{stubType("slack", "chat")})
+	cat, err := New([]output.Type{stubType("slack", "chat")})
 	require.NoError(t, err)
 
 	all := cat.All()
-	all[0] = domain.OutputType{Name: "mutated"}
+	all[0] = output.Type{Name: "mutated"}
 
 	original, ok := cat.Get("slack")
 	assert.True(t, ok)
@@ -189,7 +190,7 @@ func TestAllReturnsCopy(t *testing.T) {
 }
 
 func TestCreate(t *testing.T) {
-	cat, err := New([]domain.OutputType{
+	cat, err := New([]output.Type{
 		stubType("slack", "chat"),
 		failingType("broken"),
 	})
@@ -208,20 +209,20 @@ func TestCreate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			output, err := cat.Create(tt.output, nil, domain.OutputDeps{})
+			driver, err := cat.Create(tt.output, nil, output.Deps{})
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errMsg)
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tt.output, output.Name())
+			assert.Equal(t, tt.output, driver.Name())
 		})
 	}
 }
 
 func TestNames(t *testing.T) {
-	cat, err := New([]domain.OutputType{
+	cat, err := New([]output.Type{
 		stubType("webhook", "webhook"),
 		stubType("slack", "chat"),
 	})

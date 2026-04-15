@@ -1,51 +1,60 @@
 # falcosidekick v3.0 configuration
-# See documentation at: https://github.com/falcosecurity/falcosidekick
+#
+# This file documents ALL configurable fields with their defaults and descriptions.
+# Uncomment and modify sections as needed. Only configured outputs are started.
 
-# --- Server ---
+# =============================================================================
+# Server
+# =============================================================================
 
 listen_address: "0.0.0.0"    # IP address to bind (empty = all interfaces)
 listen_port: 2801             # HTTP port for receiving Falco events
-debug: false                  # enable debug logging and payload dumping
 
-# --- Logging ---
+# =============================================================================
+# Logging
+# Log level can be overridden via FALCOSIDEKICK_LOG_LEVEL env var.
+# =============================================================================
 
 log_level: info               # trace, debug, info, warning, error
 log_format: text              # text (human-readable), json (structured)
 
-# --- TLS ---
-# Optional. When server TLS is enabled, Falco must be configured with HTTPS.
+# =============================================================================
+# Server TLS
+# When enabled, Falco must be configured to send events over HTTPS.
+# Client TLS for outputs is configured per-output under tls: sub-key.
+# =============================================================================
+
 # tls:
-#   server:
-#     enabled: false
-#     certfile: /etc/certs/server.crt
-#     keyfile: /etc/certs/server.key
-#     mutualtls: false            # require client certificate verification
-#     cacertfile: /etc/certs/ca.crt
-#   client:
-#     mutualtls: false
-#     certfile: /etc/certs/client.crt
-#     keyfile: /etc/certs/client.key
-#     cacertfile: /etc/certs/ca.crt
+#   enabled: false                       # enable HTTPS listener
+#   cert_file: /etc/certs/server.crt     # server certificate
+#   key_file: /etc/certs/server.key      # server private key
+#   mutual_tls: false                    # require client certificate
+#   ca_file: /etc/certs/ca.crt           # CA for client cert verification
 
-# --- Event Store ---
-# Backend for storing events. Memory is the default (no external dependency).
-# sqlite, postgres, redis: available in Sprint 4.
+# =============================================================================
+# Database
+# Backend for config persistence. Re-provisioned from files on restart.
+# =============================================================================
 
-eventstore:
-  backend: memory
-  memory:
-    capacity: 10000           # max events in store
-    ttl: 24h                  # time-to-live per event
-    gc_interval: 10s          # garbage collection interval
+database:
+  backend: inmemory           # inmemory (default), sqlite (v3.1), postgres (v3.1)
 
-# --- UI ---
-# Built-in web interface (Sprint 3).
+# =============================================================================
+# UI
+# Built-in web interface for event visualization and pipeline monitoring.
+# event_source selects which output serves event queries for the UI.
+# =============================================================================
+
 # ui:
-#   enabled: false
+#   enabled: false                       # enable the web UI
+#   event_source: inmemory               # output name implementing ReadableStore
 
-# --- Pipeline ---
-# Event processing: enrich -> store -> route -> dispatch.
-# Per-output overrides can be set under each output section.
+# =============================================================================
+# Pipeline
+# Event processing defaults applied to ALL outputs.
+# Individual outputs can override queue_size, workers, retry, circuit_breaker,
+# and batching in their own section.
+# =============================================================================
 
 pipeline:
   queue_size: 1000            # per-output event queue capacity
@@ -59,47 +68,83 @@ pipeline:
     failure_threshold: 5      # consecutive failures to open circuit
     success_threshold: 2      # successes in half-open to close circuit
     reset_timeout: 30s        # time before half-open after open
+  batching:
+    enabled: false            # enable batch delivery (outputs must implement BatchSender)
+    batch_size: 500           # events per batch
+    flush_interval: 1s        # max time before flushing partial batch
 
-  # --- Enrichment ---
+  # ---------------------------------------------------------------------------
+  # Enrichment
   # Fields, tags, and templates added to every event before dispatch.
+  # ---------------------------------------------------------------------------
+
   # enricher:
-  #   customfields:
+  #   customfields:                      # static fields added to every event
   #     environment: production
   #     cluster: us-west-2
-  #   customtags:
+  #   customtags:                        # static tags added to every event
   #     - security
-  #   templatedfields:
+  #   templatedfields:                   # Go template fields (event.OutputFields as data)
   #     namespace: '{{ or (index . "k8s.ns.name") "unknown" }}'
-  #   bracketreplacer: "_"
+  #   bracketreplacer: "_"               # replace [ and ] in field names
+  #   truncate_event_threshold: 4096     # max event JSON size before truncating fields (0 = disabled)
+  #   truncate_field_threshold: 512      # max field length before truncating (must be > 5 when event truncation enabled)
 
-  # --- Outputs ---
-  # Each output is identified by name. Only configured outputs are started.
-  # Zero outputs is valid (UI-only or store-only mode).
+  # ---------------------------------------------------------------------------
+  # Outputs
+  # Only configured outputs are started. Zero outputs is valid when UI is disabled. When ui.enabled is true, the output named by ui.event_source must be configured.
   #
-  # Shared HTTP fields available to all HTTP-based outputs:
+  # Shared HTTP fields (available to all HTTP-based outputs via embedded config):
   #   username:             basic auth username
   #   password:             basic auth password
   #   bearer_token:         bearer token for Authorization header
   #   headers:              custom HTTP headers (map)
-  #   insecure_skip_verify: skip TLS certificate verification (default: false)
+  #   tls:
+  #     insecure_skip_verify: false      # skip TLS certificate verification
+  #     ca_file: ""                      # custom CA certificate file
+  #     cert_file: ""                    # client certificate file (mTLS)
+  #     key_file: ""                     # client key file (mTLS)
+  #     server_name: ""                  # TLS server name override
+  #
+  # Per-output pipeline overrides (available to all outputs):
+  #   minimum_priority: ""               # minimum event priority to accept (empty = all)
+  #   queue_size: 1000                   # override pipeline default
+  #   workers: 2                         # override pipeline default
+  #   batching:                          # override pipeline default
+  #     enabled: false
+  #     batch_size: 500
+  #     flush_interval: 1s
+  # ---------------------------------------------------------------------------
 
   outputs:
 
-    # --- Webhook ---
+    # =========================================================================
+    # In-memory Event Store
+    # Required when ui.enabled is true and ui.event_source is "inmemory".
+    # Implements OutputDriver (write via pipeline) + ReadableStore (read for UI).
+    # =========================================================================
+
+    # inmemory:
+    #   capacity: 10000                  # max events in ring buffer (default: 10000)
+    #   ttl: 0                            # event time-to-live (default: 0 = no expiry, ring buffer capacity is the only bound)
+    #   gc_interval: 10s                 # garbage collection interval (default: 10s)
+
+    # =========================================================================
+    # Webhook
     # Generic HTTP webhook. Sends the full event as JSON.
+    # =========================================================================
+
     # webhook:
     #   url: "https://my-service/events"        # required
     #   method: POST                             # POST (default) or PUT
-    #   username: ""                             # basic auth
-    #   password: ""
-    #   bearer_token: ""                         # bearer auth
-    #   headers:                                 # custom headers
-    #     X-Custom: "value"
-    #   insecure_skip_verify: false
-    #   minimumpriority: ""                      # minimum event priority
+    #   minimum_priority: ""
+    #   # Shared HTTP fields: username, password, bearer_token, headers, tls
 
-    # --- Slack ---
+    # =========================================================================
+    # Slack
     # Sends events as Slack webhook attachments with priority color coding.
+    # =========================================================================
+
     # slack:
     #   webhook_url: "https://hooks.slack.com/services/XXX/YYY/ZZZ"  # required
     #   channel: "#security-alerts"              # override webhook default channel
@@ -109,11 +154,15 @@ pipeline:
     #   output_format: all                       # all (fields+text), fields, text
     #   message_format: ""                       # Go template for message above attachment
     #   footer: ""                               # attachment footer text
-    #   minimumpriority: warning
+    #   minimum_priority: warning
+    #   # Shared HTTP fields: username (overloaded as bot name), password, bearer_token, headers, tls
 
-    # --- Elasticsearch ---
+    # =========================================================================
+    # Elasticsearch
     # Indexes events as documents. Supports single-doc and bulk API.
     # Uses "create" action (append-only, data-stream compatible).
+    # =========================================================================
+
     # elasticsearch:
     #   url: "https://elasticsearch:9200"        # required
     #   index: falco                             # index name prefix (default: falco)
@@ -122,11 +171,10 @@ pipeline:
     #   api_key: ""                              # ES API key (overrides basic auth)
     #   flatten_fields: false                    # replace dots with underscores in field names
     #   create_index_template: false             # create composable index template on startup
-    #   number_of_shards: 3                      # template setting
-    #   number_of_replicas: 3                    # template setting
-    #   username: ""                             # basic auth (via shared HTTP config)
-    #   password: ""
-    #   minimumpriority: ""
+    #   number_of_shards: 3                      # template shards (when create_index_template: true)
+    #   number_of_replicas: 3                    # template replicas (when create_index_template: true)
+    #   minimum_priority: ""
+    #   # Shared HTTP fields: username, password, bearer_token, headers, tls
     #   # Per-output pipeline overrides:
     #   # queue_size: 5000
     #   # workers: 3
@@ -135,26 +183,31 @@ pipeline:
     #   #   batch_size: 1000
     #   #   flush_interval: 1s
 
-    # --- Loki ---
+    # =========================================================================
+    # Loki
     # Pushes events to Grafana Loki with gzip compression.
     # Events with identical label sets are grouped into streams.
+    # =========================================================================
+
     # loki:
     #   url: "http://loki:3100"                  # required
     #   tenant: ""                               # X-Scope-OrgID header for multi-tenancy
     #   endpoint: "/loki/api/v1/push"            # push API endpoint
     #   log_format: json                         # json (full event) or text (output field only)
     #   extra_labels: ""                         # comma-separated event field names to promote to labels
-    #   username: ""                             # basic auth (e.g., Grafana Cloud)
-    #   password: ""
-    #   minimumpriority: notice
+    #   minimum_priority: notice
+    #   # Shared HTTP fields: username, password, bearer_token, headers, tls
     #   # batching:
     #   #   enabled: true
     #   #   batch_size: 500
     #   #   flush_interval: 1s
 
-    # --- Alertmanager ---
+    # =========================================================================
+    # Alertmanager
     # Sends alerts to Prometheus Alertmanager v2 API.
     # Fan-out: sends to ALL configured hosts in parallel (HA safe).
+    # =========================================================================
+
     # alertmanager:
     #   hosts:                                   # required, one or more AM instances
     #     - "http://alertmanager:9093"
@@ -168,11 +221,15 @@ pipeline:
     #   custom_severity_map:                     # override default priority-to-severity mapping
     #     critical: P1
     #     warning: P3
-    #   minimumpriority: warning
+    #   minimum_priority: warning
+    #   # Shared HTTP fields: username, password, bearer_token, headers, tls
 
-    # --- Kafka ---
+    # =========================================================================
+    # Kafka
     # Produces events to Apache Kafka topics with franz-go client.
     # Supports SASL auth, TLS, compression, message keys, and headers.
+    # =========================================================================
+
     # kafka:
     #   brokers:                                 # required, one or more broker addresses
     #     - "kafka:9092"
@@ -180,21 +237,24 @@ pipeline:
     #   topic_field: ""                          # event field to use as topic (overrides default)
     #   message_key: ""                          # static message key for partition affinity
     #   message_key_field: ""                    # event field to use as key (e.g., hostname)
-    #   sasl: ""                                 # plain, scram_sha256, scram_sha512
-    #   username: ""                             # SASL username
-    #   password: ""                             # SASL password
     #   tls_enabled: false                       # enable TLS for broker connections
-    #   insecure_skip_verify: false              # skip broker TLS certificate verification
-    #   tls_ca: ""                               # custom CA certificate file
-    #   tls_cert: ""                             # client certificate file (mTLS)
-    #   tls_key: ""                              # client key file (mTLS)
-    #   compression: none                        # none, gzip, snappy, lz4, zstd
-    #   balancer: ""                             # round_robin, least_backup, sticky
-    #   required_acks: all                       # all, one, none
-    #   client_id: ""                            # Kafka client identifier
-    #   async: false                             # fire-and-forget mode (errors logged, not returned)
-    #   auto_create_topic: false                 # allow broker to auto-create topic
-    #   minimumpriority: ""
+    #   auth:                                    # authentication settings
+    #     sasl: ""                               # plain, scram_sha256, scram_sha512
+    #     username: ""                           # required when sasl is set
+    #     password: ""                           # required when sasl is set
+    #   producer:                                # producer settings
+    #     compression: none                      # none, gzip, snappy, lz4, zstd
+    #     balancer: ""                           # round_robin, least_backup, sticky
+    #     required_acks: all                     # all, one, none
+    #     client_id: ""                          # Kafka client identifier
+    #     async: false                           # fire-and-forget (errors logged, not returned)
+    #     auto_create_topic: false               # allow broker to auto-create topic
+    #   tls:                                     # TLS settings (when tls_enabled: true)
+    #     insecure_skip_verify: false
+    #     ca_file: ""                            # custom CA certificate
+    #     cert_file: ""                          # client certificate (mTLS)
+    #     key_file: ""                           # client key (mTLS)
+    #   minimum_priority: ""
     #   # batching:
     #   #   enabled: true
     #   #   batch_size: 500

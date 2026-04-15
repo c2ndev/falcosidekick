@@ -28,20 +28,19 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
-	"github.com/falcosecurity/falcosidekick/internal/outputs/sdk"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
 
 func TestAlertmanagerCommonCases(t *testing.T) {
-	testutil.RunOutputTests(t, Type, []testutil.OutputTestCase{
+	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
 		{Name: "sends valid event", AddressField: "hosts", AddressSlice: true},
 		{Name: "returns error on server 500", AddressField: "hosts", AddressSlice: true, MockStatus: http.StatusInternalServerError, ExpectError: true},
 	})
 }
 
 func TestAlertmanagerPayloadFormat(t *testing.T) {
-	testutil.RunOutputTests(t, Type, []testutil.OutputTestCase{
+	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
 		{
 			Name:         "sends alert with required fields",
 			AddressField: "hosts",
@@ -100,7 +99,7 @@ func TestAlertmanagerPayloadFormat(t *testing.T) {
 }
 
 func TestAlertmanagerCreateValidation(t *testing.T) {
-	_, err := createOutput(map[string]any{}, domain.OutputDeps{})
+	_, err := createOutput(map[string]any{}, output.Deps{})
 	assert.Error(t, err, "missing hosts must fail")
 }
 
@@ -119,9 +118,9 @@ func TestFanOutSendsToAllHosts(t *testing.T) {
 	}))
 	defer server2.Close()
 
-	o := &output{
+	o := &driver{
 		cfg:      config{Endpoint: defaultEndpoint},
-		sender:   sdk.NewSender("alertmanager", &sdk.HTTPConfig{}),
+		sender:   testutil.MustNewSender(t, "alertmanager"),
 		logger:   slog.Default().With("output", "alertmanager"),
 		hostURLs: []string{server1.URL + defaultEndpoint, server2.URL + defaultEndpoint},
 	}
@@ -144,9 +143,9 @@ func TestFanOutSucceedsIfOneHostWorks(t *testing.T) {
 	}))
 	defer goodServer.Close()
 
-	o := &output{
+	o := &driver{
 		cfg:      config{Endpoint: defaultEndpoint},
-		sender:   sdk.NewSender("alertmanager", &sdk.HTTPConfig{}),
+		sender:   testutil.MustNewSender(t, "alertmanager"),
 		logger:   slog.Default().With("output", "alertmanager"),
 		hostURLs: []string{badServer.URL + defaultEndpoint, goodServer.URL + defaultEndpoint},
 	}
@@ -162,9 +161,9 @@ func TestFanOutFailsWhenAllHostsFail(t *testing.T) {
 	}))
 	defer server.Close()
 
-	o := &output{
+	o := &driver{
 		cfg:      config{Endpoint: defaultEndpoint},
-		sender:   sdk.NewSender("alertmanager", &sdk.HTTPConfig{}),
+		sender:   testutil.MustNewSender(t, "alertmanager"),
 		logger:   slog.Default().With("output", "alertmanager"),
 		hostURLs: []string{server.URL + defaultEndpoint, server.URL + defaultEndpoint},
 	}
@@ -182,9 +181,9 @@ func TestSingleHostSkipsFanOut(t *testing.T) {
 	}))
 	defer server.Close()
 
-	o := &output{
+	o := &driver{
 		cfg:      config{Endpoint: defaultEndpoint},
-		sender:   sdk.NewSender("alertmanager", &sdk.HTTPConfig{}),
+		sender:   testutil.MustNewSender(t, "alertmanager"),
 		logger:   slog.Default().With("output", "alertmanager"),
 		hostURLs: []string{server.URL + defaultEndpoint},
 	}
@@ -200,9 +199,9 @@ func TestAlertmanagerHealthCheck(t *testing.T) {
 	}))
 	defer server.Close()
 
-	o := &output{
+	o := &driver{
 		cfg:      config{Endpoint: defaultEndpoint},
-		sender:   sdk.NewSender("alertmanager", &sdk.HTTPConfig{}),
+		sender:   testutil.MustNewSender(t, "alertmanager"),
 		logger:   slog.Default().With("output", "alertmanager"),
 		hostURLs: []string{server.URL + defaultEndpoint},
 	}
@@ -211,27 +210,27 @@ func TestAlertmanagerHealthCheck(t *testing.T) {
 }
 
 func TestAlertmanagerHealthCheckNoHosts(t *testing.T) {
-	o := &output{cfg: config{}}
+	o := &driver{cfg: config{}}
 	assert.Error(t, o.HealthCheck(context.Background()))
 }
 
 func TestAlertmanagerCustomEndpoint(t *testing.T) {
-	driver, err := createOutput(map[string]any{
+	d, err := createOutput(map[string]any{
 		"hosts":    []string{"http://am:9093"},
 		"endpoint": "/api/v2/alerts",
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	require.NoError(t, err)
 
-	o := driver.(*output)
+	o := d.(*driver)
 	assert.Equal(t, "http://am:9093/api/v2/alerts", o.hostURLs[0])
 }
 
 func TestAlertmanagerInit(t *testing.T) {
-	o := &output{}
+	o := &driver{}
 	assert.NoError(t, o.Init(context.Background()))
 }
 
 func TestAlertmanagerClose(t *testing.T) {
-	o := &output{}
+	o := &driver{}
 	assert.NoError(t, o.Close())
 }

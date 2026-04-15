@@ -22,64 +22,65 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
-	"github.com/falcosecurity/falcosidekick/internal/outputs/sdk"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
 
 func TestBuildAlertIncludesAlertname(t *testing.T) {
-	o := &output{cfg: config{}}
-	event := testutil.CreateValidEvent()
-	alert := o.buildAlert(event)
+	o := &driver{cfg: config{}}
+	evt := testutil.CreateValidEvent()
+	alert := o.buildAlert(evt)
 
 	assert.NotEmpty(t, alert.Labels["alertname"], "must set alertname for AM routing")
-	assert.Equal(t, sdk.SanitizeLabel(event.Rule), alert.Labels["alertname"])
+	assert.Equal(t, shared.SanitizeLabel(evt.Rule), alert.Labels["alertname"])
 }
 
 func TestBuildAlertIncludesStartsAt(t *testing.T) {
-	o := &output{cfg: config{}}
-	event := testutil.CreateValidEvent()
-	alert := o.buildAlert(event)
+	o := &driver{cfg: config{}}
+	evt := testutil.CreateValidEvent()
+	alert := o.buildAlert(evt)
 
 	assert.NotEmpty(t, alert.StartsAt, "must set startsAt for dedup/timing")
 	assert.Contains(t, alert.StartsAt, "T", "startsAt must be RFC3339")
 }
 
 func TestBuildAlertIncludesGeneratorURL(t *testing.T) {
-	o := &output{cfg: config{GeneratorURL: "http://sidekick:2801"}}
-	event := testutil.CreateValidEvent()
-	alert := o.buildAlert(event)
+	o := &driver{cfg: config{GeneratorURL: "http://sidekick:2801"}}
+	evt := testutil.CreateValidEvent()
+	alert := o.buildAlert(evt)
 
 	assert.Equal(t, "http://sidekick:2801", alert.GeneratorURL)
 }
 
 func TestBuildAlertNoGeneratorURLWhenEmpty(t *testing.T) {
-	o := &output{cfg: config{}}
-	event := testutil.CreateValidEvent()
-	alert := o.buildAlert(event)
+	o := &driver{cfg: config{}}
+	evt := testutil.CreateValidEvent()
+	alert := o.buildAlert(evt)
 
 	assert.Empty(t, alert.GeneratorURL)
 }
 
 func TestBuildAlertNoHostnameWhenEmpty(t *testing.T) {
-	o := &output{cfg: config{}}
-	event := testutil.CreateValidEvent()
-	event.Hostname = ""
-	alert := o.buildAlert(event)
+	o := &driver{cfg: config{}}
+	evt := testutil.CreateValidEvent()
+	evt.Hostname = ""
+	alert := o.buildAlert(evt)
 
 	_, has := alert.Labels["hostname"]
 	assert.False(t, has, "empty hostname must not produce a label")
 }
 
 func TestBuildAlertExtraAnnotations(t *testing.T) {
-	o := &output{cfg: config{
+	o := &driver{cfg: config{
 		ExtraAnnotations: map[string]string{
 			"runbook": "https://example.com/runbook",
 			"team":    "security",
 		},
 	}}
-	event := testutil.CreateValidEvent()
-	alert := o.buildAlert(event)
+	evt := testutil.CreateValidEvent()
+	alert := o.buildAlert(evt)
 
 	assert.Equal(t, "https://example.com/runbook", alert.Annotations["runbook"])
 	assert.Equal(t, "security", alert.Annotations["team"])
@@ -87,38 +88,38 @@ func TestBuildAlertExtraAnnotations(t *testing.T) {
 }
 
 func TestBuildAlertNoExpiresAfter(t *testing.T) {
-	o := &output{cfg: config{}}
+	o := &driver{cfg: config{}}
 	alert := o.buildAlert(testutil.CreateValidEvent())
 	assert.Empty(t, alert.EndsAt)
 }
 
 func TestBuildAlertExpiresAfter(t *testing.T) {
-	o := &output{cfg: config{ExpiresAfter: 300}}
+	o := &driver{cfg: config{ExpiresAfter: 300}}
 	alert := o.buildAlert(testutil.CreateValidEvent())
 	assert.NotEmpty(t, alert.EndsAt)
 }
 
 func TestBuildAlertTagsSorted(t *testing.T) {
-	o := &output{cfg: config{}}
-	event := testutil.CreateValidEvent()
-	event.Tags = []string{"z_tag", "a_tag", "m_tag"}
-	alert := o.buildAlert(event)
+	o := &driver{cfg: config{}}
+	evt := testutil.CreateValidEvent()
+	evt.Tags = []string{"z_tag", "a_tag", "m_tag"}
+	alert := o.buildAlert(evt)
 
 	assert.Equal(t, "a_tag,m_tag,z_tag", alert.Labels["tags"])
 }
 
 func TestBuildAlertNoTags(t *testing.T) {
-	o := &output{cfg: config{}}
-	event := testutil.CreateValidEvent()
-	event.Tags = nil
-	alert := o.buildAlert(event)
+	o := &driver{cfg: config{}}
+	evt := testutil.CreateValidEvent()
+	evt.Tags = nil
+	alert := o.buildAlert(evt)
 
 	_, has := alert.Labels["tags"]
 	assert.False(t, has)
 }
 
 func TestBuildAlertExtraLabels(t *testing.T) {
-	o := &output{cfg: config{
+	o := &driver{cfg: config{
 		ExtraLabels: map[string]string{"env": "production", "k8s.ns": "default"},
 	}}
 	alert := o.buildAlert(testutil.CreateValidEvent())
@@ -128,35 +129,35 @@ func TestBuildAlertExtraLabels(t *testing.T) {
 }
 
 func TestResolveSeverityUsesSharedDefault(t *testing.T) {
-	o := &output{cfg: config{}}
-	priorities := []domain.Priority{
-		domain.PriorityDebug, domain.PriorityInformational, domain.PriorityNotice,
-		domain.PriorityWarning, domain.PriorityError, domain.PriorityCritical,
-		domain.PriorityAlert, domain.PriorityEmergency,
+	o := &driver{cfg: config{}}
+	priorities := []event.Priority{
+		event.PriorityDebug, event.PriorityInformational, event.PriorityNotice,
+		event.PriorityWarning, event.PriorityError, event.PriorityCritical,
+		event.PriorityAlert, event.PriorityEmergency,
 	}
 	for _, p := range priorities {
 		t.Run(string(p), func(t *testing.T) {
-			assert.Equal(t, sdk.PrioritySeverity(p), o.resolveSeverity(p))
+			assert.Equal(t, shared.PrioritySeverity(p), o.resolveSeverity(p))
 		})
 	}
 }
 
 func TestResolveSeverityCustomMapOverride(t *testing.T) {
-	o := &output{cfg: config{
+	o := &driver{cfg: config{
 		CustomSeverityMap: map[string]string{"critical": "P1", "warning": "P3"},
 	}}
-	assert.Equal(t, "P1", o.resolveSeverity(domain.PriorityCritical))
-	assert.Equal(t, "P3", o.resolveSeverity(domain.PriorityWarning))
-	assert.Equal(t, sdk.PrioritySeverity(domain.PriorityDebug), o.resolveSeverity(domain.PriorityDebug))
+	assert.Equal(t, "P1", o.resolveSeverity(event.PriorityCritical))
+	assert.Equal(t, "P3", o.resolveSeverity(event.PriorityWarning))
+	assert.Equal(t, shared.PrioritySeverity(event.PriorityDebug), o.resolveSeverity(event.PriorityDebug))
 }
 
 func TestAlertmanagerMultiHost(t *testing.T) {
-	driver, err := createOutput(map[string]any{
+	d, err := createOutput(map[string]any{
 		"hosts": []string{"http://am1:9093", "http://am2:9093"},
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	require.NoError(t, err)
 
-	o := driver.(*output)
+	o := d.(*driver)
 	assert.Len(t, o.hostURLs, 2)
 	assert.NotNil(t, o.sender)
 }

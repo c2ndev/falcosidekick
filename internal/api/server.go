@@ -25,16 +25,19 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/core"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
 )
 
 // ServerConfig holds HTTP server dependencies.
 type ServerConfig struct {
 	Pipeline  *pipeline.Pipeline
-	ReadStore domain.ReadableStore
-	Metrics   domain.MetricsCollector
+	ReadStore output.ReadableStore
+	Database  core.Database
+	Metrics   core.MetricsCollector
 	Registry  *prometheus.Registry
+	TLS       *core.TLSConfig
 	Address   string
 	Port      int
 }
@@ -43,13 +46,15 @@ type ServerConfig struct {
 type Server struct {
 	app       *fiber.App
 	pipeline  *pipeline.Pipeline
-	readStore domain.ReadableStore
-	metrics   domain.MetricsCollector
+	readStore output.ReadableStore
+	database  core.Database
+	metrics   core.MetricsCollector
+	tls       *core.TLSConfig
 	address   string
 }
 
 // NewServer creates a Fiber-based HTTP Server.
-func NewServer(cfg ServerConfig) (*Server, error) {
+func NewServer(cfg *ServerConfig) (*Server, error) {
 	if cfg.Pipeline == nil {
 		return nil, fmt.Errorf("server: pipeline is required")
 	}
@@ -63,7 +68,9 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	s := &Server{
 		pipeline:  cfg.Pipeline,
 		readStore: cfg.ReadStore,
+		database:  cfg.Database,
 		metrics:   cfg.Metrics,
+		tls:       cfg.TLS,
 		address:   fmt.Sprintf("%s:%d", cfg.Address, cfg.Port),
 	}
 
@@ -73,6 +80,9 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 
 	app.Post("/", s.handlePostEvent)
 	app.Get("/healthz", s.handleGetHealthz)
+	app.Get("/version", s.handleGetVersion)
+	app.Get("/api/v1/config", s.handleGetConfig)
+	app.Get("/api/v1/outputs", s.handleGetOutputs)
 
 	if cfg.Registry != nil {
 		handler := promhttp.HandlerFor(cfg.Registry, promhttp.HandlerOpts{})
@@ -84,7 +94,18 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 }
 
 // Start begins listening for HTTP requests. Blocks until the server stops.
+// Uses TLS when configured, including mutual TLS with client cert verification.
 func (s *Server) Start() error {
+	if s.tls != nil && s.tls.Enabled {
+		cfg := fiber.ListenConfig{
+			CertFile:    s.tls.CertFile,
+			CertKeyFile: s.tls.KeyFile,
+		}
+		if s.tls.MutualTLS {
+			cfg.CertClientFile = s.tls.CACertFile
+		}
+		return s.app.Listen(s.address, cfg)
+	}
 	return s.app.Listen(s.address)
 }
 

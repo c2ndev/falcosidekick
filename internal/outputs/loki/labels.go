@@ -20,36 +20,36 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
-	"github.com/falcosecurity/falcosidekick/internal/outputs/sdk"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
 )
 
 // extractLabels builds the label set for a Falco event.
-func extractLabels(extraLabels []string, event *domain.Event) map[string]string {
+func extractLabels(extraLabels []string, evt *event.Event) map[string]string {
 	labels := map[string]string{
-		"rule":     event.Rule,
-		"source":   event.Source,
-		"priority": string(event.Priority),
+		"rule":     evt.Rule,
+		"source":   evt.Source,
+		"priority": string(evt.Priority),
 	}
 
-	if event.Hostname != "" {
-		labels["hostname"] = event.Hostname
+	if evt.Hostname != "" {
+		labels["hostname"] = evt.Hostname
 	}
 
-	if tags := sdk.FormatTags(event.Tags, ","); tags != "" {
+	if tags := shared.FormatTags(evt.Tags, ","); tags != "" {
 		labels["tags"] = tags
 	}
 
-	if ns, ok := event.OutputFields["k8s.ns.name"]; ok {
+	if ns, ok := evt.OutputFields["k8s.ns.name"]; ok {
 		labels["k8s_ns_name"] = fmt.Sprintf("%v", ns)
 	}
-	if pod, ok := event.OutputFields["k8s.pod.name"]; ok {
+	if pod, ok := evt.OutputFields["k8s.pod.name"]; ok {
 		labels["k8s_pod_name"] = fmt.Sprintf("%v", pod)
 	}
 
 	for _, field := range extraLabels {
-		if v, ok := event.OutputFields[field]; ok {
-			labels[sdk.SanitizeLabel(field)] = fmt.Sprintf("%v", v)
+		if v, ok := evt.OutputFields[field]; ok {
+			labels[shared.SanitizeLabel(field)] = fmt.Sprintf("%v", v)
 		}
 	}
 
@@ -58,7 +58,7 @@ func extractLabels(extraLabels []string, event *domain.Event) map[string]string 
 
 // serializeLabels creates a deterministic string key for stream grouping.
 func serializeLabels(labels map[string]string) string {
-	keys := sdk.SortMapKeys(labels)
+	keys := shared.SortMapKeys(labels)
 	var b strings.Builder
 	b.WriteByte('{')
 	for i, k := range keys {

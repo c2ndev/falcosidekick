@@ -22,13 +22,16 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/mitchellh/mapstructure"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
-	"github.com/falcosecurity/falcosidekick/internal/outputs/sdk"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
+	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
 const (
@@ -43,20 +46,20 @@ type config struct {
 	Suffix              string `mapstructure:"index_suffix"`
 	Pipeline            string `mapstructure:"pipeline"`
 	APIKey              string `mapstructure:"api_key"`
-	sdk.HTTPConfig      `mapstructure:",squash"`
+	shared.HTTPConfig   `mapstructure:",squash"`
 	NumberOfShards      int  `mapstructure:"number_of_shards"`
 	NumberOfReplicas    int  `mapstructure:"number_of_replicas"`
 	FlattenFields       bool `mapstructure:"flatten_fields"`
 	CreateIndexTemplate bool `mapstructure:"create_index_template"`
 }
 
-// Type describes the Elasticsearch output for the catalog.
-var Type = domain.OutputType{
+// OutputType describes the Elasticsearch output for the catalog.
+var OutputType = output.Type{
 	New:      createOutput,
 	Name:     "elasticsearch",
 	Category: "logs",
-	Schema: domain.OutputSchema{
-		Fields: append([]domain.SchemaField{
+	Schema: output.Schema{
+		Fields: append([]output.SchemaField{
 			{Name: "url", Type: "string", Required: true, Label: "URL"},
 			{Name: "index", Type: "string", Default: "falco", Label: "Index"},
 			{Name: "index_suffix", Type: "enum", Values: []string{"daily", "monthly", "annually", suffixNone}, Default: "daily", Label: "Index Suffix"},
@@ -66,129 +69,159 @@ var Type = domain.OutputType{
 			{Name: "create_index_template", Type: "bool", Default: false, Label: "Create Index Template"},
 			{Name: "number_of_shards", Type: "int", Default: 3, Label: "Number of Shards"},
 			{Name: "number_of_replicas", Type: "int", Default: 3, Label: "Number of Replicas"},
-		}, sdk.HTTPConfigSchemaFields()...),
+		}, shared.HTTPConfigSchemaFields()...),
 	},
 }
 
-type output struct {
-	sender *sdk.Sender
+type driver struct {
+	sender *shared.Sender
 	logger *slog.Logger
 	cfg    config
 }
 
-func createOutput(raw map[string]any, deps domain.OutputDeps) (domain.OutputDriver, error) {
+var (
+	validSuffixes = map[string]bool{"daily": true, "monthly": true, "annually": true, suffixNone: true}
+	indexRegex    = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
+)
+
+func (c *config) validate() utils.ValidationErrors {
+	var errs utils.ValidationErrors
+	errs.Merge("", c.HTTPConfig.Validate())
+	errs.Merge("url", shared.ValidateURL(c.URL))
+	if c.Index == "" {
+		c.Index = defaultIndex
+	} else if !indexRegex.MatchString(c.Index) {
+		errs.Add("index", fmt.Sprintf("must be lowercase alphanumeric (a-z, 0-9, ., -, _), cannot start with -, _, +; got %q", c.Index))
+	}
+	if c.Suffix == "" {
+		c.Suffix = defaultSuffix
+	} else if !validSuffixes[c.Suffix] {
+		errs.Add("index_suffix", fmt.Sprintf("must be daily/monthly/annually/none, got %q", c.Suffix))
+	}
+	if c.CreateIndexTemplate {
+		if c.NumberOfShards <= 0 {
+			errs.Add("number_of_shards", fmt.Sprintf("must be > 0 when create_index_template is true, got %d", c.NumberOfShards))
+		}
+		if c.NumberOfReplicas < 0 {
+			errs.Add("number_of_replicas", fmt.Sprintf("must be >= 0 when create_index_template is true, got %d", c.NumberOfReplicas))
+		}
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
+
+func createOutput(raw map[string]any, deps output.Deps) (output.Driver, error) {
 	var cfg config
 	if err := mapstructure.Decode(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("elasticsearch config: %w", err)
 	}
-	if cfg.URL == "" {
-		return nil, fmt.Errorf("elasticsearch: url is required")
-	}
-	if cfg.Index == "" {
-		cfg.Index = defaultIndex
-	}
-	if cfg.Suffix == "" {
-		cfg.Suffix = defaultSuffix
+	if errs := cfg.validate(); len(errs) > 0 {
+		return nil, fmt.Errorf("elasticsearch: %s", errs.Error())
 	}
 
-	sender := sdk.NewSender("elasticsearch", &cfg.HTTPConfig)
+	sender, err := shared.NewSender("elasticsearch", &cfg.HTTPConfig)
+	if err != nil {
+		return nil, err
+	}
 	if cfg.APIKey != "" {
 		sender.SetHeader("Authorization", "ApiKey "+cfg.APIKey)
 	}
 
-	return &output{
+	return &driver{
 		sender: sender,
-		logger: sdk.ResolveLogger(deps.Logger, "elasticsearch"),
+		logger: shared.ResolveLogger(deps.Logger, "elasticsearch"),
 		cfg:    cfg,
 	}, nil
 }
 
-func (o *output) Name() string { return "elasticsearch" }
+func (d *driver) Name() string { return "elasticsearch" }
 
 // Init creates the index template if configured.
-func (o *output) Init(ctx context.Context) error {
-	if o.cfg.CreateIndexTemplate {
-		return o.createIndexTemplate(ctx)
+func (d *driver) Init(ctx context.Context) error {
+	if d.cfg.CreateIndexTemplate {
+		return d.createIndexTemplate(ctx)
 	}
 	return nil
 }
 
 // Send delivers a single event to Elasticsearch using the _doc API.
-func (o *output) Send(ctx context.Context, event *domain.Event) error {
-	body, err := o.marshalEvent(event)
+func (d *driver) Send(ctx context.Context, evt *event.Event) error {
+	body, err := d.marshalEvent(evt)
 	if err != nil {
 		return fmt.Errorf("elasticsearch marshal: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/%s/_doc", o.cfg.URL, o.resolveIndex())
-	if o.cfg.Pipeline != "" {
-		url += "?pipeline=" + o.cfg.Pipeline
+	url := fmt.Sprintf("%s/%s/_doc", d.cfg.URL, d.resolveIndex())
+	if d.cfg.Pipeline != "" {
+		url += "?pipeline=" + d.cfg.Pipeline
 	}
 
-	return o.sender.SendRaw(ctx, http.MethodPost, url, body, "application/json")
+	return d.sender.SendRaw(ctx, http.MethodPost, url, body, "application/json")
 }
 
 // SendBatch delivers multiple events using the Elasticsearch bulk API.
 // Uses "create" action (append-only, required for data streams).
 // Parses per-item response to report accurate success/failure counts.
-func (o *output) SendBatch(ctx context.Context, events []*domain.Event) error {
-	body, err := o.buildBulkBody(events)
+func (d *driver) SendBatch(ctx context.Context, events []*event.Event) error {
+	body, err := d.buildBulkBody(events)
 	if err != nil {
 		return err
 	}
 
-	url := fmt.Sprintf("%s/_bulk?filter_path=%s", o.cfg.URL, bulkFilterPath)
-	if o.cfg.Pipeline != "" {
-		url += "&pipeline=" + o.cfg.Pipeline
+	url := fmt.Sprintf("%s/_bulk?filter_path=%s", d.cfg.URL, bulkFilterPath)
+	if d.cfg.Pipeline != "" {
+		url += "&pipeline=" + d.cfg.Pipeline
 	}
 
-	respBody, err := o.sender.SendRawReadBody(ctx, http.MethodPost, url, body, "application/json")
+	respBody, err := d.sender.SendRawReadBody(ctx, http.MethodPost, url, body, "application/json")
 	if err != nil {
 		return err
 	}
 
-	return o.parseBulkResponse(respBody, len(events))
+	return d.parseBulkResponse(respBody, len(events))
 }
 
 // HealthCheck verifies connectivity to Elasticsearch.
-func (o *output) HealthCheck(ctx context.Context) error {
-	return o.sender.HealthCheck(ctx, o.cfg.URL)
+func (d *driver) HealthCheck(ctx context.Context) error {
+	return d.sender.HealthCheck(ctx, d.cfg.URL)
 }
 
-func (o *output) Close() error { return nil }
+func (d *driver) Close() error { return nil }
 
-func (o *output) marshalEvent(event *domain.Event) ([]byte, error) {
-	fields := event.OutputFields
-	if o.cfg.FlattenFields {
-		fields = make(map[string]interface{}, len(event.OutputFields))
-		for k, v := range event.OutputFields {
+func (d *driver) marshalEvent(evt *event.Event) ([]byte, error) {
+	fields := evt.OutputFields
+	if d.cfg.FlattenFields {
+		fields = make(map[string]interface{}, len(evt.OutputFields))
+		for k, v := range evt.OutputFields {
 			fields[strings.ReplaceAll(k, ".", "_")] = v
 		}
 	}
 
-	type alias domain.Event
+	type alias event.Event
 	tmp := struct {
 		*alias
 		OutputFields map[string]interface{} `json:"output_fields"`
 		Timestamp    string                 `json:"@timestamp"`
 	}{
-		alias:        (*alias)(event),
+		alias:        (*alias)(evt),
 		OutputFields: fields,
-		Timestamp:    event.Time.Format(time.RFC3339Nano),
+		Timestamp:    evt.Time.Format(time.RFC3339Nano),
 	}
 
 	return json.Marshal(tmp)
 }
 
-func (o *output) resolveIndex() string {
-	switch o.cfg.Suffix {
+func (d *driver) resolveIndex() string {
+	switch d.cfg.Suffix {
 	case "monthly":
-		return fmt.Sprintf("%s-%s", o.cfg.Index, time.Now().Format("2006.01"))
+		return fmt.Sprintf("%s-%s", d.cfg.Index, time.Now().Format("2006.01"))
 	case "annually":
-		return fmt.Sprintf("%s-%s", o.cfg.Index, time.Now().Format("2006"))
+		return fmt.Sprintf("%s-%s", d.cfg.Index, time.Now().Format("2006"))
 	case suffixNone:
-		return o.cfg.Index
+		return d.cfg.Index
 	default:
-		return fmt.Sprintf("%s-%s", o.cfg.Index, time.Now().Format("2006.01.02"))
+		return fmt.Sprintf("%s-%s", d.cfg.Index, time.Now().Format("2006.01.02"))
 	}
 }

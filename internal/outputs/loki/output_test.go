@@ -28,20 +28,20 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
-	"github.com/falcosecurity/falcosidekick/internal/outputs/sdk"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
 
 func TestLokiCommonCases(t *testing.T) {
-	testutil.RunOutputTests(t, Type, []testutil.OutputTestCase{
+	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
 		{Name: "sends valid event", AddressField: "url"},
 		{Name: "returns error on server 500", AddressField: "url", MockStatus: http.StatusInternalServerError, ExpectError: true},
 	})
 }
 
 func TestLokiPayloadFormat(t *testing.T) {
-	testutil.RunOutputTests(t, Type, []testutil.OutputTestCase{
+	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
 		{
 			Name:         "sets tenant header",
 			AddressField: "url",
@@ -90,9 +90,9 @@ func TestLokiSendUsesGzip(t *testing.T) {
 	}))
 	defer server.Close()
 
-	o := &output{
+	o := &driver{
 		cfg:    config{URL: server.URL, Endpoint: defaultEndpoint, LogFormat: formatJSON},
-		sender: sdk.NewSender("loki", &sdk.HTTPConfig{}),
+		sender: testutil.MustNewSender(t, "loki"),
 	}
 
 	err := o.Send(context.Background(), testutil.CreateValidEvent())
@@ -117,17 +117,17 @@ func TestLokiSendBatchGroupsStreams(t *testing.T) {
 	}))
 	defer server.Close()
 
-	o := &output{
+	o := &driver{
 		cfg:    config{URL: server.URL, Endpoint: defaultEndpoint, LogFormat: formatJSON},
-		sender: sdk.NewSender("loki", &sdk.HTTPConfig{}),
+		sender: testutil.MustNewSender(t, "loki"),
 	}
 
 	e1 := testutil.CreateValidEvent()
 	e2 := testutil.CreateValidEvent()
 	e3 := testutil.CreateValidEvent()
-	e3.Priority = domain.PriorityCritical
+	e3.Priority = event.PriorityCritical
 
-	err := o.SendBatch(context.Background(), []*domain.Event{e1, e2, e3})
+	err := o.SendBatch(context.Background(), []*event.Event{e1, e2, e3})
 	require.NoError(t, err)
 
 	var payload lokiPayload
@@ -137,10 +137,10 @@ func TestLokiSendBatchGroupsStreams(t *testing.T) {
 
 	var defaultStream, criticalStream *lokiStream
 	for i := range payload.Streams {
-		if payload.Streams[i].Stream["priority"] == string(domain.PriorityError) {
+		if payload.Streams[i].Stream["priority"] == string(event.PriorityError) {
 			defaultStream = &payload.Streams[i]
 		}
-		if payload.Streams[i].Stream["priority"] == string(domain.PriorityCritical) {
+		if payload.Streams[i].Stream["priority"] == string(event.PriorityCritical) {
 			criticalStream = &payload.Streams[i]
 		}
 	}
@@ -152,27 +152,27 @@ func TestLokiSendBatchGroupsStreams(t *testing.T) {
 }
 
 func TestLokiCreateValidation(t *testing.T) {
-	_, err := createOutput(map[string]any{}, domain.OutputDeps{})
+	_, err := createOutput(map[string]any{}, output.Deps{})
 	assert.Error(t, err, "missing url must fail")
 }
 
 func TestLokiCreateOutputDefaults(t *testing.T) {
-	driver, err := createOutput(map[string]any{"url": "http://localhost:3100"}, domain.OutputDeps{})
+	d, err := createOutput(map[string]any{"url": "http://localhost:3100"}, output.Deps{})
 	require.NoError(t, err)
 
-	o := driver.(*output)
+	o := d.(*driver)
 	assert.Equal(t, defaultEndpoint, o.cfg.Endpoint)
 	assert.Equal(t, formatJSON, o.cfg.LogFormat)
 }
 
 func TestLokiCreateOutputExtraLabels(t *testing.T) {
-	driver, err := createOutput(map[string]any{
+	d, err := createOutput(map[string]any{
 		"url":          "http://localhost:3100",
 		"extra_labels": "fd.name, user.name, ,proc.cmdline",
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	require.NoError(t, err)
 
-	o := driver.(*output)
+	o := d.(*driver)
 	assert.Equal(t, []string{"fd.name", "user.name", "proc.cmdline"}, o.extraLabels)
 }
 
@@ -183,19 +183,19 @@ func TestLokiHealthCheck(t *testing.T) {
 	}))
 	defer server.Close()
 
-	o := &output{
+	o := &driver{
 		cfg:    config{URL: server.URL},
-		sender: sdk.NewSender("loki", &sdk.HTTPConfig{}),
+		sender: testutil.MustNewSender(t, "loki"),
 	}
 	assert.NoError(t, o.HealthCheck(context.Background()))
 }
 
 func TestLokiInit(t *testing.T) {
-	o := &output{}
+	o := &driver{}
 	assert.NoError(t, o.Init(context.Background()))
 }
 
 func TestLokiClose(t *testing.T) {
-	o := &output{}
+	o := &driver{}
 	assert.NoError(t, o.Close())
 }

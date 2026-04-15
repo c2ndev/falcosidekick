@@ -25,88 +25,88 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
 
 func TestBuildPayloadLabels(t *testing.T) {
-	event := testutil.CreateValidEvent()
-	payload := buildPayload(formatJSON, nil, event)
+	evt := testutil.CreateValidEvent()
+	payload := buildPayload(formatJSON, nil, evt)
 
 	require.Len(t, payload.Streams, 1)
 	labels := payload.Streams[0].Stream
-	assert.Equal(t, event.Rule, labels["rule"])
-	assert.Equal(t, event.Source, labels["source"])
-	assert.Equal(t, string(event.Priority), labels["priority"])
+	assert.Equal(t, evt.Rule, labels["rule"])
+	assert.Equal(t, evt.Source, labels["source"])
+	assert.Equal(t, string(evt.Priority), labels["priority"])
 }
 
 func TestBuildPayloadTimestamp(t *testing.T) {
-	event := testutil.CreateValidEvent()
-	payload := buildPayload(formatJSON, nil, event)
+	evt := testutil.CreateValidEvent()
+	payload := buildPayload(formatJSON, nil, evt)
 
 	ts := payload.Streams[0].Values[0][0]
-	expected := strconv.FormatInt(event.Time.UnixNano(), 10)
+	expected := strconv.FormatInt(evt.Time.UnixNano(), 10)
 	assert.Equal(t, expected, ts)
 }
 
 func TestBuildPayloadJSONFormat(t *testing.T) {
-	event := testutil.CreateValidEvent()
-	payload := buildPayload(formatJSON, nil, event)
+	evt := testutil.CreateValidEvent()
+	payload := buildPayload(formatJSON, nil, evt)
 
 	line := payload.Streams[0].Values[0][1]
 	var decoded map[string]interface{}
 	require.NoError(t, json.Unmarshal([]byte(line), &decoded))
-	assert.Equal(t, event.Rule, decoded["rule"])
+	assert.Equal(t, evt.Rule, decoded["rule"])
 }
 
 func TestBuildPayloadTextFormat(t *testing.T) {
-	event := testutil.CreateValidEvent()
-	payload := buildPayload("text", nil, event)
+	evt := testutil.CreateValidEvent()
+	payload := buildPayload("text", nil, evt)
 
 	line := payload.Streams[0].Values[0][1]
-	assert.Equal(t, event.Output, line)
+	assert.Equal(t, evt.Output, line)
 }
 
 func TestBuildPayloadTags(t *testing.T) {
-	event := testutil.CreateValidEvent()
-	event.Tags = []string{"z_tag", "a_tag"}
+	evt := testutil.CreateValidEvent()
+	evt.Tags = []string{"z_tag", "a_tag"}
 
-	payload := buildPayload(formatJSON, nil, event)
+	payload := buildPayload(formatJSON, nil, evt)
 	assert.Equal(t, "a_tag,z_tag", payload.Streams[0].Stream["tags"])
 }
 
 func TestBuildPayloadNoTags(t *testing.T) {
-	event := testutil.CreateValidEvent()
-	event.Tags = nil
+	evt := testutil.CreateValidEvent()
+	evt.Tags = nil
 
-	payload := buildPayload(formatJSON, nil, event)
+	payload := buildPayload(formatJSON, nil, evt)
 	_, has := payload.Streams[0].Stream["tags"]
 	assert.False(t, has)
 }
 
 func TestBuildPayloadK8sFields(t *testing.T) {
-	event := testutil.CreateValidEvent()
-	event.OutputFields["k8s.ns.name"] = "default"
-	event.OutputFields["k8s.pod.name"] = "nginx-abc"
+	evt := testutil.CreateValidEvent()
+	evt.OutputFields["k8s.ns.name"] = "default"
+	evt.OutputFields["k8s.pod.name"] = "nginx-abc"
 
-	payload := buildPayload(formatJSON, nil, event)
+	payload := buildPayload(formatJSON, nil, evt)
 	labels := payload.Streams[0].Stream
 	assert.Equal(t, "default", labels["k8s_ns_name"])
 	assert.Equal(t, "nginx-abc", labels["k8s_pod_name"])
 }
 
 func TestBuildPayloadEmptyHostname(t *testing.T) {
-	event := testutil.CreateValidEvent()
-	event.Hostname = ""
+	evt := testutil.CreateValidEvent()
+	evt.Hostname = ""
 
-	payload := buildPayload(formatJSON, nil, event)
+	payload := buildPayload(formatJSON, nil, evt)
 	_, has := payload.Streams[0].Stream["hostname"]
 	assert.False(t, has)
 }
 
 func TestBuildPayloadExtraLabels(t *testing.T) {
-	event := testutil.CreateValidEvent()
-	payload := buildPayload(formatJSON, []string{"fd.name", "user.name"}, event)
+	evt := testutil.CreateValidEvent()
+	payload := buildPayload(formatJSON, []string{"fd.name", "user.name"}, evt)
 
 	labels := payload.Streams[0].Stream
 	assert.Equal(t, "/bin/hack", labels["fd_name"])
@@ -114,8 +114,8 @@ func TestBuildPayloadExtraLabels(t *testing.T) {
 }
 
 func TestBuildPayloadExtraLabelMissing(t *testing.T) {
-	event := testutil.CreateValidEvent()
-	payload := buildPayload(formatJSON, []string{"nonexistent"}, event)
+	evt := testutil.CreateValidEvent()
+	payload := buildPayload(formatJSON, []string{"nonexistent"}, evt)
 
 	_, found := payload.Streams[0].Stream["nonexistent"]
 	assert.False(t, found)
@@ -125,9 +125,9 @@ func TestBuildBatchPayloadGroupsByLabels(t *testing.T) {
 	e1 := testutil.CreateValidEvent()
 	e2 := testutil.CreateValidEvent()
 	e3 := testutil.CreateValidEvent()
-	e3.Priority = domain.PriorityCritical
+	e3.Priority = event.PriorityCritical
 
-	payload := buildBatchPayload(formatJSON, nil, []*domain.Event{e1, e2, e3})
+	payload := buildBatchPayload(formatJSON, nil, []*event.Event{e1, e2, e3})
 
 	assert.Len(t, payload.Streams, 2)
 }
@@ -142,7 +142,7 @@ func TestBuildBatchPayloadSortsTimestamps(t *testing.T) {
 	e3 := testutil.CreateValidEvent()
 	e3.Time = time.Date(2026, 1, 1, 12, 0, 1, 0, time.UTC)
 
-	payload := buildBatchPayload(formatJSON, nil, []*domain.Event{e1, e2, e3})
+	payload := buildBatchPayload(formatJSON, nil, []*event.Event{e1, e2, e3})
 
 	require.Len(t, payload.Streams, 1)
 	values := payload.Streams[0].Values

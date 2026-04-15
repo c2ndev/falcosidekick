@@ -26,7 +26,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/core"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 )
 
 func newTestCollector() *Collector {
@@ -137,15 +138,15 @@ func TestRecordEvent(t *testing.T) {
 	c := newTestCollector()
 	ctx := context.Background()
 
-	c.RecordEvent(ctx, "Write below binary dir", domain.PriorityError, "syscall")
-	c.RecordEvent(ctx, "Read secret", domain.PriorityWarning, "syscall")
+	c.RecordEvent(ctx, "Write below binary dir", event.PriorityError, "syscall")
+	c.RecordEvent(ctx, "Read secret", event.PriorityWarning, "syscall")
 
 	assert.Equal(t, 2.0, collectCounter(t, c.eventTotal))
 }
 
 func TestCollectorImplementsInterface(t *testing.T) {
-	var _ domain.MetricsCollector = (*Collector)(nil)
-	var _ domain.MetricsCollector = NoopCollector{}
+	var _ core.MetricsCollector = (*Collector)(nil)
+	var _ core.MetricsCollector = NoopCollector{}
 }
 
 func TestNoopCollectorDoesNotPanic(t *testing.T) {
@@ -156,5 +157,5 @@ func TestNoopCollectorDoesNotPanic(t *testing.T) {
 	noop.RecordOutput(ctx, "test", "ok", time.Second)
 	noop.RecordDrop(ctx, "test")
 	noop.RecordError(ctx, "test", assert.AnError)
-	noop.RecordEvent(ctx, "rule", domain.PriorityDebug, "test")
+	noop.RecordEvent(ctx, "rule", event.PriorityDebug, "test")
 }

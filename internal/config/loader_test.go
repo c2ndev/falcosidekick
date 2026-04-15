@@ -31,11 +31,10 @@ func TestLoadDefaults(t *testing.T) {
 
 	assert.Equal(t, "0.0.0.0", cfg.ListenAddress)
 	assert.Equal(t, 2801, cfg.ListenPort)
-	assert.False(t, cfg.Debug)
 	assert.Equal(t, "info", string(cfg.LogLevel))
 	assert.Equal(t, "text", string(cfg.LogFormat))
 	assert.False(t, cfg.UI.Enabled)
-	assert.Equal(t, "memory", cfg.UI.Backend)
+	assert.Equal(t, "inmemory", cfg.UI.EventSource)
 	assert.Equal(t, 1000, cfg.Pipeline.QueueSize)
 	assert.Equal(t, 2, cfg.Pipeline.Workers)
 }

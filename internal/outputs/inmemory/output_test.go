@@ -25,11 +25,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 )
 
-func testEvent(rule string, priority domain.Priority, source string, t time.Time) *domain.Event {
-	return &domain.Event{
+func testEvent(rule string, priority event.Priority, source string, t time.Time) *event.Event {
+	return &event.Event{
 		UUID:         fmt.Sprintf("uuid-%s-%d", rule, t.UnixNano()),
 		Output:       fmt.Sprintf("output for %s", rule),
 		Priority:     priority,
@@ -42,20 +43,20 @@ func testEvent(rule string, priority domain.Priority, source string, t time.Time
 	}
 }
 
-func createTestOutput(capacity int) *output {
+func createTestOutput(capacity int) *driver {
 	o, _ := createOutput(map[string]any{
 		"capacity":    capacity,
 		"ttl":         "0s",
 		"gc_interval": "10s",
-	}, domain.OutputDeps{})
-	return o.(*output)
+	}, output.Deps{})
+	return o.(*driver)
 }
 
 // --- OutputDriver compliance ---
 
 func TestName(t *testing.T) {
 	o := createTestOutput(100)
-	assert.Equal(t, "memory", o.Name())
+	assert.Equal(t, "inmemory", o.Name())
 }
 
 func TestInit(t *testing.T) {
@@ -79,12 +80,12 @@ func TestCloseIsIdempotent(t *testing.T) {
 // --- createOutput validation ---
 
 func TestCreateOutputDefaults(t *testing.T) {
-	o, err := createOutput(map[string]any{}, domain.OutputDeps{})
+	o, err := createOutput(map[string]any{}, output.Deps{})
 	require.NoError(t, err)
-	mem := o.(*output)
+	mem := o.(*driver)
 	assert.Equal(t, 10000, mem.capacity)
 	assert.Equal(t, time.Duration(0), mem.ttl)
-	assert.Equal(t, 10*time.Second, mem.gcInterval)
+	assert.Equal(t, time.Duration(0), mem.gcInterval)
 }
 
 func TestCreateOutputCustomConfig(t *testing.T) {
@@ -92,9 +93,9 @@ func TestCreateOutputCustomConfig(t *testing.T) {
 		"capacity":    500,
 		"ttl":         "1h",
 		"gc_interval": "30s",
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	require.NoError(t, err)
-	mem := o.(*output)
+	mem := o.(*driver)
 	assert.Equal(t, 500, mem.capacity)
 	assert.Equal(t, time.Hour, mem.ttl)
 	assert.Equal(t, 30*time.Second, mem.gcInterval)
@@ -107,10 +108,10 @@ func TestSendAndSearch(t *testing.T) {
 	o := createTestOutput(100)
 
 	now := time.Now()
-	require.NoError(t, o.Send(ctx, testEvent("rule-a", domain.PriorityWarning, "syscall", now)))
-	require.NoError(t, o.Send(ctx, testEvent("rule-b", domain.PriorityError, "syscall", now.Add(time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("rule-a", event.PriorityWarning, "syscall", now)))
+	require.NoError(t, o.Send(ctx, testEvent("rule-b", event.PriorityError, "syscall", now.Add(time.Second))))
 
-	result, err := o.Search(ctx, &domain.SearchQuery{})
+	result, err := o.Search(ctx, &output.SearchQuery{})
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), result.Total)
 	assert.Len(t, result.Events, 2)
@@ -123,12 +124,12 @@ func TestSearchByPriority(t *testing.T) {
 	o := createTestOutput(100)
 
 	now := time.Now()
-	require.NoError(t, o.Send(ctx, testEvent("low", domain.PriorityDebug, "syscall", now)))
-	require.NoError(t, o.Send(ctx, testEvent("mid", domain.PriorityWarning, "syscall", now.Add(time.Second))))
-	require.NoError(t, o.Send(ctx, testEvent("high", domain.PriorityCritical, "syscall", now.Add(2*time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("low", event.PriorityDebug, "syscall", now)))
+	require.NoError(t, o.Send(ctx, testEvent("mid", event.PriorityWarning, "syscall", now.Add(time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("high", event.PriorityCritical, "syscall", now.Add(2*time.Second))))
 
-	result, err := o.Search(ctx, &domain.SearchQuery{
-		Filters: domain.Filters{Priority: []string{"warning", "critical"}},
+	result, err := o.Search(ctx, &output.SearchQuery{
+		Filters: output.Filters{Priority: []string{"warning", "critical"}},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), result.Total)
@@ -141,12 +142,12 @@ func TestSearchByRule(t *testing.T) {
 	o := createTestOutput(100)
 
 	now := time.Now()
-	require.NoError(t, o.Send(ctx, testEvent("rule-a", domain.PriorityWarning, "syscall", now)))
-	require.NoError(t, o.Send(ctx, testEvent("rule-b", domain.PriorityWarning, "syscall", now.Add(time.Second))))
-	require.NoError(t, o.Send(ctx, testEvent("rule-c", domain.PriorityWarning, "syscall", now.Add(2*time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("rule-a", event.PriorityWarning, "syscall", now)))
+	require.NoError(t, o.Send(ctx, testEvent("rule-b", event.PriorityWarning, "syscall", now.Add(time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("rule-c", event.PriorityWarning, "syscall", now.Add(2*time.Second))))
 
-	result, err := o.Search(ctx, &domain.SearchQuery{
-		Filters: domain.Filters{Rule: []string{"rule-a", "rule-c"}},
+	result, err := o.Search(ctx, &output.SearchQuery{
+		Filters: output.Filters{Rule: []string{"rule-a", "rule-c"}},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), result.Total)
@@ -157,11 +158,11 @@ func TestSearchBySource(t *testing.T) {
 	o := createTestOutput(100)
 
 	now := time.Now()
-	require.NoError(t, o.Send(ctx, testEvent("r1", domain.PriorityWarning, "syscall", now)))
-	require.NoError(t, o.Send(ctx, testEvent("r2", domain.PriorityWarning, "k8s_audit", now.Add(time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("r1", event.PriorityWarning, "syscall", now)))
+	require.NoError(t, o.Send(ctx, testEvent("r2", event.PriorityWarning, "k8s_audit", now.Add(time.Second))))
 
-	result, err := o.Search(ctx, &domain.SearchQuery{
-		Filters: domain.Filters{Source: []string{"k8s_audit"}},
+	result, err := o.Search(ctx, &output.SearchQuery{
+		Filters: output.Filters{Source: []string{"k8s_audit"}},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), result.Total)
@@ -173,16 +174,16 @@ func TestSearchByHostname(t *testing.T) {
 	o := createTestOutput(100)
 
 	now := time.Now()
-	e1 := testEvent("r1", domain.PriorityWarning, "syscall", now)
+	e1 := testEvent("r1", event.PriorityWarning, "syscall", now)
 	e1.Hostname = "node-1"
-	e2 := testEvent("r2", domain.PriorityWarning, "syscall", now.Add(time.Second))
+	e2 := testEvent("r2", event.PriorityWarning, "syscall", now.Add(time.Second))
 	e2.Hostname = "node-2"
 
 	require.NoError(t, o.Send(ctx, e1))
 	require.NoError(t, o.Send(ctx, e2))
 
-	result, err := o.Search(ctx, &domain.SearchQuery{
-		Filters: domain.Filters{Hostname: []string{"node-2"}},
+	result, err := o.Search(ctx, &output.SearchQuery{
+		Filters: output.Filters{Hostname: []string{"node-2"}},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), result.Total)
@@ -194,16 +195,16 @@ func TestSearchByTags(t *testing.T) {
 	o := createTestOutput(100)
 
 	now := time.Now()
-	e1 := testEvent("r1", domain.PriorityWarning, "syscall", now)
+	e1 := testEvent("r1", event.PriorityWarning, "syscall", now)
 	e1.Tags = []string{"filesystem", "mitre"}
-	e2 := testEvent("r2", domain.PriorityWarning, "syscall", now.Add(time.Second))
+	e2 := testEvent("r2", event.PriorityWarning, "syscall", now.Add(time.Second))
 	e2.Tags = []string{"network", "dns"}
 
 	require.NoError(t, o.Send(ctx, e1))
 	require.NoError(t, o.Send(ctx, e2))
 
-	result, err := o.Search(ctx, &domain.SearchQuery{
-		Filters: domain.Filters{Tags: []string{"network"}},
+	result, err := o.Search(ctx, &output.SearchQuery{
+		Filters: output.Filters{Tags: []string{"network"}},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), result.Total)
@@ -217,11 +218,11 @@ func TestSearchByTimeWindow(t *testing.T) {
 	old := time.Now().Add(-2 * time.Hour)
 	recent := time.Now().Add(-5 * time.Minute)
 
-	require.NoError(t, o.Send(ctx, testEvent("old", domain.PriorityWarning, "syscall", old)))
-	require.NoError(t, o.Send(ctx, testEvent("recent", domain.PriorityWarning, "syscall", recent)))
+	require.NoError(t, o.Send(ctx, testEvent("old", event.PriorityWarning, "syscall", old)))
+	require.NoError(t, o.Send(ctx, testEvent("recent", event.PriorityWarning, "syscall", recent)))
 
-	result, err := o.Search(ctx, &domain.SearchQuery{
-		Filters: domain.Filters{Since: 1 * time.Hour},
+	result, err := o.Search(ctx, &output.SearchQuery{
+		Filters: output.Filters{Since: 1 * time.Hour},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), result.Total)
@@ -233,9 +234,9 @@ func TestSearchFreeText(t *testing.T) {
 	o := createTestOutput(100)
 
 	now := time.Now()
-	e1 := testEvent("Write below binary dir", domain.PriorityError, "syscall", now)
+	e1 := testEvent("Write below binary dir", event.PriorityError, "syscall", now)
 	e1.Output = "File below /usr/bin opened for writing"
-	e2 := testEvent("Shell spawned", domain.PriorityWarning, "syscall", now.Add(time.Second))
+	e2 := testEvent("Shell spawned", event.PriorityWarning, "syscall", now.Add(time.Second))
 	e2.Output = "Shell spawned in container"
 
 	require.NoError(t, o.Send(ctx, e1))
@@ -255,7 +256,7 @@ func TestSearchFreeText(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := o.Search(ctx, &domain.SearchQuery{Filter: tt.filter})
+			result, err := o.Search(ctx, &output.SearchQuery{Filter: tt.filter})
 			require.NoError(t, err)
 			assert.Equal(t, int64(tt.want), result.Total)
 		})
@@ -267,12 +268,12 @@ func TestSearchCombinedFilters(t *testing.T) {
 	o := createTestOutput(100)
 
 	now := time.Now()
-	require.NoError(t, o.Send(ctx, testEvent("rule-a", domain.PriorityWarning, "syscall", now)))
-	require.NoError(t, o.Send(ctx, testEvent("rule-a", domain.PriorityCritical, "syscall", now.Add(time.Second))))
-	require.NoError(t, o.Send(ctx, testEvent("rule-b", domain.PriorityWarning, "syscall", now.Add(2*time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("rule-a", event.PriorityWarning, "syscall", now)))
+	require.NoError(t, o.Send(ctx, testEvent("rule-a", event.PriorityCritical, "syscall", now.Add(time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("rule-b", event.PriorityWarning, "syscall", now.Add(2*time.Second))))
 
-	result, err := o.Search(ctx, &domain.SearchQuery{
-		Filters: domain.Filters{
+	result, err := o.Search(ctx, &output.SearchQuery{
+		Filters: output.Filters{
 			Rule:     []string{"rule-a"},
 			Priority: []string{"critical"},
 		},
@@ -280,7 +281,7 @@ func TestSearchCombinedFilters(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), result.Total)
 	assert.Equal(t, "rule-a", result.Events[0].Rule)
-	assert.Equal(t, domain.PriorityCritical, result.Events[0].Priority)
+	assert.Equal(t, event.PriorityCritical, result.Events[0].Priority)
 }
 
 func TestSearchPagination(t *testing.T) {
@@ -290,7 +291,7 @@ func TestSearchPagination(t *testing.T) {
 	now := time.Now()
 	for i := 0; i < 25; i++ {
 		require.NoError(t, o.Send(ctx, testEvent(
-			fmt.Sprintf("rule-%02d", i), domain.PriorityWarning, "syscall", now.Add(time.Duration(i)*time.Second),
+			fmt.Sprintf("rule-%02d", i), event.PriorityWarning, "syscall", now.Add(time.Duration(i)*time.Second),
 		)))
 	}
 
@@ -309,7 +310,7 @@ func TestSearchPagination(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := o.Search(ctx, &domain.SearchQuery{Page: tt.page, Limit: tt.limit})
+			result, err := o.Search(ctx, &output.SearchQuery{Page: tt.page, Limit: tt.limit})
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantTotal, result.Total)
 			assert.Len(t, result.Events, tt.wantCount)
@@ -324,12 +325,12 @@ func TestCapacityDropsOldest(t *testing.T) {
 	o := createTestOutput(3)
 
 	now := time.Now()
-	require.NoError(t, o.Send(ctx, testEvent("first", domain.PriorityWarning, "syscall", now)))
-	require.NoError(t, o.Send(ctx, testEvent("second", domain.PriorityWarning, "syscall", now.Add(time.Second))))
-	require.NoError(t, o.Send(ctx, testEvent("third", domain.PriorityWarning, "syscall", now.Add(2*time.Second))))
-	require.NoError(t, o.Send(ctx, testEvent("fourth", domain.PriorityWarning, "syscall", now.Add(3*time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("first", event.PriorityWarning, "syscall", now)))
+	require.NoError(t, o.Send(ctx, testEvent("second", event.PriorityWarning, "syscall", now.Add(time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("third", event.PriorityWarning, "syscall", now.Add(2*time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("fourth", event.PriorityWarning, "syscall", now.Add(3*time.Second))))
 
-	result, err := o.Search(ctx, &domain.SearchQuery{})
+	result, err := o.Search(ctx, &output.SearchQuery{})
 	require.NoError(t, err)
 	assert.Equal(t, int64(3), result.Total)
 
@@ -348,18 +349,18 @@ func TestCount(t *testing.T) {
 	o := createTestOutput(100)
 
 	now := time.Now()
-	require.NoError(t, o.Send(ctx, testEvent("r1", domain.PriorityWarning, "syscall", now)))
-	require.NoError(t, o.Send(ctx, testEvent("r2", domain.PriorityError, "syscall", now.Add(time.Second))))
-	require.NoError(t, o.Send(ctx, testEvent("r3", domain.PriorityCritical, "k8s_audit", now.Add(2*time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("r1", event.PriorityWarning, "syscall", now)))
+	require.NoError(t, o.Send(ctx, testEvent("r2", event.PriorityError, "syscall", now.Add(time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("r3", event.PriorityCritical, "k8s_audit", now.Add(2*time.Second))))
 
 	tests := []struct {
-		filters *domain.Filters
+		filters *output.Filters
 		name    string
 		want    int64
 	}{
-		{&domain.Filters{}, "all", 3},
-		{&domain.Filters{Priority: []string{"warning"}}, "by priority", 1},
-		{&domain.Filters{Source: []string{"k8s_audit"}}, "by source", 1},
+		{&output.Filters{}, "all", 3},
+		{&output.Filters{Priority: []string{"warning"}}, "by priority", 1},
+		{&output.Filters{Source: []string{"k8s_audit"}}, "by source", 1},
 	}
 
 	for _, tt := range tests {
@@ -376,9 +377,9 @@ func TestCountBy(t *testing.T) {
 	o := createTestOutput(100)
 
 	now := time.Now()
-	require.NoError(t, o.Send(ctx, testEvent("r1", domain.PriorityWarning, "syscall", now)))
-	require.NoError(t, o.Send(ctx, testEvent("r2", domain.PriorityWarning, "syscall", now.Add(time.Second))))
-	require.NoError(t, o.Send(ctx, testEvent("r3", domain.PriorityCritical, "k8s_audit", now.Add(2*time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("r1", event.PriorityWarning, "syscall", now)))
+	require.NoError(t, o.Send(ctx, testEvent("r2", event.PriorityWarning, "syscall", now.Add(time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("r3", event.PriorityCritical, "k8s_audit", now.Add(2*time.Second))))
 
 	tests := []struct {
 		want  map[string]int64
@@ -394,7 +395,7 @@ func TestCountBy(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := o.CountBy(ctx, tt.field, &domain.Filters{})
+			result, err := o.CountBy(ctx, tt.field, &output.Filters{})
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, result)
 		})
@@ -406,11 +407,11 @@ func TestCountByWithFilters(t *testing.T) {
 	o := createTestOutput(100)
 
 	now := time.Now()
-	require.NoError(t, o.Send(ctx, testEvent("r1", domain.PriorityWarning, "syscall", now)))
-	require.NoError(t, o.Send(ctx, testEvent("r2", domain.PriorityWarning, "k8s_audit", now.Add(time.Second))))
-	require.NoError(t, o.Send(ctx, testEvent("r3", domain.PriorityCritical, "syscall", now.Add(2*time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("r1", event.PriorityWarning, "syscall", now)))
+	require.NoError(t, o.Send(ctx, testEvent("r2", event.PriorityWarning, "k8s_audit", now.Add(time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("r3", event.PriorityCritical, "syscall", now.Add(2*time.Second))))
 
-	result, err := o.CountBy(ctx, "priority", &domain.Filters{Source: []string{"syscall"}})
+	result, err := o.CountBy(ctx, "priority", &output.Filters{Source: []string{"syscall"}})
 	require.NoError(t, err)
 	assert.Equal(t, map[string]int64{"warning": 1, "critical": 1}, result)
 }
@@ -419,7 +420,7 @@ func TestCountByInvalidField(t *testing.T) {
 	ctx := context.Background()
 	o := createTestOutput(100)
 
-	_, err := o.CountBy(ctx, "invalid", &domain.Filters{})
+	_, err := o.CountBy(ctx, "invalid", &output.Filters{})
 	assert.Error(t, err)
 }
 
@@ -427,12 +428,12 @@ func TestEmptyStoreReturnsZero(t *testing.T) {
 	ctx := context.Background()
 	o := createTestOutput(100)
 
-	result, err := o.Search(ctx, &domain.SearchQuery{})
+	result, err := o.Search(ctx, &output.SearchQuery{})
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), result.Total)
 	assert.Empty(t, result.Events)
 
-	count, err := o.Count(ctx, &domain.Filters{})
+	count, err := o.Count(ctx, &output.Filters{})
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), count)
 }
@@ -443,22 +444,22 @@ func TestTTLExpiry(t *testing.T) {
 		"capacity":    100,
 		"ttl":         "100ms",
 		"gc_interval": "50ms",
-	}, domain.OutputDeps{})
+	}, output.Deps{})
 	require.NoError(t, err)
 
-	mem := o.(*output)
+	mem := o.(*driver)
 	require.NoError(t, mem.Init(ctx))
 	defer mem.Close()
 
-	require.NoError(t, mem.Send(ctx, testEvent("r1", domain.PriorityWarning, "syscall", time.Now())))
+	require.NoError(t, mem.Send(ctx, testEvent("r1", event.PriorityWarning, "syscall", time.Now())))
 
-	count, err := mem.Count(ctx, &domain.Filters{})
+	count, err := mem.Count(ctx, &output.Filters{})
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), count)
 
 	time.Sleep(200 * time.Millisecond)
 
-	count, err = mem.Count(ctx, &domain.Filters{})
+	count, err = mem.Count(ctx, &output.Filters{})
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), count)
 }
@@ -472,21 +473,21 @@ func TestConcurrentAccess(t *testing.T) {
 	go func() {
 		for i := 0; i < 500; i++ {
 			_ = o.Send(ctx, testEvent(
-				fmt.Sprintf("rule-%d", i), domain.PriorityWarning, "syscall", time.Now(),
+				fmt.Sprintf("rule-%d", i), event.PriorityWarning, "syscall", time.Now(),
 			))
 		}
 		close(done)
 	}()
 
 	for i := 0; i < 100; i++ {
-		_, _ = o.Search(ctx, &domain.SearchQuery{})
-		_, _ = o.Count(ctx, &domain.Filters{})
-		_, _ = o.CountBy(ctx, "priority", &domain.Filters{})
+		_, _ = o.Search(ctx, &output.SearchQuery{})
+		_, _ = o.Count(ctx, &output.Filters{})
+		_, _ = o.CountBy(ctx, "priority", &output.Filters{})
 	}
 
 	<-done
 
-	count, err := o.Count(ctx, &domain.Filters{})
+	count, err := o.Count(ctx, &output.Filters{})
 	require.NoError(t, err)
 	assert.Equal(t, int64(500), count)
 }
@@ -496,13 +497,13 @@ func TestSearchCombinedIndexIntersection(t *testing.T) {
 	o := createTestOutput(100)
 
 	now := time.Now()
-	require.NoError(t, o.Send(ctx, testEvent("rule-a", domain.PriorityWarning, "syscall", now)))
-	require.NoError(t, o.Send(ctx, testEvent("rule-a", domain.PriorityCritical, "k8s_audit", now.Add(time.Second))))
-	require.NoError(t, o.Send(ctx, testEvent("rule-b", domain.PriorityWarning, "syscall", now.Add(2*time.Second))))
-	require.NoError(t, o.Send(ctx, testEvent("rule-b", domain.PriorityCritical, "k8s_audit", now.Add(3*time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("rule-a", event.PriorityWarning, "syscall", now)))
+	require.NoError(t, o.Send(ctx, testEvent("rule-a", event.PriorityCritical, "k8s_audit", now.Add(time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("rule-b", event.PriorityWarning, "syscall", now.Add(2*time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("rule-b", event.PriorityCritical, "k8s_audit", now.Add(3*time.Second))))
 
-	result, err := o.Search(ctx, &domain.SearchQuery{
-		Filters: domain.Filters{
+	result, err := o.Search(ctx, &output.SearchQuery{
+		Filters: output.Filters{
 			Rule:   []string{"rule-a"},
 			Source: []string{"syscall"},
 		},
@@ -512,8 +513,8 @@ func TestSearchCombinedIndexIntersection(t *testing.T) {
 	assert.Equal(t, "rule-a", result.Events[0].Rule)
 	assert.Equal(t, "syscall", result.Events[0].Source)
 
-	result, err = o.Search(ctx, &domain.SearchQuery{
-		Filters: domain.Filters{
+	result, err = o.Search(ctx, &output.SearchQuery{
+		Filters: output.Filters{
 			Rule:     []string{"rule-b"},
 			Priority: []string{"critical"},
 			Source:   []string{"k8s_audit"},
@@ -528,10 +529,51 @@ func TestSearchCombinedIndexIntersection(t *testing.T) {
 
 func TestImplementsOutputDriver(t *testing.T) {
 	o := createTestOutput(10)
-	var _ domain.OutputDriver = o
+	var _ output.Driver = o
 }
 
 func TestImplementsReadableStore(t *testing.T) {
 	o := createTestOutput(10)
-	var _ domain.ReadableStore = o
+	var _ output.ReadableStore = o
+}
+
+func TestSearchSortByRule(t *testing.T) {
+	o := createTestOutput(100)
+	now := time.Now()
+	require.NoError(t, o.Send(context.Background(), testEvent("ZZZ_rule", event.PriorityWarning, "syscall", now)))
+	require.NoError(t, o.Send(context.Background(), testEvent("AAA_rule", event.PriorityError, "syscall", now.Add(time.Second))))
+	require.NoError(t, o.Send(context.Background(), testEvent("MMM_rule", event.PriorityNotice, "syscall", now.Add(2*time.Second))))
+
+	result, err := o.Search(context.Background(), &output.SearchQuery{SortBy: "rule", SortDesc: false})
+	require.NoError(t, err)
+	require.Len(t, result.Events, 3)
+	assert.Equal(t, "AAA_rule", result.Events[0].Rule)
+	assert.Equal(t, "ZZZ_rule", result.Events[2].Rule)
+}
+
+func TestSearchSortByPriority(t *testing.T) {
+	o := createTestOutput(100)
+	now := time.Now()
+	require.NoError(t, o.Send(context.Background(), testEvent("r1", event.PriorityDebug, "syscall", now)))
+	require.NoError(t, o.Send(context.Background(), testEvent("r2", event.PriorityEmergency, "syscall", now.Add(time.Second))))
+	require.NoError(t, o.Send(context.Background(), testEvent("r3", event.PriorityWarning, "syscall", now.Add(2*time.Second))))
+
+	result, err := o.Search(context.Background(), &output.SearchQuery{SortBy: "priority", SortDesc: true})
+	require.NoError(t, err)
+	require.Len(t, result.Events, 3)
+	assert.Equal(t, event.PriorityEmergency, result.Events[0].Priority)
+	assert.Equal(t, event.PriorityDebug, result.Events[2].Priority)
+}
+
+func TestSearchSortAscendingTimestamp(t *testing.T) {
+	o := createTestOutput(100)
+	now := time.Now()
+	require.NoError(t, o.Send(context.Background(), testEvent("r3", event.PriorityWarning, "syscall", now.Add(2*time.Second))))
+	require.NoError(t, o.Send(context.Background(), testEvent("r1", event.PriorityWarning, "syscall", now)))
+	require.NoError(t, o.Send(context.Background(), testEvent("r2", event.PriorityWarning, "syscall", now.Add(time.Second))))
+
+	result, err := o.Search(context.Background(), &output.SearchQuery{SortBy: "timestamp", SortDesc: false})
+	require.NoError(t, err)
+	require.Len(t, result.Events, 3)
+	assert.True(t, result.Events[0].Time.Before(result.Events[2].Time), "ascending: oldest first")
 }

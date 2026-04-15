@@ -14,5 +14,5 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Package metrics provides a Prometheus-based implementation of domain.MetricsCollector.
+// Package metrics provides a Prometheus-based implementation of core.MetricsCollector.
 package metrics

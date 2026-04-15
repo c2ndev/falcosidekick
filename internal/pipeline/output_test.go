@@ -23,28 +23,29 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/falcosecurity/falcosidekick/internal/domain"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 )
 
-func TestOutputConfigValidateValid(t *testing.T) {
-	cfg := defaultOutputConfig()
+func TestPipelineDefaultsValidateValid(t *testing.T) {
+	cfg := defaultPipelineDefaults()
 	assert.Empty(t, cfg.Validate())
 }
 
-func TestOutputConfigValidateZeroValues(t *testing.T) {
-	cfg := OutputConfig{}
+func TestPipelineDefaultsValidateZeroValues(t *testing.T) {
+	cfg := output.Config{}
 	assert.NotEmpty(t, cfg.Validate())
 }
 
-func TestOutputConfigValidateNegativeQueueSize(t *testing.T) {
-	cfg := defaultOutputConfig()
+func TestPipelineDefaultsValidateNegativeQueueSize(t *testing.T) {
+	cfg := defaultPipelineDefaults()
 	cfg.QueueSize = -1
 	errs := cfg.Validate()
 	assert.NotEmpty(t, errs)
 }
 
 func TestOutputGetStatus(t *testing.T) {
-	out := NewOutput(&mockOutput{name: "slack"}, defaultOutputConfig(), nil)
+	out := NewOutput(&mockOutput{name: "slack"}, defaultPipelineDefaults(), nil)
 
 	status := out.GetStatus()
 	assert.Equal(t, "slack", status.Name)
@@ -55,13 +56,13 @@ func TestOutputGetStatus(t *testing.T) {
 
 func TestOutputDropsWhenQueueFull(t *testing.T) {
 	blocked := make(chan struct{})
-	cfg := defaultOutputConfig()
+	cfg := defaultPipelineDefaults()
 	cfg.QueueSize = 2
 	cfg.Workers = 1
 
 	out := NewOutput(&mockOutput{
 		name: "test",
-		sendFunc: func(_ context.Context, _ *domain.Event) error {
+		sendFunc: func(_ context.Context, _ *event.Event) error {
 			<-blocked
 			return nil
 		},
