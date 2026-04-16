@@ -70,8 +70,12 @@ func (p Priority) Order() int {
 }
 
 // String returns the priority as a title-cased display string.
+// Returns empty string for an unset priority.
 func (p Priority) String() string {
 	s := string(p)
+	if s == "" {
+		return ""
+	}
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 

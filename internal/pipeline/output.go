@@ -18,6 +18,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,7 +28,7 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 )
 
-// OutputStatus holds observable state for the UI pipeline view.
+// OutputStatus holds observable counters and state for one output.
 type OutputStatus struct {
 	LastSuccess   time.Time `json:"last_success"`
 	Name          string    `json:"name"`
@@ -40,8 +41,7 @@ type OutputStatus struct {
 	FailedTotal   int       `json:"failed_total"`
 }
 
-// Output is the complete runtime delivery unit for one output destination.
-// It wraps an OutputDriver with a queue, worker pool, retry, and circuit breaker.
+// Output is the runtime delivery unit for one output destination.
 type Output struct {
 	lastError      atomic.Value
 	lastSuccess    atomic.Value
@@ -50,6 +50,7 @@ type Output struct {
 	metrics        core.MetricsCollector
 	queue          chan *event.Event
 	circuitBreaker *CircuitBreaker
+	cancel         context.CancelFunc
 	config         output.RuntimeConfig
 	workerDone     sync.WaitGroup
 	sentTotal      atomic.Int64
@@ -79,13 +80,17 @@ func (o *Output) Name() string {
 	return o.driver.Name()
 }
 
-// Driver returns the underlying OutputDriver.
+// Driver returns the underlying driver.
 func (o *Output) Driver() output.Driver {
 	return o.driver
 }
 
-// Start launches the worker goroutines.
+// Start launches the worker goroutines. A child context is derived from ctx
+// so that Retire can cancel this output's workers independently.
 func (o *Output) Start(ctx context.Context) {
+	workerCtx, cancel := context.WithCancel(ctx) //nolint:gosec // cancel is stored in o.cancel and called by Retire
+	o.cancel = cancel
+
 	worker := o.runWorker
 	if o.batchSender != nil {
 		worker = o.runBatchWorker
@@ -94,7 +99,7 @@ func (o *Output) Start(ctx context.Context) {
 		o.workerDone.Add(1)
 		go func() {
 			defer o.workerDone.Done()
-			worker(ctx)
+			worker(workerCtx)
 		}()
 	}
 }
@@ -111,22 +116,51 @@ func (o *Output) Enqueue(evt *event.Event) {
 	}
 }
 
-// Close releases the underlying driver resources.
+// Close releases the underlying driver resources without draining.
+// Use Retire for a graceful stop that drains the queue first.
 func (o *Output) Close() error {
 	return o.driver.Close()
 }
 
-// CloseQueue closes the event channel. Workers finish remaining events then exit.
-func (o *Output) CloseQueue() {
+// Retire closes the queue, drains bounded by ctx, then closes the driver.
+// On deadline it cancels the worker context and returns; the driver close
+// is deferred until workers actually exit. driver.Close is never invoked
+// while a worker may still be in Send.
+func (o *Output) Retire(ctx context.Context) error {
+	close(o.queue)
+
+	done := make(chan struct{})
+	go func() {
+		o.workerDone.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		_ = o.driver.Close()
+		return nil
+	case <-ctx.Done():
+	}
+
+	if o.cancel != nil {
+		o.cancel()
+	}
+	go func() {
+		<-done
+		_ = o.driver.Close()
+	}()
+	return fmt.Errorf("output %q: retire deadline exceeded, deferred close scheduled", o.driver.Name())
+}
+
+func (o *Output) closeQueue() {
 	close(o.queue)
 }
 
-// WaitDone blocks until all worker goroutines have exited.
-func (o *Output) WaitDone() {
+func (o *Output) waitDone() {
 	o.workerDone.Wait()
 }
 
-// GetStatus returns observable state for the UI.
+// GetStatus returns a snapshot of this output's counters and state.
 func (o *Output) GetStatus() OutputStatus {
 	return OutputStatus{
 		Name:          o.driver.Name(),

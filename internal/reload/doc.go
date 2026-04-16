@@ -14,14 +14,12 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-package database
-
-import "github.com/mitchellh/copystructure"
-
-func deepCopyMap(m map[string]any) map[string]any {
-	cp, err := copystructure.Copy(m)
-	if err != nil {
-		return m
-	}
-	return cp.(map[string]any)
-}
+// Package reload implements hot-reload for output configuration.
+// Only output config files are hot-reloadable; core config requires a restart.
+//
+// Reload is triggered by fsnotify file events, SIGHUP, or content-hash polling.
+// All triggers call Reloader.Reload, which is serialized by a mutex.
+//
+// Reload is all-or-nothing at the runtime boundary: if parse, validate,
+// create, or init fails, old outputs keep running unchanged.
+package reload

@@ -64,14 +64,16 @@ func TestProcessEventEnrichesAndDispatches(t *testing.T) {
 	p, err := NewPipeline(enricher, dispatcher, nil)
 	require.NoError(t, err)
 
-	p.Start()
+	workerRunCtx, stopWorkers := context.WithCancel(context.Background())
+	p.Start(workerRunCtx, stopWorkers)
 
 	evt := newTestEvent()
 	p.ProcessEvent(t.Context(), evt)
 
 	drainCtx, drainCancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer drainCancel()
-	p.Shutdown(drainCtx)
+	err = p.Shutdown(drainCtx)
+	require.NoError(t, err)
 
 	assert.Equal(t, int64(1), received.Load())
 	assert.NotEmpty(t, evt.UUID)
@@ -101,7 +103,8 @@ func TestProcessEventRoutesByPriority(t *testing.T) {
 	p, err := NewPipeline(enricher, dispatcher, nil)
 	require.NoError(t, err)
 
-	p.Start()
+	workerRunCtx, stopWorkers := context.WithCancel(context.Background())
+	p.Start(workerRunCtx, stopWorkers)
 
 	evt := newTestEvent()
 	evt.Priority = event.PriorityWarning
@@ -109,7 +112,8 @@ func TestProcessEventRoutesByPriority(t *testing.T) {
 
 	drainCtx, drainCancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer drainCancel()
-	p.Shutdown(drainCtx)
+	err = p.Shutdown(drainCtx)
+	require.NoError(t, err)
 
 	assert.Equal(t, int64(0), slackCalls.Load(), "warning should not reach critical-only slack")
 	assert.Equal(t, int64(1), lokiCalls.Load(), "warning should reach debug-level loki")
@@ -142,13 +146,15 @@ func TestProcessEventWithNoOutputsDoesNotPanic(t *testing.T) {
 	p, err := NewPipeline(enricher, NewDispatcher(nil), nil)
 	require.NoError(t, err)
 
-	p.Start()
+	workerRunCtx, stopWorkers := context.WithCancel(context.Background())
+	p.Start(workerRunCtx, stopWorkers)
 
 	p.ProcessEvent(t.Context(), newTestEvent())
 
 	drainCtx, drainCancel := context.WithTimeout(t.Context(), 1*time.Second)
 	defer drainCancel()
-	p.Shutdown(drainCtx)
+	err = p.Shutdown(drainCtx)
+	require.NoError(t, err)
 }
 
 func TestCollectOutputStatus(t *testing.T) {
@@ -163,9 +169,40 @@ func TestCollectOutputStatus(t *testing.T) {
 
 func TestShutdownCompletesWhenEmpty(t *testing.T) {
 	p := buildTestPipeline(t, nil)
-	p.Start()
+
+	workerRunCtx, stopWorkers := context.WithCancel(context.Background())
+	p.Start(workerRunCtx, stopWorkers)
 
 	drainCtx, drainCancel := context.WithTimeout(t.Context(), 1*time.Second)
 	defer drainCancel()
-	p.Shutdown(drainCtx)
+	err := p.Shutdown(drainCtx)
+	require.NoError(t, err)
+}
+
+func TestPipelineShutdownBoundedWithStuckSender(t *testing.T) {
+	out := NewOutput(&testutil.MockDriver{
+		DriverName: "stuck",
+		SendFunc: func(ctx context.Context, _ *event.Event) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}, defaultRuntimeDefaults(), nil)
+
+	p := buildTestPipeline(t, []*Output{out})
+
+	workerRunCtx, stopWorkers := context.WithCancel(context.Background())
+	p.Start(workerRunCtx, stopWorkers)
+
+	p.ProcessEvent(t.Context(), newTestEvent())
+	time.Sleep(20 * time.Millisecond)
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer shutdownCancel()
+
+	start := time.Now()
+	err := p.Shutdown(shutdownCtx)
+	elapsed := time.Since(start)
+
+	assert.Error(t, err, "Shutdown must return error when deadline exceeded with stuck sender")
+	assert.Less(t, elapsed, 1*time.Second, "Shutdown must complete within deadline, not hang forever")
 }

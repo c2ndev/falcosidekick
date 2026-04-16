@@ -24,9 +24,9 @@ import (
 
 // Config holds the core falcosidekick configuration loaded from sidekick.yaml.
 type Config struct {
-	core.Config     `mapstructure:",squash"`
 	RuntimeDefaults output.RuntimeConfig  `mapstructure:"runtime_defaults"`
 	Enricher        output.EnricherConfig `mapstructure:"enricher"`
+	core.Config     `mapstructure:",squash"`
 }
 
 // Validate checks the configuration for errors.

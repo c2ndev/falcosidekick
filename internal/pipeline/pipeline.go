@@ -22,16 +22,17 @@ import (
 
 	"github.com/falcosecurity/falcosidekick/internal/domain/core"
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 )
 
 // Pipeline orchestrates event processing: enrich and dispatch.
-// It owns the worker lifecycle: Start creates an internal context,
-// Shutdown drains and force-stops workers within the caller's deadline.
+// The caller owns the worker runtime context and passes it via Start.
+// Shutdown delegates to the dispatcher for bounded, orderly teardown.
 type Pipeline struct {
-	enricher     *Enricher
-	dispatcher   *Dispatcher
-	metrics      core.MetricsCollector
-	workerCancel context.CancelFunc
+	enricher    *Enricher
+	dispatcher  *Dispatcher
+	metrics     core.MetricsCollector
+	stopWorkers context.CancelFunc
 }
 
 // NewPipeline creates a Pipeline from its dependencies.
@@ -54,40 +55,17 @@ func NewPipeline(
 	}, nil
 }
 
-// Start launches the dispatcher worker pools with an internally owned context.
-func (p *Pipeline) Start() {
-	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // cancel is stored in workerCancel and called in Shutdown
-	p.workerCancel = cancel
-	p.dispatcher.Start(ctx)
+// Start launches the dispatcher worker pools with the caller-owned worker
+// runtime context. stopWorkers is stored and called by Shutdown if the
+// drain deadline expires.
+func (p *Pipeline) Start(workerRunCtx context.Context, stopWorkers context.CancelFunc) {
+	p.stopWorkers = stopWorkers
+	p.dispatcher.Start(workerRunCtx)
 }
 
-// Shutdown performs an orderly teardown within the caller's deadline:
-//  1. Closes all output queues (workers process remaining events)
-//  2. Waits for workers to exit (bounded by ctx)
-//  3. If ctx expires, cancels the worker context to force-stop any blocked workers
-//  4. Waits for forced workers to exit (immediate after cancel)
-//
-// After Shutdown returns, all workers are guaranteed to have exited.
-func (p *Pipeline) Shutdown(ctx context.Context) {
-	p.dispatcher.CloseQueues()
-
-	done := make(chan struct{})
-	go func() {
-		p.dispatcher.WaitAll()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// All workers drained and exited gracefully.
-	case <-ctx.Done():
-		// Timeout: force-cancel worker context.
-		if p.workerCancel != nil {
-			p.workerCancel()
-		}
-		// Workers exit immediately on context cancel. Wait for them.
-		<-done
-	}
+// Shutdown performs orderly teardown bounded by the caller's deadline.
+func (p *Pipeline) Shutdown(ctx context.Context) error {
+	return p.dispatcher.Shutdown(ctx, p.stopWorkers)
 }
 
 // ProcessEvent enriches and dispatches an event to all active outputs.
@@ -106,7 +84,18 @@ func (p *Pipeline) ProcessEvent(ctx context.Context, evt *event.Event) {
 	p.dispatcher.DispatchEvent(evt)
 }
 
-// CollectOutputStatus returns per-output status for the UI.
+// CollectOutputStatus returns a snapshot of every output's status.
 func (p *Pipeline) CollectOutputStatus() []OutputStatus {
 	return p.dispatcher.CollectStatus()
+}
+
+// GetReadableStore resolves the named output's ReadableStore implementation
+// at request time. Returns false if the output is missing or not readable.
+func (p *Pipeline) GetReadableStore(name string) (output.ReadableStore, bool) {
+	return p.dispatcher.GetReadableStore(name)
+}
+
+// Dispatcher returns the underlying dispatcher.
+func (p *Pipeline) Dispatcher() *Dispatcher {
+	return p.dispatcher
 }

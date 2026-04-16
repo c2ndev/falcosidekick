@@ -17,6 +17,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/gofiber/fiber/v3"
@@ -32,25 +33,25 @@ import (
 
 // ServerConfig holds HTTP server dependencies.
 type ServerConfig struct {
-	Pipeline  *pipeline.Pipeline
-	ReadStore output.ReadableStore
-	Database  core.Database
-	Metrics   core.MetricsCollector
-	Registry  *prometheus.Registry
-	TLS       *core.TLSConfig
-	Address   string
-	Port      int
+	Pipeline    *pipeline.Pipeline
+	Database    core.Database
+	Metrics     core.MetricsCollector
+	Registry    *prometheus.Registry
+	TLS         *core.TLSConfig
+	Address     string
+	EventSource string // output name implementing ReadableStore; resolved dynamically via Pipeline
+	Port        int
 }
 
 // Server manages the Fiber HTTP application.
 type Server struct {
-	app       *fiber.App
-	pipeline  *pipeline.Pipeline
-	readStore output.ReadableStore
-	database  core.Database
-	metrics   core.MetricsCollector
-	tls       *core.TLSConfig
-	address   string
+	app         *fiber.App
+	pipeline    *pipeline.Pipeline
+	database    core.Database
+	metrics     core.MetricsCollector
+	tls         *core.TLSConfig
+	address     string
+	eventSource string
 }
 
 // NewServer creates a Fiber-based HTTP Server.
@@ -66,12 +67,12 @@ func NewServer(cfg *ServerConfig) (*Server, error) {
 	}
 
 	s := &Server{
-		pipeline:  cfg.Pipeline,
-		readStore: cfg.ReadStore,
-		database:  cfg.Database,
-		metrics:   cfg.Metrics,
-		tls:       cfg.TLS,
-		address:   fmt.Sprintf("%s:%d", cfg.Address, cfg.Port),
+		pipeline:    cfg.Pipeline,
+		database:    cfg.Database,
+		metrics:     cfg.Metrics,
+		tls:         cfg.TLS,
+		address:     fmt.Sprintf("%s:%d", cfg.Address, cfg.Port),
+		eventSource: cfg.EventSource,
 	}
 
 	app := fiber.New()
@@ -93,6 +94,16 @@ func NewServer(cfg *ServerConfig) (*Server, error) {
 	return s, nil
 }
 
+// GetReadableStore resolves the ReadableStore dynamically through the pipeline.
+// Returns nil when no event source is configured or the output does not implement ReadableStore.
+func (s *Server) GetReadableStore() output.ReadableStore {
+	if s.eventSource == "" {
+		return nil
+	}
+	rs, _ := s.pipeline.GetReadableStore(s.eventSource)
+	return rs
+}
+
 // Start begins listening for HTTP requests. Blocks until the server stops.
 // Uses TLS when configured, including mutual TLS with client cert verification.
 func (s *Server) Start() error {
@@ -109,7 +120,7 @@ func (s *Server) Start() error {
 	return s.app.Listen(s.address)
 }
 
-// Shutdown gracefully stops the server.
-func (s *Server) Shutdown() error {
-	return s.app.Shutdown()
+// Shutdown gracefully stops the server, bounded by the caller's context.
+func (s *Server) Shutdown(ctx context.Context) error {
+	return s.app.ShutdownWithContext(ctx)
 }

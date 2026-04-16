@@ -51,4 +51,7 @@ func applyDefaults(v *viper.Viper) {
 
 	v.SetDefault("enricher.truncate_event_threshold", 4096)
 	v.SetDefault("enricher.truncate_field_threshold", 512)
+
+	v.SetDefault("reload.poll_interval", 30*time.Second)
+	v.SetDefault("reload.retire_timeout", 10*time.Second)
 }
