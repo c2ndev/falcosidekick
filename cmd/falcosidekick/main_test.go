@@ -17,12 +17,34 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/falcosecurity/falcosidekick/internal/api"
+	"github.com/falcosecurity/falcosidekick/internal/catalog"
+	"github.com/falcosecurity/falcosidekick/internal/config"
+	"github.com/falcosecurity/falcosidekick/internal/domain/core"
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/metrics"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
+	"github.com/falcosecurity/falcosidekick/internal/pipeline"
 )
 
 func writeTestConfig(t *testing.T, content string) string {
@@ -39,6 +61,40 @@ func writeTestOutputs(t *testing.T, content string) string {
 	return p
 }
 
+func findFreePort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0") //nolint:noctx // test helper, ephemeral listener
+	require.NoError(t, err)
+	port := ln.Addr().(*net.TCPAddr).Port
+	require.NoError(t, ln.Close())
+	return port
+}
+
+func waitForServer(t *testing.T, port int) {
+	t.Helper()
+	const timeout = 5 * time.Second
+	deadline := time.Now().Add(timeout)
+	url := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(url) //nolint:noctx // test helper, hardcoded localhost
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("server on port %d did not become ready within %s", port, timeout)
+}
+
+// writeTestOutputsAt writes output config at a stable path so the same
+// file can be overwritten in-place.
+func writeTestOutputsAt(t *testing.T, path, content string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+}
+
 func TestRunStringSliceFlag(t *testing.T) {
 	var f stringSliceFlag
 	require.NoError(t, f.Set("a"))
@@ -47,22 +103,43 @@ func TestRunStringSliceFlag(t *testing.T) {
 	assert.Len(t, f, 2)
 }
 
+func TestMainVersionFlag(t *testing.T) {
+	if os.Getenv("FALCOSIDEKICK_TEST_MAIN_VERSION") == "1" {
+		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+		flag.CommandLine.SetOutput(io.Discard)
+		os.Args = []string{"falcosidekick", "-version"}
+		main()
+		return
+	}
+
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=TestMainVersionFlag")
+	cmd.Env = append(os.Environ(), "FALCOSIDEKICK_TEST_MAIN_VERSION=1")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	require.NoError(t, cmd.Run(), "stderr: %s", stderr.String())
+	assert.Contains(t, stdout.String(), "falcosidekick ")
+}
+
 func TestRunInvalidConfigPath(t *testing.T) {
-	err := run("/nonexistent/config.yaml", nil)
+	err := run(context.Background(), "/nonexistent/config.yaml", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "config load")
 }
 
 func TestRunInvalidOutputPath(t *testing.T) {
 	cfg := writeTestConfig(t, "{}")
-	err := run(cfg, []string{"/nonexistent/outputs.yaml"})
+	err := run(context.Background(), cfg, []string{"/nonexistent/outputs.yaml"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "outputs load")
 }
 
 func TestRunConfigValidationFailure(t *testing.T) {
 	cfg := writeTestConfig(t, "listen_port: -1")
-	err := run(cfg, nil)
+	err := run(context.Background(), cfg, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "config validation")
 }
@@ -74,7 +151,7 @@ outputs:
   nonexistent_output:
     url: "http://example.com"
 `)
-	err := run(cfg, []string{outs})
+	err := run(context.Background(), cfg, []string{outs})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nonexistent_output")
 }
@@ -87,14 +164,383 @@ outputs:
     url: "http://example.com"
     password_file: /nonexistent/secret
 `)
-	err := run(cfg, []string{outs})
+	err := run(context.Background(), cfg, []string{outs})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "secret resolution")
 }
 
 func TestRunUnknownCoreConfigKey(t *testing.T) {
 	cfg := writeTestConfig(t, "listen_portt: 3000")
-	err := run(cfg, nil)
+	err := run(context.Background(), cfg, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "listen_portt")
+}
+
+func TestCreateDatabaseInMemory(t *testing.T) {
+	db, err := createDatabase(core.DatabaseConfig{Backend: core.DatabaseInMemory})
+	require.NoError(t, err)
+	require.NotNil(t, db)
+	assert.NoError(t, db.Close())
+}
+
+func TestCreateDatabaseUnknownBackend(t *testing.T) {
+	_, err := createDatabase(core.DatabaseConfig{Backend: "unknown"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not implemented")
+}
+
+func loadDefaultConfigForCmdTest(t *testing.T) *config.Config {
+	t.Helper()
+	cfgPath := writeTestConfig(t, "{}")
+	cfg, err := config.Load(cfgPath)
+	require.NoError(t, err)
+	return cfg
+}
+
+func TestCreateOutputsCreateFailure(t *testing.T) {
+	cfg := loadDefaultConfigForCmdTest(t)
+
+	cat, err := catalog.New([]output.Type{
+		{
+			Name:   "good",
+			Schema: output.Schema{},
+			New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
+				return &testutil.MockDriver{
+					DriverName: "good",
+				}, nil
+			},
+		},
+		{
+			Name:   "broken",
+			Schema: output.Schema{},
+			New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
+				return nil, errors.New("create failed")
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = createOutputs(context.Background(), cfg, map[string]map[string]any{
+		"good":   {},
+		"broken": {},
+	}, cat, metrics.NewCollector())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `output "broken"`)
+}
+
+func TestCreateOutputsInitFailure(t *testing.T) {
+	cfg := loadDefaultConfigForCmdTest(t)
+
+	cat, err := catalog.New([]output.Type{
+		{
+			Name:   "good",
+			Schema: output.Schema{},
+			New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
+				return &testutil.MockDriver{
+					DriverName: "good",
+				}, nil
+			},
+		},
+		{
+			Name:   "initfail",
+			Schema: output.Schema{},
+			New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
+				return &testutil.MockDriver{
+					DriverName: "initfail",
+					InitFunc: func(context.Context) error {
+						return errors.New("init failed")
+					},
+				}, nil
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = createOutputs(context.Background(), cfg, map[string]map[string]any{
+		"good":     {},
+		"initfail": {},
+	}, cat, metrics.NewCollector())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `output "initfail" init`)
+}
+
+func TestCreateOutputsRuntimeConfigFailure(t *testing.T) {
+	cfg := loadDefaultConfigForCmdTest(t)
+
+	cat, err := catalog.New([]output.Type{
+		{
+			Name:   "good",
+			Schema: output.Schema{},
+			New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
+				return &testutil.MockDriver{
+					DriverName: "good",
+				}, nil
+			},
+		},
+		{
+			Name:   "badcfg",
+			Schema: output.Schema{},
+			New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
+				return &testutil.MockDriver{
+					DriverName: "badcfg",
+					RuntimeConfigFunc: func() output.RuntimeConfig {
+						return output.RuntimeConfig{
+							MinPriority: event.Priority("not-a-priority"),
+						}
+					},
+				}, nil
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = createOutputs(context.Background(), cfg, map[string]map[string]any{
+		"good":   {},
+		"badcfg": {},
+	}, cat, metrics.NewCollector())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `output "badcfg" config`)
+}
+
+func TestRunNegativePollInterval(t *testing.T) {
+	cfg := writeTestConfig(t, "reload:\n  poll_interval: -1s")
+	err := run(context.Background(), cfg, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config validation")
+}
+
+func TestRunUIEnabledMissingEventSource(t *testing.T) {
+	cfg := writeTestConfig(t, "ui:\n  enabled: true\n  event_source: nonexistent")
+	outs := writeTestOutputs(t, "outputs:\n  webhook:\n    url: http://localhost:9999\n")
+	err := run(context.Background(), cfg, []string{outs})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ui.event_source")
+}
+
+func TestRunLifecycleCleanShutdown(t *testing.T) {
+	port := findFreePort(t)
+	cfg := writeTestConfig(t, fmt.Sprintf("listen_port: %d\nlisten_address: 127.0.0.1", port))
+	outs := writeTestOutputs(t, "outputs:\n  webhook:\n    url: http://127.0.0.1:19999\n")
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, cfg, []string{outs})
+	}()
+
+	waitForServer(t, port)
+
+	// Cancel context triggers orderly shutdown (like SIGTERM).
+	cancel()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err, "clean shutdown must return nil")
+	case <-time.After(15 * time.Second):
+		t.Fatal("run() did not exit within 15 seconds of context cancel")
+	}
+}
+
+func TestRunServerStartFailure(t *testing.T) {
+	// Occupy a port so the server cannot bind.
+	ln, err := net.Listen("tcp", "127.0.0.1:0") //nolint:noctx // test helper, ephemeral listener
+	require.NoError(t, err)
+	port := ln.Addr().(*net.TCPAddr).Port
+	defer func() { _ = ln.Close() }()
+
+	cfg := writeTestConfig(t, fmt.Sprintf("listen_port: %d\nlisten_address: 127.0.0.1", port))
+	outs := writeTestOutputs(t, "outputs:\n  webhook:\n    url: http://127.0.0.1:19999\n")
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run(context.Background(), cfg, []string{outs})
+	}()
+
+	select {
+	case err := <-done:
+		require.Error(t, err, "server bind failure must propagate as error")
+		assert.Contains(t, err.Error(), "server")
+	case <-time.After(15 * time.Second):
+		t.Fatal("run() did not exit within 15 seconds after server bind failure")
+	}
+}
+
+func TestRunSIGHUPReload(t *testing.T) {
+	port := findFreePort(t)
+	cfg := writeTestConfig(t, fmt.Sprintf("listen_port: %d\nlisten_address: 127.0.0.1", port))
+	outs := writeTestOutputs(t, "outputs:\n  webhook:\n    url: http://127.0.0.1:19999\n")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, cfg, []string{outs})
+	}()
+
+	waitForServer(t, port)
+
+	// Drain any pending SIGHUP from prior tests by briefly registering our own channel.
+	drain := make(chan os.Signal, 1)
+	signal.Notify(drain, syscall.SIGHUP)
+	signal.Stop(drain)
+
+	// Send SIGHUP to trigger a reload cycle.
+	require.NoError(t, syscall.Kill(syscall.Getpid(), syscall.SIGHUP))
+
+	// Allow time for the reload to execute (no-op since config unchanged).
+	time.Sleep(300 * time.Millisecond)
+
+	cancel()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err, "clean shutdown after SIGHUP must return nil")
+	case <-time.After(15 * time.Second):
+		t.Fatal("run() did not exit within 15 seconds")
+	}
+}
+
+func TestRunPollerDetectsChange(t *testing.T) {
+	port := findFreePort(t)
+	cfg := writeTestConfig(t, fmt.Sprintf(
+		"listen_port: %d\nlisten_address: 127.0.0.1\nreload:\n  poll_interval: 100ms",
+		port,
+	))
+
+	dir := t.TempDir()
+	outsPath := filepath.Join(dir, "outputs.yaml")
+	writeTestOutputsAt(t, outsPath, "outputs:\n  webhook:\n    url: http://127.0.0.1:19999\n")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, cfg, []string{outsPath})
+	}()
+
+	waitForServer(t, port)
+
+	// Overwrite output config so the poller detects a content-hash change.
+	writeTestOutputsAt(t, outsPath, "outputs:\n  webhook:\n    url: http://127.0.0.1:29999\n")
+
+	// Wait for the poller tick (100ms interval) plus processing time.
+	time.Sleep(400 * time.Millisecond)
+
+	cancel()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err, "clean shutdown after poller reload must return nil")
+	case <-time.After(15 * time.Second):
+		t.Fatal("run() did not exit within 15 seconds")
+	}
+}
+
+func TestRunPollDisabledCleanShutdown(t *testing.T) {
+	port := findFreePort(t)
+	cfg := writeTestConfig(t, fmt.Sprintf(
+		"listen_port: %d\nlisten_address: 127.0.0.1\nreload:\n  poll_interval: 0s",
+		port,
+	))
+	outs := writeTestOutputs(t, "outputs:\n  webhook:\n    url: http://127.0.0.1:19999\n")
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, cfg, []string{outs})
+	}()
+
+	waitForServer(t, port)
+	cancel()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err, "clean shutdown with poller disabled must return nil")
+	case <-time.After(15 * time.Second):
+		t.Fatal("run() did not exit within 15 seconds of context cancel")
+	}
+}
+
+func TestRunNoOutputPathsCleanShutdown(t *testing.T) {
+	port := findFreePort(t)
+	cfg := writeTestConfig(t, fmt.Sprintf("listen_port: %d\nlisten_address: 127.0.0.1", port))
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, cfg, nil)
+	}()
+
+	waitForServer(t, port)
+
+	cancel()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err, "clean shutdown with no output paths must return nil")
+	case <-time.After(15 * time.Second):
+		t.Fatal("run() did not exit within 15 seconds of context cancel")
+	}
+}
+
+func TestAppServePropagatesStartError(t *testing.T) {
+	// Occupy the port so srv.Start() cannot bind.
+	blocker, err := net.Listen("tcp", "127.0.0.1:0") //nolint:noctx // test helper
+	require.NoError(t, err)
+	port := blocker.Addr().(*net.TCPAddr).Port
+	defer func() { _ = blocker.Close() }()
+
+	enricher, err := pipeline.NewEnricher(output.EnricherConfig{
+		TruncateEventThreshold: 4096,
+		TruncateFieldThreshold: 512,
+	})
+	require.NoError(t, err)
+	dispatcher := pipeline.NewDispatcher(nil)
+	pipe, err := pipeline.NewPipeline(enricher, dispatcher, nil)
+	require.NoError(t, err)
+
+	srv, err := api.NewServer(&api.ServerConfig{
+		Pipeline: pipe,
+		Address:  "127.0.0.1",
+		Port:     port,
+	})
+	require.NoError(t, err)
+
+	a := &app{
+		srv:        srv,
+		listenAddr: "127.0.0.1",
+		listenPort: port,
+	}
+
+	errCh := make(chan error, 1)
+	a.serve(errCh)
+
+	select {
+	case receivedErr := <-errCh:
+		require.Error(t, receivedErr, "serve() must send Start error to channel")
+		assert.Contains(t, receivedErr.Error(), "bind")
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve() did not propagate Start error to channel within 5s")
+	}
+}
+
+func TestCloseOutputsLogsOnCloseError(t *testing.T) {
+	t.Helper()
+
+	failing := pipeline.NewOutput(&testutil.MockDriver{
+		DriverName: "failing",
+		CloseFunc:  func() error { return errors.New("close failed") },
+	}, &output.RuntimeConfig{
+		QueueSize: 1, Workers: 1,
+		Retry:          &output.RetryConfig{MaxAttempts: 1, InitialInterval: time.Millisecond, MaxInterval: time.Millisecond, Multiplier: 1},
+		CircuitBreaker: &output.CircuitBreakerConfig{FailureThreshold: 5, SuccessThreshold: 2, ResetTimeout: time.Second},
+	}, nil)
+
+	// No panic; log branch exercised.
+	closeOutputs([]*pipeline.Output{failing})
 }
