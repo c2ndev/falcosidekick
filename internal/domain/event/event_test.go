@@ -93,6 +93,7 @@ func TestPriorityString(t *testing.T) {
 		{PriorityEmergency, "Emergency"},
 		{PriorityInformational, "Informational"},
 		{PriorityNotice, "Notice"},
+		{Priority(""), ""},
 	}
 
 	for _, tt := range tests {

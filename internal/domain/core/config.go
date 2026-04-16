@@ -18,6 +18,7 @@ package core
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
@@ -31,6 +32,7 @@ type Config struct {
 	ListenAddress string         `json:"listen_address" mapstructure:"listen_address"`
 	Database      DatabaseConfig `json:"database" mapstructure:"database"`
 	UI            UIConfig       `json:"ui" mapstructure:"ui"`
+	Reload        ReloadConfig   `json:"reload" mapstructure:"reload"`
 	ListenPort    int            `json:"listen_port" mapstructure:"listen_port"`
 }
 
@@ -47,6 +49,7 @@ func (c *Config) Validate() utils.ValidationErrors {
 	errs.Merge("", c.LogFormat.Validate())
 	errs.Merge("database", c.Database.Validate())
 	errs.Merge("ui", c.UI.Validate())
+	errs.Merge("reload", c.Reload.Validate())
 
 	if len(errs) > 0 {
 		return errs
@@ -153,6 +156,25 @@ func (c *DatabaseConfig) Validate() utils.ValidationErrors {
 	var errs utils.ValidationErrors
 	if !ValidDatabaseBackends[c.Backend] {
 		errs.Add("backend", fmt.Sprintf("must be inmemory/sqlite/postgres, got %q", c.Backend))
+	}
+	return errs
+}
+
+// ReloadConfig holds hot-reload settings.
+// Only output config is hot-reloadable; core config requires restart.
+type ReloadConfig struct {
+	PollInterval  time.Duration `json:"poll_interval" mapstructure:"poll_interval"`
+	RetireTimeout time.Duration `json:"retire_timeout" mapstructure:"retire_timeout"`
+}
+
+// Validate checks reload settings for correctness.
+func (c *ReloadConfig) Validate() utils.ValidationErrors {
+	var errs utils.ValidationErrors
+	if c.PollInterval < 0 {
+		errs.Add("poll_interval", fmt.Sprintf("must be non-negative, got %s", c.PollInterval))
+	}
+	if c.RetireTimeout < 0 {
+		errs.Add("retire_timeout", fmt.Sprintf("must be non-negative, got %s", c.RetireTimeout))
 	}
 	return errs
 }

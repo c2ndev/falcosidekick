@@ -70,7 +70,7 @@ func buildTestServer(t *testing.T, outputs []*pipeline.Output) *Server {
 		t.Fatalf("build pipeline: %v", err)
 	}
 
-	p.Start()
+	p.Start(context.Background(), func() {})
 
 	srv, err := NewServer(&ServerConfig{Pipeline: p})
 	if err != nil {
@@ -210,7 +210,7 @@ func buildTestServerWithDB(t *testing.T, db core.Database) *Server {
 	dispatcher := pipeline.NewDispatcher(nil)
 	p, err := pipeline.NewPipeline(enricher, dispatcher, nil)
 	require.NoError(t, err)
-	p.Start()
+	p.Start(context.Background(), func() {})
 
 	srv, err := NewServer(&ServerConfig{Pipeline: p, Database: db})
 	require.NoError(t, err)
@@ -311,7 +311,7 @@ func TestStartAndShutdown(t *testing.T) {
 	<-started
 
 	time.Sleep(50 * time.Millisecond)
-	require.NoError(t, srv.Shutdown())
+	require.NoError(t, srv.Shutdown(t.Context()))
 }
 
 func TestHandlePostEventWithMetrics(t *testing.T) {
@@ -323,7 +323,7 @@ func TestHandlePostEventWithMetrics(t *testing.T) {
 	dispatcher := pipeline.NewDispatcher(nil)
 	p, err := pipeline.NewPipeline(enricher, dispatcher, collector)
 	require.NoError(t, err)
-	p.Start()
+	p.Start(context.Background(), func() {})
 
 	srv, err := NewServer(&ServerConfig{Pipeline: p, Metrics: collector})
 	require.NoError(t, err)
@@ -392,4 +392,65 @@ func TestHandleGetOutputsDBError(t *testing.T) {
 
 	body, _ := io.ReadAll(resp.Body)
 	assert.Contains(t, string(body), "db failure")
+}
+
+// --- ReadableStore dynamic resolution tests ---
+
+func TestGetReadableStoreReturnsNilWhenNoEventSource(t *testing.T) {
+	srv := buildTestServer(t, nil)
+	assert.Nil(t, srv.GetReadableStore())
+}
+
+func TestGetReadableStoreResolvesFromPipeline(t *testing.T) {
+	store := &mockReadableStoreOutput{MockDriver: testutil.MockDriver{DriverName: "inmemory"}}
+	out := pipeline.NewOutput(store, &defaultTestOutputConfig, nil)
+
+	enricher, _ := pipeline.NewEnricher(output.EnricherConfig{
+		TruncateEventThreshold: 4096,
+		TruncateFieldThreshold: 512,
+	})
+	dispatcher := pipeline.NewDispatcher([]*pipeline.Output{out})
+	p, err := pipeline.NewPipeline(enricher, dispatcher, nil)
+	require.NoError(t, err)
+	p.Start(context.Background(), func() {})
+
+	srv, err := NewServer(&ServerConfig{Pipeline: p, EventSource: "inmemory"})
+	require.NoError(t, err)
+
+	rs := srv.GetReadableStore()
+	assert.NotNil(t, rs, "must resolve ReadableStore from pipeline")
+}
+
+func TestGetReadableStoreReturnsNilForNonReadableOutput(t *testing.T) {
+	out := pipeline.NewOutput(&testutil.MockDriver{DriverName: "slack"}, &defaultTestOutputConfig, nil)
+
+	enricher, _ := pipeline.NewEnricher(output.EnricherConfig{
+		TruncateEventThreshold: 4096,
+		TruncateFieldThreshold: 512,
+	})
+	dispatcher := pipeline.NewDispatcher([]*pipeline.Output{out})
+	p, err := pipeline.NewPipeline(enricher, dispatcher, nil)
+	require.NoError(t, err)
+	p.Start(context.Background(), func() {})
+
+	srv, err := NewServer(&ServerConfig{Pipeline: p, EventSource: "slack"})
+	require.NoError(t, err)
+
+	assert.Nil(t, srv.GetReadableStore(), "non-ReadableStore output must return nil")
+}
+
+type mockReadableStoreOutput struct {
+	testutil.MockDriver
+}
+
+func (m *mockReadableStoreOutput) Search(_ context.Context, _ *output.SearchQuery) (*output.SearchResult, error) {
+	return &output.SearchResult{}, nil
+}
+
+func (m *mockReadableStoreOutput) Count(_ context.Context, _ *output.Filters) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockReadableStoreOutput) CountBy(_ context.Context, _ string, _ *output.Filters) (map[string]int64, error) {
+	return nil, nil
 }

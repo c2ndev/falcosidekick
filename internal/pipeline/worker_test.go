@@ -64,8 +64,10 @@ func TestBatchWorkerFlushOnSize(t *testing.T) {
 		out.Enqueue(newTestEvent())
 	}
 
-	out.CloseQueue()
-	out.WaitDone()
+	retireCtx, retireCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer retireCancel()
+	err := out.Retire(retireCtx)
+	require.NoError(t, err)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -102,8 +104,10 @@ func TestBatchWorkerFlushOnInterval(t *testing.T) {
 
 	time.Sleep(150 * time.Millisecond)
 
-	out.CloseQueue()
-	out.WaitDone()
+	retireCtx, retireCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer retireCancel()
+	err := out.Retire(retireCtx)
+	require.NoError(t, err)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -137,8 +141,10 @@ func TestBatchWorkerFlushOnClose(t *testing.T) {
 		out.Enqueue(newTestEvent())
 	}
 
-	out.CloseQueue()
-	out.WaitDone()
+	retireCtx, retireCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer retireCancel()
+	err := out.Retire(retireCtx)
+	require.NoError(t, err)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -174,7 +180,7 @@ func TestBatchWorkerContextCancel(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	cancel()
-	out.WaitDone()
+	out.waitDone()
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -213,8 +219,10 @@ func TestBatchWorkerDisabledFallsBackToSingle(t *testing.T) {
 		out.Enqueue(newTestEvent())
 	}
 
-	out.CloseQueue()
-	out.WaitDone()
+	retireCtx, retireCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer retireCancel()
+	err := out.Retire(retireCtx)
+	require.NoError(t, err)
 
 	assert.Equal(t, int64(5), singleCalls.Load(), "disabled batching must use single Send")
 	assert.Equal(t, int64(0), batchCalls.Load(), "SendBatch must not be called when disabled")
@@ -241,8 +249,10 @@ func TestBatchWorkerNonBatchDriver(t *testing.T) {
 		out.Enqueue(newTestEvent())
 	}
 
-	out.CloseQueue()
-	out.WaitDone()
+	retireCtx, retireCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer retireCancel()
+	err := out.Retire(retireCtx)
+	require.NoError(t, err)
 
 	assert.Equal(t, int64(5), singleCalls.Load(), "non-BatchSender driver must use single Send")
 }
@@ -276,8 +286,10 @@ func TestBatchWorkerRetryOnFailure(t *testing.T) {
 		out.Enqueue(newTestEvent())
 	}
 
-	out.CloseQueue()
-	out.WaitDone()
+	retireCtx, retireCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer retireCancel()
+	err := out.Retire(retireCtx)
+	require.NoError(t, err)
 
 	assert.Equal(t, int64(3), attempts.Load(), "batch must be retried")
 	assert.Equal(t, int64(5), out.sentTotal.Load(), "all events in batch counted on success")
@@ -296,8 +308,11 @@ func TestWorkerSendsEvent(t *testing.T) {
 	ctx := context.Background()
 	out.Start(ctx)
 	out.Enqueue(newTestEvent())
-	out.CloseQueue()
-	out.WaitDone()
+
+	retireCtx, retireCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer retireCancel()
+	err := out.Retire(retireCtx)
+	require.NoError(t, err)
 
 	assert.Equal(t, int64(1), received.Load())
 	assert.Equal(t, int64(1), out.sentTotal.Load())
@@ -327,8 +342,11 @@ func TestWorkerRetriesOnFailure(t *testing.T) {
 	ctx := context.Background()
 	out.Start(ctx)
 	out.Enqueue(newTestEvent())
-	out.CloseQueue()
-	out.WaitDone()
+
+	retireCtx, retireCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer retireCancel()
+	err := out.Retire(retireCtx)
+	require.NoError(t, err)
 
 	assert.Equal(t, int64(3), attempts.Load())
 	assert.Equal(t, int64(1), out.sentTotal.Load())
@@ -353,8 +371,11 @@ func TestWorkerFailsAfterMaxRetries(t *testing.T) {
 	ctx := context.Background()
 	out.Start(ctx)
 	out.Enqueue(newTestEvent())
-	out.CloseQueue()
-	out.WaitDone()
+
+	retireCtx, retireCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer retireCancel()
+	err := out.Retire(retireCtx)
+	require.NoError(t, err)
 
 	assert.Equal(t, int64(0), out.sentTotal.Load())
 	assert.Equal(t, int64(1), out.failedTotal.Load())
@@ -393,8 +414,10 @@ func TestWorkerCircuitBreakerBlocks(t *testing.T) {
 		out.Enqueue(newTestEvent())
 	}
 
-	out.CloseQueue()
-	out.WaitDone()
+	retireCtx, retireCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer retireCancel()
+	err := out.Retire(retireCtx)
+	require.NoError(t, err)
 
 	assert.Equal(t, int64(2), attempts.Load())
 	assert.Equal(t, CircuitOpen, out.circuitBreaker.GetState())
@@ -416,5 +439,5 @@ func TestWorkerForceStopOnContextCancel(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	cancel()
-	out.WaitDone()
+	out.waitDone()
 }

@@ -69,6 +69,16 @@ database:
 #   truncate_field_threshold: 512        # max field length before truncating (must be > 5 when event truncation enabled)
 
 # =============================================================================
+# Hot-Reload
+# Output config files (-o) are watched for changes and reloaded automatically.
+# Core config (this file) requires a restart. Triggers: fsnotify, SIGHUP, polling.
+# =============================================================================
+
+# reload:
+#   poll_interval: 30s             # content hash poll for K8s ConfigMap symlink swaps (0 disables)
+#   retire_timeout: 10s            # max wait for old output workers to drain during reload replace/remove
+
+# =============================================================================
 # Runtime Defaults
 # Default runtime settings applied to ALL outputs.
 # Individual outputs can override these under their runtime: sub-key.

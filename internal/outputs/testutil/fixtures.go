@@ -46,16 +46,47 @@ func CreateValidEvent() *event.Event {
 
 // MockDriver implements output.Driver for tests.
 type MockDriver struct {
-	SendFunc   func(ctx context.Context, evt *event.Event) error
-	DriverName string
+	SendFunc          func(ctx context.Context, evt *event.Event) error
+	InitFunc          func(ctx context.Context) error
+	HealthCheckFunc   func(ctx context.Context) error
+	RuntimeConfigFunc func() output.RuntimeConfig
+	CloseFunc         func() error
+	DriverName        string
 }
 
-func (m *MockDriver) Name() string                        { return m.DriverName }           //nolint:revive // interface impl
-func (m *MockDriver) Init(_ context.Context) error        { return nil }                    //nolint:revive // interface impl
-func (m *MockDriver) HealthCheck(_ context.Context) error { return nil }                    //nolint:revive // interface impl
-func (m *MockDriver) Close() error                        { return nil }                    //nolint:revive // interface impl
-func (m *MockDriver) RuntimeConfig() output.RuntimeConfig { return output.RuntimeConfig{} } //nolint:revive // interface impl
-func (m *MockDriver) Send(ctx context.Context, evt *event.Event) error { //nolint:revive // interface impl
+func (m *MockDriver) Name() string { return m.DriverName } //nolint:revive // interface impl
+
+func (m *MockDriver) Init(ctx context.Context) error { //nolint:revive // interface impl
+	if m.InitFunc != nil {
+		return m.InitFunc(ctx)
+	}
+	return nil
+}
+
+func (m *MockDriver) HealthCheck(ctx context.Context) error { //nolint:revive // interface impl
+	if m.HealthCheckFunc != nil {
+		return m.HealthCheckFunc(ctx)
+	}
+	return nil
+}
+
+func (m *MockDriver) RuntimeConfig() output.RuntimeConfig { //nolint:revive // interface impl
+	if m.RuntimeConfigFunc != nil {
+		return m.RuntimeConfigFunc()
+	}
+	return output.RuntimeConfig{}
+}
+
+// Close delegates to CloseFunc when set.
+func (m *MockDriver) Close() error {
+	if m.CloseFunc != nil {
+		return m.CloseFunc()
+	}
+	return nil
+}
+
+// Send delegates to SendFunc when set.
+func (m *MockDriver) Send(ctx context.Context, evt *event.Event) error {
 	if m.SendFunc != nil {
 		return m.SendFunc(ctx, evt)
 	}

@@ -68,15 +68,17 @@ func TestDispatcherRoutesToCorrectOutputs(t *testing.T) {
 	}}, lokiCfg, nil)
 
 	d := NewDispatcher([]*Output{slackOut, lokiOut})
-	ctx := context.Background()
-	d.Start(ctx)
+	workerRunCtx, stopWorkers := context.WithCancel(context.Background())
+	d.Start(workerRunCtx)
 
 	evt := newTestEvent()
 	evt.Priority = event.PriorityWarning
 	d.DispatchEvent(evt)
 
-	d.CloseQueues()
-	d.WaitAll()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer shutdownCancel()
+	err := d.Shutdown(shutdownCtx, stopWorkers)
+	require.NoError(t, err)
 
 	assert.Equal(t, int64(0), slackCalls.Load(), "warning evt must not reach critical-only slack")
 	assert.Equal(t, int64(1), lokiCalls.Load(), "warning evt must reach debug-level loki")
@@ -114,8 +116,8 @@ func TestDispatcherDrainQueues(t *testing.T) {
 	}, defaultRuntimeDefaults(), nil)
 
 	d := NewDispatcher([]*Output{out})
-	ctx := context.Background()
-	d.Start(ctx)
+	workerRunCtx, stopWorkers := context.WithCancel(context.Background())
+	d.Start(workerRunCtx)
 
 	for i := 0; i < 10; i++ {
 		e := newTestEvent()
@@ -123,8 +125,10 @@ func TestDispatcherDrainQueues(t *testing.T) {
 		d.DispatchEvent(e)
 	}
 
-	d.CloseQueues()
-	d.WaitAll()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer shutdownCancel()
+	err := d.Shutdown(shutdownCtx, stopWorkers)
+	require.NoError(t, err)
 
 	mu.Lock()
 	assert.Len(t, received, 10)
@@ -146,8 +150,8 @@ func TestDispatcherConcurrentDispatch(t *testing.T) {
 	}, cfg, nil)
 
 	d := NewDispatcher([]*Output{out})
-	ctx := context.Background()
-	d.Start(ctx)
+	workerRunCtx, stopWorkers := context.WithCancel(context.Background())
+	d.Start(workerRunCtx)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 100; i++ {
@@ -159,8 +163,10 @@ func TestDispatcherConcurrentDispatch(t *testing.T) {
 	}
 	wg.Wait()
 
-	d.CloseQueues()
-	d.WaitAll()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer shutdownCancel()
+	err := d.Shutdown(shutdownCtx, stopWorkers)
+	require.NoError(t, err)
 
 	require.Equal(t, int64(100), count.Load())
 }
@@ -181,37 +187,38 @@ func TestDrainQueuesWaitsForActiveSend(t *testing.T) {
 	}, defaultRuntimeDefaults(), nil)
 
 	d := NewDispatcher([]*Output{out})
-	ctx := context.Background()
-	d.Start(ctx)
+	workerRunCtx, stopWorkers := context.WithCancel(context.Background())
+	d.Start(workerRunCtx)
 
 	d.DispatchEvent(newTestEvent())
 	<-sendStarted
 
-	drainDone := make(chan struct{})
+	shutdownDone := make(chan error, 1)
 	go func() {
-		d.CloseQueues()
-		d.WaitAll()
-		close(drainDone)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		shutdownDone <- d.Shutdown(ctx, stopWorkers)
 	}()
 
 	time.Sleep(100 * time.Millisecond)
 	select {
-	case <-drainDone:
-		t.Fatal("DrainQueues returned while Send was still active")
+	case <-shutdownDone:
+		t.Fatal("Shutdown returned while Send was still active")
 	default:
 	}
 
 	close(sendBlock)
 
 	select {
-	case <-drainDone:
-		assert.True(t, sendCompleted.Load(), "Send must complete before DrainQueues returns")
+	case err := <-shutdownDone:
+		require.NoError(t, err)
+		assert.True(t, sendCompleted.Load(), "Send must complete before Shutdown returns")
 	case <-time.After(5 * time.Second):
-		t.Fatal("DrainQueues did not return after Send completed")
+		t.Fatal("Shutdown did not return after Send completed")
 	}
 }
 
-func TestCloseQueuesAndCancelStopsSlowWorker(t *testing.T) {
+func TestDispatcherShutdownBoundedWithStuckSender(t *testing.T) {
 	out := NewOutput(&testutil.MockDriver{
 		DriverName: "test",
 		SendFunc: func(ctx context.Context, _ *event.Event) error {
@@ -221,54 +228,397 @@ func TestCloseQueuesAndCancelStopsSlowWorker(t *testing.T) {
 	}, defaultRuntimeDefaults(), nil)
 
 	d := NewDispatcher([]*Output{out})
-	workerCtx, workerCancel := context.WithCancel(context.Background())
-	d.Start(workerCtx)
+	workerRunCtx, stopWorkers := context.WithCancel(context.Background())
+	d.Start(workerRunCtx)
 
 	d.DispatchEvent(newTestEvent())
 	time.Sleep(20 * time.Millisecond)
 
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer shutdownCancel()
+
 	start := time.Now()
-	d.CloseQueues()
-	workerCancel()
-	d.WaitAll()
+	err := d.Shutdown(shutdownCtx, stopWorkers)
 	elapsed := time.Since(start)
 
-	assert.Less(t, elapsed, 500*time.Millisecond, "cancel + WaitAll must complete quickly when workers respect ctx")
+	assert.Error(t, err, "Shutdown must return error when deadline exceeded with stuck worker")
+	assert.Less(t, elapsed, 1*time.Second, "Shutdown must complete within deadline, not hang forever")
 }
 
-func TestTwoContextShutdown(t *testing.T) {
-	sendStarted := make(chan struct{})
-	var sendCanceled atomic.Bool
+// --- Hot-reload lifecycle tests ---
+
+func TestAddOutputRoutesEvents(t *testing.T) {
+	var origCalls, addedCalls atomic.Int64
+
+	origOut := NewOutput(&testutil.MockDriver{
+		DriverName: "original",
+		SendFunc: func(_ context.Context, _ *event.Event) error {
+			origCalls.Add(1)
+			return nil
+		},
+	}, defaultRuntimeDefaults(), nil)
+
+	d := NewDispatcher([]*Output{origOut})
+	workerRunCtx, stopWorkers := context.WithCancel(context.Background())
+	d.Start(workerRunCtx)
+
+	// Add new output while pipeline is running.
+	addedOut := NewOutput(&testutil.MockDriver{
+		DriverName: "added",
+		SendFunc: func(_ context.Context, _ *event.Event) error {
+			addedCalls.Add(1)
+			return nil
+		},
+	}, defaultRuntimeDefaults(), nil)
+	err := d.AddOutput(workerRunCtx, addedOut)
+	require.NoError(t, err)
+
+	d.DispatchEvent(newTestEvent())
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer shutdownCancel()
+	require.NoError(t, d.Shutdown(shutdownCtx, stopWorkers))
+
+	assert.Equal(t, int64(1), origCalls.Load(), "original output must receive event")
+	assert.Equal(t, int64(1), addedCalls.Load(), "dynamically added output must receive event")
+}
+
+func TestRemoveOutputDrainsAndStops(t *testing.T) {
+	var calls atomic.Int64
+	var closeCalled atomic.Bool
 
 	out := NewOutput(&testutil.MockDriver{
-		DriverName: "test",
-		SendFunc: func(ctx context.Context, _ *event.Event) error {
-			close(sendStarted)
-			<-ctx.Done()
-			sendCanceled.Store(true)
-			return ctx.Err()
+		DriverName: "removable",
+		SendFunc: func(_ context.Context, _ *event.Event) error {
+			calls.Add(1)
+			return nil
+		},
+		CloseFunc: func() error {
+			closeCalled.Store(true)
+			return nil
 		},
 	}, defaultRuntimeDefaults(), nil)
 
 	d := NewDispatcher([]*Output{out})
+	workerRunCtx, stopWorkers := context.WithCancel(context.Background())
+	d.Start(workerRunCtx)
 
-	workerCtx, workerCancel := context.WithCancel(context.Background())
-	d.Start(workerCtx)
+	// Dispatch one event, let it process.
+	d.DispatchEvent(newTestEvent())
+	time.Sleep(50 * time.Millisecond)
+
+	// Remove output.
+	retireCtx, retireCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer retireCancel()
+	err := d.RemoveOutput(retireCtx, "removable")
+	require.NoError(t, err)
+
+	assert.True(t, closeCalled.Load(), "driver Close must be called after drain")
+	assert.Equal(t, int64(1), calls.Load())
+
+	// Dispatch another event after removal - should not reach removed output.
+	remaining := NewOutput(&testutil.MockDriver{DriverName: "remaining"}, defaultRuntimeDefaults(), nil)
+	require.NoError(t, d.AddOutput(workerRunCtx, remaining))
 
 	d.DispatchEvent(newTestEvent())
-	<-sendStarted
 
-	// Close queues - worker is blocked in Send, won't drain
-	d.CloseQueues()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer shutdownCancel()
+	require.NoError(t, d.Shutdown(shutdownCtx, stopWorkers))
 
-	// Worker still alive (blocked in Send)
+	assert.Equal(t, int64(1), calls.Load(), "removed output must not receive further events")
+}
+
+func TestRemoveOutputNonexistent(t *testing.T) {
+	d := NewDispatcher(nil)
+	workerRunCtx, stopWorkers := context.WithCancel(context.Background())
+	d.Start(workerRunCtx)
+
+	retireCtx, retireCancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer retireCancel()
+	err := d.RemoveOutput(retireCtx, "does-not-exist")
+	require.NoError(t, err)
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer shutdownCancel()
+	require.NoError(t, d.Shutdown(shutdownCtx, stopWorkers))
+}
+
+func TestReplaceOutputSwapsAtomically(t *testing.T) {
+	var oldCalls, newCalls atomic.Int64
+	var oldClosed atomic.Bool
+
+	oldOut := NewOutput(&testutil.MockDriver{
+		DriverName: "target",
+		SendFunc: func(_ context.Context, _ *event.Event) error {
+			oldCalls.Add(1)
+			return nil
+		},
+		CloseFunc: func() error {
+			oldClosed.Store(true)
+			return nil
+		},
+	}, defaultRuntimeDefaults(), nil)
+
+	d := NewDispatcher([]*Output{oldOut})
+	workerRunCtx, stopWorkers := context.WithCancel(context.Background())
+	d.Start(workerRunCtx)
+
+	// Let one event go to old.
+	d.DispatchEvent(newTestEvent())
 	time.Sleep(50 * time.Millisecond)
-	assert.False(t, sendCanceled.Load(), "worker should still be in Send after close queues")
 
-	// Cancel context -> worker sees ctx.Done -> exits
-	workerCancel()
+	// Replace with new output.
+	replacement := NewOutput(&testutil.MockDriver{
+		DriverName: "target",
+		SendFunc: func(_ context.Context, _ *event.Event) error {
+			newCalls.Add(1)
+			return nil
+		},
+	}, defaultRuntimeDefaults(), nil)
 
-	// Wait for worker to observe cancellation
-	d.WaitAll()
-	assert.True(t, sendCanceled.Load(), "worker must exit after context cancel")
+	retireCtx, retireCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer retireCancel()
+	err := d.ReplaceOutput(retireCtx, workerRunCtx, "target", replacement)
+	require.NoError(t, err)
+
+	// Events after replace go to new output.
+	d.DispatchEvent(newTestEvent())
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer shutdownCancel()
+	require.NoError(t, d.Shutdown(shutdownCtx, stopWorkers))
+
+	assert.Equal(t, int64(1), oldCalls.Load(), "old output must have received first event")
+	assert.Equal(t, int64(1), newCalls.Load(), "new output must have received second event")
+	assert.True(t, oldClosed.Load(), "old driver must be closed after drain")
+}
+
+func TestReplaceOutputNonexistent(t *testing.T) {
+	var calls atomic.Int64
+
+	d := NewDispatcher(nil)
+	workerRunCtx, stopWorkers := context.WithCancel(context.Background())
+	d.Start(workerRunCtx)
+
+	newOut := NewOutput(&testutil.MockDriver{
+		DriverName: "fresh",
+		SendFunc: func(_ context.Context, _ *event.Event) error {
+			calls.Add(1)
+			return nil
+		},
+	}, defaultRuntimeDefaults(), nil)
+
+	retireCtx, retireCancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer retireCancel()
+	err := d.ReplaceOutput(retireCtx, workerRunCtx, "fresh", newOut)
+	require.NoError(t, err)
+
+	d.DispatchEvent(newTestEvent())
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer shutdownCancel()
+	require.NoError(t, d.Shutdown(shutdownCtx, stopWorkers))
+
+	assert.Equal(t, int64(1), calls.Load(), "replacing non-existent name should still add output")
+}
+
+func TestDispatcherShutdownRejectsConcurrentDispatchAfterStop(t *testing.T) {
+	var calls atomic.Int64
+
+	out := NewOutput(&testutil.MockDriver{
+		DriverName: "test",
+		SendFunc: func(_ context.Context, _ *event.Event) error {
+			calls.Add(1)
+			return nil
+		},
+	}, defaultRuntimeDefaults(), nil)
+
+	d := NewDispatcher([]*Output{out})
+	workerRunCtx, stopWorkers := context.WithCancel(context.Background())
+	d.Start(workerRunCtx)
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer shutdownCancel()
+	err := d.Shutdown(shutdownCtx, stopWorkers)
+	require.NoError(t, err)
+
+	// Dispatch after shutdown must not panic or enqueue.
+	callsBefore := calls.Load()
+	d.DispatchEvent(newTestEvent())
+	assert.Equal(t, callsBefore, calls.Load(), "dispatch after shutdown must be silently dropped")
+}
+
+func TestDispatcherLifecycleMutationRejectedAfterStop(t *testing.T) {
+	d := NewDispatcher(nil)
+	workerRunCtx, stopWorkers := context.WithCancel(context.Background())
+	d.Start(workerRunCtx)
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer shutdownCancel()
+	require.NoError(t, d.Shutdown(shutdownCtx, stopWorkers))
+
+	newOut := NewOutput(&testutil.MockDriver{DriverName: "late"}, defaultRuntimeDefaults(), nil)
+
+	assert.ErrorIs(t, d.AddOutput(workerRunCtx, newOut), ErrDispatcherStopped)
+
+	retireCtx, retireCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer retireCancel()
+	assert.ErrorIs(t, d.RemoveOutput(retireCtx, "anything"), ErrDispatcherStopped)
+	assert.ErrorIs(t, d.ReplaceOutput(retireCtx, workerRunCtx, "anything", newOut), ErrDispatcherStopped)
+}
+
+func TestDispatcherShutdownAfterReload(t *testing.T) {
+	var startupClosed, replacementClosed, addedClosed atomic.Int64
+
+	startupOut := NewOutput(&testutil.MockDriver{
+		DriverName: "original",
+		CloseFunc:  func() error { startupClosed.Add(1); return nil },
+	}, defaultRuntimeDefaults(), nil)
+
+	d := NewDispatcher([]*Output{startupOut})
+	workerRunCtx, stopWorkers := context.WithCancel(context.Background())
+	d.Start(workerRunCtx)
+
+	// Reload: replace "original" and add "extra".
+	replacement := NewOutput(&testutil.MockDriver{
+		DriverName: "original",
+		CloseFunc:  func() error { replacementClosed.Add(1); return nil },
+	}, defaultRuntimeDefaults(), nil)
+
+	retireCtx, retireCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer retireCancel()
+	require.NoError(t, d.ReplaceOutput(retireCtx, workerRunCtx, "original", replacement))
+
+	extra := NewOutput(&testutil.MockDriver{
+		DriverName: "extra",
+		CloseFunc:  func() error { addedClosed.Add(1); return nil },
+	}, defaultRuntimeDefaults(), nil)
+	require.NoError(t, d.AddOutput(workerRunCtx, extra))
+
+	// Shutdown closes current live outputs (replacement and extra), not stale startup.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer shutdownCancel()
+	require.NoError(t, d.Shutdown(shutdownCtx, stopWorkers))
+
+	// The startup "original" was already retired by ReplaceOutput (Retire).
+	assert.Equal(t, int64(1), startupClosed.Load(), "retired startup output must be closed exactly once by Retire")
+
+	// The replacement and the added output must be closed exactly once by Shutdown.
+	assert.Equal(t, int64(1), replacementClosed.Load(), "replacement output must be closed once by Shutdown")
+	assert.Equal(t, int64(1), addedClosed.Load(), "added output must be closed once by Shutdown")
+}
+
+func TestGetReadableStoreFound(t *testing.T) {
+	store := &mockReadableStoreDriver{
+		MockDriver: testutil.MockDriver{DriverName: "inmemory"},
+	}
+
+	out := NewOutput(store, defaultRuntimeDefaults(), nil)
+	d := NewDispatcher([]*Output{out})
+
+	rs, ok := d.GetReadableStore("inmemory")
+	assert.True(t, ok)
+	assert.NotNil(t, rs)
+}
+
+func TestGetReadableStoreNotReadable(t *testing.T) {
+	out := NewOutput(&testutil.MockDriver{DriverName: "slack"}, defaultRuntimeDefaults(), nil)
+	d := NewDispatcher([]*Output{out})
+
+	rs, ok := d.GetReadableStore("slack")
+	assert.False(t, ok)
+	assert.Nil(t, rs)
+}
+
+func TestGetReadableStoreNotFound(t *testing.T) {
+	d := NewDispatcher(nil)
+
+	rs, ok := d.GetReadableStore("missing")
+	assert.False(t, ok)
+	assert.Nil(t, rs)
+}
+
+func TestOutputNames(t *testing.T) {
+	d := NewDispatcher([]*Output{
+		NewOutput(&testutil.MockDriver{DriverName: "a"}, defaultRuntimeDefaults(), nil),
+		NewOutput(&testutil.MockDriver{DriverName: "b"}, defaultRuntimeDefaults(), nil),
+	})
+
+	names := d.OutputNames()
+	assert.Len(t, names, 2)
+	assert.ElementsMatch(t, []string{"a", "b"}, names)
+}
+
+func TestConcurrentDispatchAndLifecycle(t *testing.T) {
+	var total atomic.Int64
+
+	d := NewDispatcher([]*Output{
+		NewOutput(&testutil.MockDriver{
+			DriverName: "base",
+			SendFunc: func(_ context.Context, _ *event.Event) error {
+				total.Add(1)
+				return nil
+			},
+		}, defaultRuntimeDefaults(), nil),
+	})
+	workerRunCtx, stopWorkers := context.WithCancel(context.Background())
+	d.Start(workerRunCtx)
+
+	// Concurrent dispatch.
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d.DispatchEvent(newTestEvent())
+		}()
+	}
+
+	// Concurrent add/remove cycle.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 10; i++ {
+			name := fmt.Sprintf("dynamic-%d", i)
+			out := NewOutput(&testutil.MockDriver{
+				DriverName: name,
+				SendFunc: func(_ context.Context, _ *event.Event) error {
+					total.Add(1)
+					return nil
+				},
+			}, defaultRuntimeDefaults(), nil)
+			_ = d.AddOutput(workerRunCtx, out)
+
+			retireCtx, retireCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			_ = d.RemoveOutput(retireCtx, name)
+			retireCancel()
+		}
+	}()
+
+	wg.Wait()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer shutdownCancel()
+	require.NoError(t, d.Shutdown(shutdownCtx, stopWorkers))
+
+	// Base output must have processed at least some events.
+	assert.Greater(t, total.Load(), int64(0))
+}
+
+// mockReadableStoreDriver implements both output.Driver and output.ReadableStore.
+type mockReadableStoreDriver struct {
+	testutil.MockDriver
+}
+
+func (m *mockReadableStoreDriver) Search(_ context.Context, _ *output.SearchQuery) (*output.SearchResult, error) {
+	return &output.SearchResult{}, nil
+}
+
+func (m *mockReadableStoreDriver) Count(_ context.Context, _ *output.Filters) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockReadableStoreDriver) CountBy(_ context.Context, _ string, _ *output.Filters) (map[string]int64, error) {
+	return nil, nil
 }

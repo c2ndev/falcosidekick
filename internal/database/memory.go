@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/falcosecurity/falcosidekick/internal/domain/core"
+	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
 // Memory implements domain.Database with in-memory maps.
@@ -79,7 +80,7 @@ func (s *Memory) Provision(_ context.Context, req *core.ProvisionRequest) error 
 		}
 		s.outputs[name] = core.OutputConfigEntry{
 			Name:        name,
-			Config:      deepCopyMap(cfg),
+			Config:      utils.DeepCopyMap(cfg),
 			Version:     ver,
 			Provisioned: true,
 			UpdatedAt:   now,
@@ -128,7 +129,7 @@ func (s *Memory) GetOutputConfigs(_ context.Context) (map[string]core.OutputConf
 
 	result := make(map[string]core.OutputConfigEntry, len(s.outputs))
 	for k, v := range s.outputs {
-		v.Config = deepCopyMap(v.Config)
+		v.Config = utils.DeepCopyMap(v.Config)
 		result[k] = v
 	}
 	return result, nil
@@ -143,7 +144,7 @@ func (s *Memory) GetOutputConfig(_ context.Context, name string) (*core.OutputCo
 	if !ok {
 		return nil, fmt.Errorf("database: output %q not found", name)
 	}
-	entry.Config = deepCopyMap(entry.Config)
+	entry.Config = utils.DeepCopyMap(entry.Config)
 	return &entry, nil
 }
 
@@ -158,7 +159,7 @@ func (s *Memory) SaveOutputConfig(_ context.Context, name string, cfg map[string
 	}
 	s.outputs[name] = core.OutputConfigEntry{
 		Name:        name,
-		Config:      deepCopyMap(cfg),
+		Config:      utils.DeepCopyMap(cfg),
 		Version:     ver,
 		Provisioned: false,
 		UpdatedAt:   time.Now(),
