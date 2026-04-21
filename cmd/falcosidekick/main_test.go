@@ -504,8 +504,20 @@ func TestAppServePropagatesStartError(t *testing.T) {
 	pipe, err := pipeline.NewPipeline(enricher, dispatcher, nil)
 	require.NoError(t, err)
 
+	cat, err := catalog.New([]output.Type{
+		{
+			Name:   "noop",
+			Schema: output.Schema{},
+			New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
+				return &testutil.MockDriver{DriverName: "noop"}, nil
+			},
+		},
+	})
+	require.NoError(t, err)
+
 	srv, err := api.NewServer(&api.ServerConfig{
 		Pipeline: pipe,
+		Catalog:  cat,
 		Address:  "127.0.0.1",
 		Port:     port,
 	})

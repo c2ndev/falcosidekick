@@ -119,10 +119,11 @@ func TestProvisionNilRequest(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestGetOutputConfigNotFound(t *testing.T) {
+func TestGetOutputConfigMissReturnsNilNil(t *testing.T) {
 	s := NewMemory()
-	_, err := s.GetOutputConfig(context.Background(), "nonexistent")
-	assert.Error(t, err)
+	entry, err := s.GetOutputConfig(context.Background(), "nonexistent")
+	require.NoError(t, err, "miss must not be represented as an error")
+	assert.Nil(t, entry, "miss must return a nil entry")
 }
 
 func TestSaveOutputConfigNotProvisioned(t *testing.T) {
@@ -145,8 +146,9 @@ func TestDeleteOutputConfig(t *testing.T) {
 	require.NoError(t, s.SaveOutputConfig(ctx, "temp", map[string]any{"x": 1}))
 	require.NoError(t, s.DeleteOutputConfig(ctx, "temp"))
 
-	_, err := s.GetOutputConfig(ctx, "temp")
-	assert.Error(t, err)
+	entry, err := s.GetOutputConfig(ctx, "temp")
+	require.NoError(t, err, "after delete, lookup miss must not be an error")
+	assert.Nil(t, entry, "after delete, lookup must return a nil entry")
 }
 
 func TestDeleteOutputConfigNotFound(t *testing.T) {

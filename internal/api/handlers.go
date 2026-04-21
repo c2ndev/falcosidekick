@@ -74,22 +74,6 @@ func (s *Server) handleGetConfig(c fiber.Ctx) error {
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{})
 	}
 
+	entry.Config = maskCoreConfig(entry.Config)
 	return c.Status(fiber.StatusOK).JSON(entry)
-}
-
-func (s *Server) handleGetOutputs(c fiber.Ctx) error {
-	if s.database == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-			"error": "database not configured",
-		})
-	}
-
-	entries, err := s.database.GetOutputConfigs(c.Context())
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "read outputs: " + err.Error(),
-		})
-	}
-
-	return c.Status(fiber.StatusOK).JSON(entries)
 }

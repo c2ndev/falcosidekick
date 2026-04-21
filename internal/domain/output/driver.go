@@ -18,6 +18,7 @@ package output
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -43,13 +44,34 @@ type BatchSender interface {
 	SendBatch(ctx context.Context, events []*event.Event) error
 }
 
+// ErrEmptyUUID indicates an empty UUID passed to GetEvent.
+var ErrEmptyUUID = errors.New("uuid is required")
+
 // ReadableStore is an optional interface for outputs that support event queries.
 // The API layer uses this to serve the UI. Only outputs configured as the
-// ui.backend need to implement it (e.g., memory, redis, postgres).
+// ui.event_source need to implement it (e.g., inmemory, redis, postgres).
+//
+// Filter combination semantics are part of the contract:
+//   - Within a single field, multiple values combine with OR
+//     (e.g. Filters{Priority: ["critical","error"]} matches events whose
+//     priority is critical OR error).
+//   - Across fields, criteria combine with AND
+//     (e.g. Filters{Priority: ["critical"], Rule: ["foo"]} matches events
+//     whose priority is critical AND rule is foo).
+//   - Since is applied as AND alongside the structured filters.
+//   - SearchQuery.Filter (free text) is applied as AND as a case-insensitive
+//     substring match over output, rule, priority, source, hostname, and tags.
+//
+// GetEvent lookup semantics:
+//   - A hit returns the event and a nil error.
+//   - A miss returns (nil, nil); callers map this to 404.
+//   - An empty uuid returns (nil, ErrEmptyUUID); callers map this to 400.
+//   - Any other error indicates a lookup failure; callers map this to 500.
 type ReadableStore interface {
 	Search(ctx context.Context, query *SearchQuery) (*SearchResult, error)
 	Count(ctx context.Context, filters *Filters) (int64, error)
 	CountBy(ctx context.Context, field string, filters *Filters) (map[string]int64, error)
+	GetEvent(ctx context.Context, uuid string) (*event.Event, error)
 }
 
 // Type describes an available output kind.
@@ -83,8 +105,9 @@ type SchemaField struct {
 }
 
 // SearchQuery holds parameters for querying stored events.
+// The free-text search term lives on Filters.Filter so that Search, Count,
+// and CountBy all honor it uniformly through a single *Filters value.
 type SearchQuery struct {
-	Filter   string  `json:"filter"`
 	SortBy   string  `json:"sort_by"`
 	Filters  Filters `json:"filters"`
 	Page     int     `json:"page"`
@@ -92,8 +115,12 @@ type SearchQuery struct {
 	SortDesc bool    `json:"sort_desc"`
 }
 
-// Filters holds structured filter criteria for event queries.
+// Filters holds filter criteria for event queries. Filter is a free-text
+// case-insensitive substring match applied across output, rule, priority,
+// source, hostname, and tags. All filter fields combine as AND across
+// fields and as OR within each multi-value field.
 type Filters struct {
+	Filter   string        `json:"filter,omitempty"`
 	Priority []string      `json:"priority,omitempty"`
 	Rule     []string      `json:"rule,omitempty"`
 	Source   []string      `json:"source,omitempty"`

@@ -135,14 +135,16 @@ func (s *Memory) GetOutputConfigs(_ context.Context) (map[string]core.OutputConf
 	return result, nil
 }
 
-// GetOutputConfig returns a single output entry by name.
+// GetOutputConfig returns a single output entry by name. Returns
+// (nil, nil) when the named output does not exist; any error indicates
+// a backend failure.
 func (s *Memory) GetOutputConfig(_ context.Context, name string) (*core.OutputConfigEntry, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	entry, ok := s.outputs[name]
 	if !ok {
-		return nil, fmt.Errorf("database: output %q not found", name)
+		return nil, nil
 	}
 	entry.Config = utils.DeepCopyMap(entry.Config)
 	return &entry, nil

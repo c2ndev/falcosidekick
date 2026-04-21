@@ -108,6 +108,7 @@ func buildApp(
 	srv, err := api.NewServer(&api.ServerConfig{
 		Pipeline:    pipe,
 		Database:    db,
+		Catalog:     cat,
 		Metrics:     collector,
 		Registry:    collector.Registry(),
 		TLS:         cfg.TLS,

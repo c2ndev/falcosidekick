@@ -27,8 +27,7 @@ import (
 // --- Filter helpers ---
 
 func hasNoFilters(f *output.Filters) bool {
-	return len(f.Priority) == 0 && len(f.Rule) == 0 && len(f.Source) == 0 &&
-		len(f.Hostname) == 0 && len(f.Tags) == 0 && f.Since == 0
+	return f.Filter == "" && hasNoStructuredFilters(f) && f.Since == 0
 }
 
 func hasNoStructuredFilters(f *output.Filters) bool {

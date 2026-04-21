@@ -1,0 +1,508 @@
+// Copyright (C) 2026 The Falco Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
+	"github.com/falcosecurity/falcosidekick/internal/pipeline"
+)
+
+type fakeReadableStore struct {
+	testutil.MockDriver
+	SearchFn   func(ctx context.Context, q *output.SearchQuery) (*output.SearchResult, error)
+	CountFn    func(ctx context.Context, f *output.Filters) (int64, error)
+	CountByFn  func(ctx context.Context, field string, f *output.Filters) (map[string]int64, error)
+	GetEventFn func(ctx context.Context, uuid string) (*event.Event, error)
+
+	LastSearchQuery  *output.SearchQuery
+	LastCountFilters *output.Filters
+	LastCountByField string
+	LastGetEventUUID string
+	SearchCalls      atomic.Int32
+}
+
+func (f *fakeReadableStore) Search(ctx context.Context, q *output.SearchQuery) (*output.SearchResult, error) {
+	f.SearchCalls.Add(1)
+	f.LastSearchQuery = q
+	if f.SearchFn != nil {
+		return f.SearchFn(ctx, q)
+	}
+	return &output.SearchResult{Events: []event.Event{}, Page: q.Page, Limit: q.Limit}, nil
+}
+
+func (f *fakeReadableStore) Count(ctx context.Context, filters *output.Filters) (int64, error) {
+	f.LastCountFilters = filters
+	if f.CountFn != nil {
+		return f.CountFn(ctx, filters)
+	}
+	return 0, nil
+}
+
+func (f *fakeReadableStore) CountBy(ctx context.Context, field string, filters *output.Filters) (map[string]int64, error) {
+	f.LastCountByField = field
+	if f.CountByFn != nil {
+		return f.CountByFn(ctx, field, filters)
+	}
+	return nil, nil
+}
+
+func (f *fakeReadableStore) GetEvent(ctx context.Context, uuid string) (*event.Event, error) {
+	f.LastGetEventUUID = uuid
+	if f.GetEventFn != nil {
+		return f.GetEventFn(ctx, uuid)
+	}
+	return nil, nil
+}
+
+const testEventSourceName = "inmemory"
+
+func buildTestServerWithStore(t *testing.T, store *fakeReadableStore) *Server {
+	t.Helper()
+	store.DriverName = testEventSourceName
+	out := pipeline.NewOutput(store, &defaultTestOutputConfig, nil)
+
+	enricher, _ := pipeline.NewEnricher(output.EnricherConfig{
+		TruncateEventThreshold: 4096,
+		TruncateFieldThreshold: 512,
+	})
+	dispatcher := pipeline.NewDispatcher([]*pipeline.Output{out})
+	p, err := pipeline.NewPipeline(enricher, dispatcher, nil)
+	require.NoError(t, err)
+	p.Start(context.Background(), func() {})
+
+	srv, err := NewServer(&ServerConfig{
+		Pipeline:    p,
+		Catalog:     newTestCatalog(t),
+		EventSource: testEventSourceName,
+	})
+	require.NoError(t, err)
+	return srv
+}
+
+// --- splitCSV ---
+
+func TestSplitCSV(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"empty", "", nil},
+		{"single", "foo", []string{"foo"}},
+		{"multiple", "foo,bar,baz", []string{"foo", "bar", "baz"}},
+		{"trim spaces", " foo , bar ,baz", []string{"foo", "bar", "baz"}},
+		{"drop empties", "foo,,bar", []string{"foo", "bar"}},
+		{"only empties", ",,,", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, splitCSV(tt.in))
+		})
+	}
+}
+
+// --- /api/v1/events/search ---
+
+func TestHandleEventsSearch_Defaults(t *testing.T) {
+	store := &fakeReadableStore{}
+	srv := buildTestServerWithStore(t, store)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/search", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, int32(1), store.SearchCalls.Load())
+	require.NotNil(t, store.LastSearchQuery)
+	assert.Equal(t, 100, store.LastSearchQuery.Limit)
+	assert.Equal(t, 1, store.LastSearchQuery.Page)
+	assert.Equal(t, "timestamp", store.LastSearchQuery.SortBy)
+	assert.True(t, store.LastSearchQuery.SortDesc)
+}
+
+func TestHandleEventsSearch_ParsesAllFilters(t *testing.T) {
+	store := &fakeReadableStore{}
+	srv := buildTestServerWithStore(t, store)
+
+	url := "/api/v1/events/search?filter=hello" +
+		"&priority=critical,error" +
+		"&rule=foo,bar" +
+		"&source=syscall" +
+		"&hostname=node-1,node-2" +
+		"&tags=a,b" +
+		"&since=30m" +
+		"&page=3&limit=25"
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, url, http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, 200, resp.StatusCode)
+	q := store.LastSearchQuery
+	require.NotNil(t, q)
+	assert.Equal(t, "hello", q.Filters.Filter)
+	assert.Equal(t, []string{"critical", "error"}, q.Filters.Priority)
+	assert.Equal(t, []string{"foo", "bar"}, q.Filters.Rule)
+	assert.Equal(t, []string{"syscall"}, q.Filters.Source)
+	assert.Equal(t, []string{"node-1", "node-2"}, q.Filters.Hostname)
+	assert.Equal(t, []string{"a", "b"}, q.Filters.Tags)
+	assert.Equal(t, 30*time.Minute, q.Filters.Since)
+	assert.Equal(t, 25, q.Limit)
+	assert.Equal(t, 3, q.Page)
+}
+
+func TestHandleEventsSearch_InvalidPage(t *testing.T) {
+	srv := buildTestServerWithStore(t, &fakeReadableStore{})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/search?page=abc", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 400, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "invalid page")
+}
+
+func TestHandleEventsSearch_InvalidLimit(t *testing.T) {
+	srv := buildTestServerWithStore(t, &fakeReadableStore{})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/search?limit=abc", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 400, resp.StatusCode)
+}
+
+func TestHandleEventsSearch_InvalidSince(t *testing.T) {
+	srv := buildTestServerWithStore(t, &fakeReadableStore{})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/search?since=forever", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 400, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "invalid since")
+}
+
+func TestHandleEventsSearch_NoEventSource(t *testing.T) {
+	srv := buildTestServer(t, nil)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/search", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 503, resp.StatusCode)
+}
+
+func TestHandleEventsSearch_StoreError(t *testing.T) {
+	store := &fakeReadableStore{
+		SearchFn: func(_ context.Context, _ *output.SearchQuery) (*output.SearchResult, error) {
+			return nil, errors.New("boom")
+		},
+	}
+	srv := buildTestServerWithStore(t, store)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/search", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 500, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "boom")
+}
+
+// --- /api/v1/events/count ---
+
+func TestHandleEventsCount(t *testing.T) {
+	store := &fakeReadableStore{
+		CountFn: func(_ context.Context, _ *output.Filters) (int64, error) {
+			return 42, nil
+		},
+	}
+	srv := buildTestServerWithStore(t, store)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/count?priority=error", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, 200, resp.StatusCode)
+	var got map[string]int64
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	assert.Equal(t, int64(42), got["count"])
+}
+
+func TestHandleEventsCount_InvalidFilter(t *testing.T) {
+	srv := buildTestServerWithStore(t, &fakeReadableStore{})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/count?since=nope", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 400, resp.StatusCode)
+}
+
+func TestHandleEventsCount_NoEventSource(t *testing.T) {
+	srv := buildTestServer(t, nil)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/count", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 503, resp.StatusCode)
+}
+
+func TestHandleEventsCountBy_NoEventSource(t *testing.T) {
+	srv := buildTestServer(t, nil)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/count/priority", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 503, resp.StatusCode)
+}
+
+func TestHandleEventsCount_HonorsFreeTextFilter(t *testing.T) {
+	store := &fakeReadableStore{}
+	srv := buildTestServerWithStore(t, store)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/count?filter=bash&priority=error", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, 200, resp.StatusCode)
+	require.NotNil(t, store.LastCountFilters)
+	assert.Equal(t, "bash", store.LastCountFilters.Filter, "count handler must propagate free-text filter= to the store")
+	assert.Equal(t, []string{"error"}, store.LastCountFilters.Priority)
+}
+
+func TestHandleEventsCount_StoreError(t *testing.T) {
+	store := &fakeReadableStore{
+		CountFn: func(_ context.Context, _ *output.Filters) (int64, error) {
+			return 0, errors.New("bad count")
+		},
+	}
+	srv := buildTestServerWithStore(t, store)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/count", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 500, resp.StatusCode)
+}
+
+// --- /api/v1/events/count/:groupby ---
+
+func TestHandleEventsCountBy_Valid(t *testing.T) {
+	store := &fakeReadableStore{
+		CountByFn: func(_ context.Context, _ string, _ *output.Filters) (map[string]int64, error) {
+			return map[string]int64{"critical": 3, "error": 7}, nil
+		},
+	}
+	srv := buildTestServerWithStore(t, store)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/count/priority", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, "priority", store.LastCountByField)
+
+	var got struct {
+		Groups map[string]int64 `json:"groups"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	assert.Equal(t, int64(3), got.Groups["critical"])
+	assert.Equal(t, int64(7), got.Groups["error"])
+}
+
+func TestHandleEventsCountBy_HonorsFreeTextFilter(t *testing.T) {
+	captured := &struct {
+		filters *output.Filters
+		field   string
+	}{}
+	store := &fakeReadableStore{
+		CountByFn: func(_ context.Context, field string, f *output.Filters) (map[string]int64, error) {
+			captured.field = field
+			captured.filters = f
+			return map[string]int64{"error": 1}, nil
+		},
+	}
+	srv := buildTestServerWithStore(t, store)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/count/priority?filter=bash&rule=exec", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, "priority", captured.field)
+	require.NotNil(t, captured.filters)
+	assert.Equal(t, "bash", captured.filters.Filter, "countBy handler must propagate free-text filter= to the store")
+	assert.Equal(t, []string{"exec"}, captured.filters.Rule)
+}
+
+func TestHandleEventsCountBy_InvalidField(t *testing.T) {
+	srv := buildTestServerWithStore(t, &fakeReadableStore{})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/count/not-a-field", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 400, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "not-a-field")
+}
+
+func TestHandleEventsCountBy_EmptyGroupsSerialization(t *testing.T) {
+	store := &fakeReadableStore{
+		CountByFn: func(_ context.Context, _ string, _ *output.Filters) (map[string]int64, error) {
+			return nil, nil
+		},
+	}
+	srv := buildTestServerWithStore(t, store)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/count/priority", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, 200, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), `"groups":{}`, "nil map must serialize as empty object, not null")
+}
+
+// --- /api/v1/events/:uuid ---
+
+func TestHandleEventByUUID_Hit(t *testing.T) {
+	want := &event.Event{
+		UUID:         "abc-123",
+		Rule:         "r",
+		Priority:     event.PriorityWarning,
+		Time:         time.Now().UTC(),
+		Source:       "syscall",
+		OutputFields: map[string]any{"k": "v"},
+	}
+	store := &fakeReadableStore{
+		GetEventFn: func(_ context.Context, _ string) (*event.Event, error) {
+			return want, nil
+		},
+	}
+	srv := buildTestServerWithStore(t, store)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/abc-123", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, "abc-123", store.LastGetEventUUID)
+
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), `"uuid":"abc-123"`)
+}
+
+func TestHandleEventByUUID_Miss(t *testing.T) {
+	store := &fakeReadableStore{
+		GetEventFn: func(_ context.Context, _ string) (*event.Event, error) {
+			return nil, nil
+		},
+	}
+	srv := buildTestServerWithStore(t, store)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/missing", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 404, resp.StatusCode)
+}
+
+func TestHandleEventByUUID_EmptyUUIDDomainError(t *testing.T) {
+	store := &fakeReadableStore{
+		GetEventFn: func(_ context.Context, _ string) (*event.Event, error) {
+			return nil, output.ErrEmptyUUID
+		},
+	}
+	srv := buildTestServerWithStore(t, store)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/x", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 400, resp.StatusCode)
+}
+
+func TestHandleEventByUUID_StoreError(t *testing.T) {
+	store := &fakeReadableStore{
+		GetEventFn: func(_ context.Context, _ string) (*event.Event, error) {
+			return nil, errors.New("lookup failed")
+		},
+	}
+	srv := buildTestServerWithStore(t, store)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/x", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 500, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "lookup failed")
+}
+
+func TestHandleEventByUUID_NoEventSource(t *testing.T) {
+	srv := buildTestServer(t, nil)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/x", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 503, resp.StatusCode)
+}

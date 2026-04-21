@@ -187,7 +187,7 @@ func (d *driver) Search(_ context.Context, query *output.SearchQuery) (*output.S
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	candidates := d.findMatchingEvents(&query.Filters, query.Filter)
+	candidates := d.findMatchingEvents(&query.Filters, query.Filters.Filter)
 
 	sortEvents(candidates, query.SortBy, query.SortDesc)
 
@@ -219,7 +219,26 @@ func (d *driver) Search(_ context.Context, query *output.SearchQuery) (*output.S
 func (d *driver) Count(_ context.Context, filters *output.Filters) (int64, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	return int64(len(d.findMatchingEvents(filters, ""))), nil
+	return int64(len(d.findMatchingEvents(filters, filters.Filter))), nil
+}
+
+func (d *driver) GetEvent(_ context.Context, uuid string) (*event.Event, error) {
+	if uuid == "" {
+		return nil, output.ErrEmptyUUID
+	}
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	for i := 0; i < d.count; i++ {
+		pos := (d.tail + i) % d.capacity
+		e := d.events[pos]
+		if e != nil && e.UUID == uuid {
+			cp := *e
+			return &cp, nil
+		}
+	}
+	return nil, nil
 }
 
 func (d *driver) CountBy(_ context.Context, field string, filters *output.Filters) (map[string]int64, error) {
@@ -234,7 +253,7 @@ func (d *driver) CountBy(_ context.Context, field string, filters *output.Filter
 		return d.countFromIndex(field), nil
 	}
 
-	return countFromEvents(d.findMatchingEvents(filters, ""), field), nil
+	return countFromEvents(d.findMatchingEvents(filters, filters.Filter), field), nil
 }
 
 // --- Ring buffer internals ---
