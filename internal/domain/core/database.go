@@ -38,6 +38,8 @@ type Database interface {
 	GetOutputConfigs(ctx context.Context) (map[string]OutputConfigEntry, error)
 
 	// GetOutputConfig returns a single output configuration by name.
+	// Returns (nil, nil) when the named output does not exist. Any error
+	// return indicates a backend failure, never a miss.
 	GetOutputConfig(ctx context.Context, name string) (*OutputConfigEntry, error)
 
 	// SaveOutputConfig persists one output configuration.

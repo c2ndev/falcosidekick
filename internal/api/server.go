@@ -26,6 +26,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/falcosecurity/falcosidekick/internal/catalog"
 	"github.com/falcosecurity/falcosidekick/internal/domain/core"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
@@ -35,6 +36,7 @@ import (
 type ServerConfig struct {
 	Pipeline    *pipeline.Pipeline
 	Database    core.Database
+	Catalog     *catalog.Catalog
 	Metrics     core.MetricsCollector
 	Registry    *prometheus.Registry
 	TLS         *core.TLSConfig
@@ -48,6 +50,7 @@ type Server struct {
 	app         *fiber.App
 	pipeline    *pipeline.Pipeline
 	database    core.Database
+	catalog     *catalog.Catalog
 	metrics     core.MetricsCollector
 	tls         *core.TLSConfig
 	address     string
@@ -59,6 +62,9 @@ func NewServer(cfg *ServerConfig) (*Server, error) {
 	if cfg.Pipeline == nil {
 		return nil, fmt.Errorf("server: pipeline is required")
 	}
+	if cfg.Catalog == nil {
+		return nil, fmt.Errorf("server: catalog is required")
+	}
 	if cfg.Address == "" {
 		cfg.Address = "0.0.0.0"
 	}
@@ -69,29 +75,56 @@ func NewServer(cfg *ServerConfig) (*Server, error) {
 	s := &Server{
 		pipeline:    cfg.Pipeline,
 		database:    cfg.Database,
+		catalog:     cfg.Catalog,
 		metrics:     cfg.Metrics,
 		tls:         cfg.TLS,
 		address:     fmt.Sprintf("%s:%d", cfg.Address, cfg.Port),
 		eventSource: cfg.EventSource,
 	}
 
-	app := fiber.New()
+	s.app = s.mountRoutes(cfg.Registry)
+	return s, nil
+}
 
+// mountRoutes registers routes with static segments (`/types`, `/status`,
+// `/layout`) declared before `:name` so Fiber's matcher prefers literals.
+func (s *Server) mountRoutes(registry *prometheus.Registry) *fiber.App {
+	app := fiber.New()
 	app.Use(recover.New())
 
 	app.Post("/", s.handlePostEvent)
 	app.Get("/healthz", s.handleGetHealthz)
 	app.Get("/version", s.handleGetVersion)
-	app.Get("/api/v1/config", s.handleGetConfig)
-	app.Get("/api/v1/outputs", s.handleGetOutputs)
 
-	if cfg.Registry != nil {
-		handler := promhttp.HandlerFor(cfg.Registry, promhttp.HandlerOpts{})
+	v1 := app.Group("/api/v1")
+
+	events := v1.Group("/events")
+	events.Get("/search", s.handleEventsSearch)
+	events.Get("/count", s.handleEventsCount)
+	events.Get("/count/:groupby", s.handleEventsCountBy)
+	events.Get("/:uuid", s.handleEventByUUID)
+
+	pipe := v1.Group("/pipeline")
+	pipe.Get("", s.handlePipelineComposite)
+	pipe.Get("/layout", s.handlePipelineLayout)
+	pipe.Get("/status", s.handlePipelineStatus)
+	pipe.Get("/status/:name", s.handlePipelineStatusByName)
+
+	outputs := pipe.Group("/outputs")
+	outputs.Get("", s.handlePipelineOutputs)
+	outputs.Get("/types", s.handlePipelineOutputTypes)
+	outputs.Get("/types/:name", s.handlePipelineOutputTypeByName)
+	outputs.Get("/:name", s.handlePipelineOutputByName)
+
+	v1.Get("/config", s.handleGetConfig)
+	v1.Get("/version", s.handleGetVersion)
+
+	if registry != nil {
+		handler := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
 		app.Get("/metrics", adaptor.HTTPHandler(handler))
 	}
 
-	s.app = app
-	return s, nil
+	return app
 }
 
 // GetReadableStore resolves the ReadableStore dynamically through the pipeline.

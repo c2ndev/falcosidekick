@@ -256,7 +256,7 @@ func TestSearchFreeText(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := o.Search(ctx, &output.SearchQuery{Filter: tt.filter})
+			result, err := o.Search(ctx, &output.SearchQuery{Filters: output.Filters{Filter: tt.filter}})
 			require.NoError(t, err)
 			assert.Equal(t, int64(tt.want), result.Total)
 		})
@@ -370,6 +370,40 @@ func TestCount(t *testing.T) {
 			assert.Equal(t, tt.want, count)
 		})
 	}
+}
+
+func TestCountHonorsFreeTextFilter(t *testing.T) {
+	ctx := context.Background()
+	o := createTestOutput(100)
+
+	now := time.Now()
+	require.NoError(t, o.Send(ctx, testEvent("exec_bash", event.PriorityWarning, "syscall", now)))
+	require.NoError(t, o.Send(ctx, testEvent("connect_tcp", event.PriorityWarning, "syscall", now.Add(time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("exec_sh", event.PriorityError, "syscall", now.Add(2*time.Second))))
+
+	count, err := o.Count(ctx, &output.Filters{Filter: "exec"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), count, "Count must honor Filters.Filter free-text substring match")
+
+	count, err = o.Count(ctx, &output.Filters{Filter: "exec", Priority: []string{"error"}})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), count, "Count must AND free-text with structured filters")
+}
+
+func TestCountByHonorsFreeTextFilter(t *testing.T) {
+	ctx := context.Background()
+	o := createTestOutput(100)
+
+	now := time.Now()
+	require.NoError(t, o.Send(ctx, testEvent("exec_bash", event.PriorityWarning, "syscall", now)))
+	require.NoError(t, o.Send(ctx, testEvent("connect_tcp", event.PriorityWarning, "syscall", now.Add(time.Second))))
+	require.NoError(t, o.Send(ctx, testEvent("exec_sh", event.PriorityError, "syscall", now.Add(2*time.Second))))
+
+	groups, err := o.CountBy(ctx, "priority", &output.Filters{Filter: "exec"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), groups["warning"])
+	assert.Equal(t, int64(1), groups["error"])
+	assert.NotContains(t, groups, "notice", "events matching neither filter nor priority must not appear")
 }
 
 func TestCountBy(t *testing.T) {
@@ -576,4 +610,155 @@ func TestSearchSortAscendingTimestamp(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result.Events, 3)
 	assert.True(t, result.Events[0].Time.Before(result.Events[2].Time), "ascending: oldest first")
+}
+
+// --- GetEvent ---
+
+func TestGetEventHit(t *testing.T) {
+	ctx := context.Background()
+	o := createTestOutput(100)
+	now := time.Now()
+	evt := testEvent("rule-a", event.PriorityWarning, "syscall", now)
+	evt.UUID = "abc-123"
+	require.NoError(t, o.Send(ctx, evt))
+
+	got, err := o.GetEvent(ctx, "abc-123")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "abc-123", got.UUID)
+	assert.Equal(t, "rule-a", got.Rule)
+}
+
+func TestGetEventReturnsCopy(t *testing.T) {
+	ctx := context.Background()
+	o := createTestOutput(100)
+	evt := testEvent("rule-a", event.PriorityWarning, "syscall", time.Now())
+	evt.UUID = "copy-me"
+	require.NoError(t, o.Send(ctx, evt))
+
+	got, err := o.GetEvent(ctx, "copy-me")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	got.Rule = "mutated"
+
+	again, err := o.GetEvent(ctx, "copy-me")
+	require.NoError(t, err)
+	require.NotNil(t, again)
+	assert.Equal(t, "rule-a", again.Rule, "GetEvent must return a copy; store state must not be mutable by the caller")
+}
+
+func TestGetEventMiss(t *testing.T) {
+	ctx := context.Background()
+	o := createTestOutput(100)
+
+	got, err := o.GetEvent(ctx, "does-not-exist")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+func TestGetEventEmptyUUID(t *testing.T) {
+	o := createTestOutput(100)
+
+	got, err := o.GetEvent(context.Background(), "")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, output.ErrEmptyUUID)
+	assert.Nil(t, got)
+}
+
+func TestGetEventAfterRingBufferOverwrite(t *testing.T) {
+	const (
+		uuid1 = "e1"
+		uuid2 = "e2"
+		uuid3 = "e3"
+	)
+	ctx := context.Background()
+	o := createTestOutput(2) // tiny capacity
+	now := time.Now()
+
+	e1 := testEvent("rule-1", event.PriorityWarning, "syscall", now)
+	e1.UUID = uuid1
+	e2 := testEvent("rule-2", event.PriorityWarning, "syscall", now.Add(time.Second))
+	e2.UUID = uuid2
+	e3 := testEvent("rule-3", event.PriorityWarning, "syscall", now.Add(2*time.Second))
+	e3.UUID = uuid3
+
+	require.NoError(t, o.Send(ctx, e1))
+	require.NoError(t, o.Send(ctx, e2))
+	require.NoError(t, o.Send(ctx, e3)) // overwrites e1
+
+	got, err := o.GetEvent(ctx, uuid1)
+	require.NoError(t, err)
+	assert.Nil(t, got, "event evicted from the ring buffer must return (nil, nil)")
+
+	got, err = o.GetEvent(ctx, uuid3)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, uuid3, got.UUID)
+}
+
+// --- Filter combination semantics (contract) ---
+
+// Contract: within a field multiple values combine with OR,
+// across fields criteria combine with AND. Enforced across every ReadableStore.
+func TestFilterSemanticsWithinFieldOrCrossFieldAnd(t *testing.T) {
+	ctx := context.Background()
+	o := createTestOutput(100)
+	now := time.Now()
+
+	// e1: priority=error, rule=foo
+	e1 := testEvent("foo", event.PriorityError, "syscall", now)
+	e1.UUID = "e1"
+	// e2: priority=critical, rule=foo
+	e2 := testEvent("foo", event.PriorityCritical, "syscall", now.Add(time.Second))
+	e2.UUID = "e2"
+	// e3: priority=error, rule=bar
+	e3 := testEvent("bar", event.PriorityError, "syscall", now.Add(2*time.Second))
+	e3.UUID = "e3"
+	// e4: priority=warning, rule=foo
+	e4 := testEvent("foo", event.PriorityWarning, "syscall", now.Add(3*time.Second))
+	e4.UUID = "e4"
+
+	for _, e := range []*event.Event{e1, e2, e3, e4} {
+		require.NoError(t, o.Send(ctx, e))
+	}
+
+	tests := []struct {
+		name     string
+		wantUUID []string
+		filters  output.Filters
+	}{
+		{
+			name:     "single-value: priority=error (within-field, single)",
+			filters:  output.Filters{Priority: []string{"error"}},
+			wantUUID: []string{"e1", "e3"},
+		},
+		{
+			name:     "multi-value: priority=error,critical (within-field OR)",
+			filters:  output.Filters{Priority: []string{"error", "critical"}},
+			wantUUID: []string{"e1", "e2", "e3"},
+		},
+		{
+			name:     "cross-field: priority=error AND rule=foo (across-field AND)",
+			filters:  output.Filters{Priority: []string{"error"}, Rule: []string{"foo"}},
+			wantUUID: []string{"e1"},
+		},
+		{
+			name:     "cross-field with multi-value: priority=error,critical AND rule=foo",
+			filters:  output.Filters{Priority: []string{"error", "critical"}, Rule: []string{"foo"}},
+			wantUUID: []string{"e1", "e2"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := o.Search(ctx, &output.SearchQuery{Filters: tt.filters})
+			require.NoError(t, err)
+
+			got := make([]string, 0, len(result.Events))
+			for _, e := range result.Events {
+				got = append(got, e.UUID)
+			}
+			assert.ElementsMatch(t, tt.wantUUID, got)
+		})
+	}
 }

@@ -32,6 +32,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/falcosecurity/falcosidekick/internal/catalog"
 	"github.com/falcosecurity/falcosidekick/internal/database"
 	"github.com/falcosecurity/falcosidekick/internal/domain/core"
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
@@ -40,6 +41,19 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
 )
+
+func newTestCatalog(t *testing.T) *catalog.Catalog {
+	t.Helper()
+	cat, err := catalog.New([]output.Type{{
+		Name:   "noop",
+		Schema: output.Schema{},
+		New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
+			return &testutil.MockDriver{DriverName: "noop"}, nil
+		},
+	}})
+	require.NoError(t, err)
+	return cat
+}
 
 var defaultTestOutputConfig = output.RuntimeConfig{
 	QueueSize: 100,
@@ -72,7 +86,7 @@ func buildTestServer(t *testing.T, outputs []*pipeline.Output) *Server {
 
 	p.Start(context.Background(), func() {})
 
-	srv, err := NewServer(&ServerConfig{Pipeline: p})
+	srv, err := NewServer(&ServerConfig{Pipeline: p, Catalog: newTestCatalog(t)})
 	if err != nil {
 		t.Fatalf("build server: %v", err)
 	}
@@ -190,7 +204,7 @@ func TestServerDefaults(t *testing.T) {
 	p, err := pipeline.NewPipeline(enricher, pipeline.NewDispatcher(nil), nil)
 	require.NoError(t, err)
 
-	srv, err := NewServer(&ServerConfig{Pipeline: p})
+	srv, err := NewServer(&ServerConfig{Pipeline: p, Catalog: newTestCatalog(t)})
 	require.NoError(t, err)
 	assert.Equal(t, "0.0.0.0:2801", srv.address)
 }
@@ -201,7 +215,26 @@ func TestNewServerRejectsNilPipeline(t *testing.T) {
 	assert.Contains(t, err.Error(), "pipeline is required")
 }
 
+func TestNewServerRejectsNilCatalog(t *testing.T) {
+	enricher, err := pipeline.NewEnricher(output.EnricherConfig{
+		TruncateEventThreshold: 4096,
+		TruncateFieldThreshold: 512,
+	})
+	require.NoError(t, err)
+	p, err := pipeline.NewPipeline(enricher, pipeline.NewDispatcher(nil), nil)
+	require.NoError(t, err)
+
+	_, err = NewServer(&ServerConfig{Pipeline: p})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "catalog is required")
+}
+
 func buildTestServerWithDB(t *testing.T, db core.Database) *Server {
+	t.Helper()
+	return buildTestServerWithDBAndCatalog(t, db, newTestCatalog(t))
+}
+
+func buildTestServerWithDBAndCatalog(t *testing.T, db core.Database, cat *catalog.Catalog) *Server {
 	t.Helper()
 	enricher, _ := pipeline.NewEnricher(output.EnricherConfig{
 		TruncateEventThreshold: 4096,
@@ -212,7 +245,7 @@ func buildTestServerWithDB(t *testing.T, db core.Database) *Server {
 	require.NoError(t, err)
 	p.Start(context.Background(), func() {})
 
-	srv, err := NewServer(&ServerConfig{Pipeline: p, Database: db})
+	srv, err := NewServer(&ServerConfig{Pipeline: p, Database: db, Catalog: cat})
 	require.NoError(t, err)
 	return srv
 }
@@ -257,47 +290,32 @@ func TestHandleGetConfigNoDatabase(t *testing.T) {
 	assert.Equal(t, 503, resp.StatusCode)
 }
 
-func TestHandleGetOutputsProvisioned(t *testing.T) {
-	db := database.NewMemory()
-	require.NoError(t, db.Provision(t.Context(), &core.ProvisionRequest{
-		Outputs: map[string]map[string]any{
-			"slack":  {"webhookurl": "https://test"},
-			"memory": {"capacity": 5000},
-		},
-	}))
-
-	srv := buildTestServerWithDB(t, db)
+func TestLegacyOutputsPathIsRemoved(t *testing.T) {
+	srv := buildTestServer(t, nil)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/outputs", http.NoBody)
 	resp, err := srv.app.Test(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, 200, resp.StatusCode)
-
-	body, _ := io.ReadAll(resp.Body)
-	assert.Contains(t, string(body), "slack")
-	assert.Contains(t, string(body), "memory")
+	assert.Equal(t, 404, resp.StatusCode, "legacy /api/v1/outputs must be removed; callers use /api/v1/pipeline/outputs")
 }
 
-func TestHandleGetOutputsEmpty(t *testing.T) {
-	db := database.NewMemory()
-	srv := buildTestServerWithDB(t, db)
+func TestHandleGetVersionAliasAtAPIv1(t *testing.T) {
+	srv := buildTestServer(t, nil)
 
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/outputs", http.NoBody)
-	resp, err := srv.app.Test(req)
+	legacy, err := srv.app.Test(httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/version", http.NoBody))
 	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, 200, resp.StatusCode)
-}
+	defer legacy.Body.Close()
+	legacyBody, _ := io.ReadAll(legacy.Body)
 
-func TestHandleGetOutputsNoDatabase(t *testing.T) {
-	srv := buildTestServerWithDB(t, nil)
-
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/outputs", http.NoBody)
-	resp, err := srv.app.Test(req)
+	aliased, err := srv.app.Test(httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/version", http.NoBody))
 	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, 503, resp.StatusCode)
+	defer aliased.Body.Close()
+	aliasedBody, _ := io.ReadAll(aliased.Body)
+
+	assert.Equal(t, 200, legacy.StatusCode)
+	assert.Equal(t, 200, aliased.StatusCode)
+	assert.JSONEq(t, string(legacyBody), string(aliasedBody), "/api/v1/version must return the same body as /version")
 }
 
 func TestStartAndShutdown(t *testing.T) {
@@ -325,7 +343,7 @@ func TestHandlePostEventWithMetrics(t *testing.T) {
 	require.NoError(t, err)
 	p.Start(context.Background(), func() {})
 
-	srv, err := NewServer(&ServerConfig{Pipeline: p, Metrics: collector})
+	srv, err := NewServer(&ServerConfig{Pipeline: p, Catalog: newTestCatalog(t), Metrics: collector})
 	require.NoError(t, err)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", bytes.NewReader(createValidEventJSON()))
@@ -346,7 +364,7 @@ func TestNewServerWithMetricsRegistry(t *testing.T) {
 	require.NoError(t, err)
 
 	reg := prometheus.NewRegistry()
-	srv, err := NewServer(&ServerConfig{Pipeline: p, Registry: reg})
+	srv, err := NewServer(&ServerConfig{Pipeline: p, Catalog: newTestCatalog(t), Registry: reg})
 	require.NoError(t, err)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", http.NoBody)
@@ -363,6 +381,10 @@ func (e *errorDB) GetConfig(_ context.Context) (*core.ConfigEntry, error) {
 }
 
 func (e *errorDB) GetOutputConfigs(_ context.Context) (map[string]core.OutputConfigEntry, error) {
+	return nil, errors.New("db failure")
+}
+
+func (e *errorDB) GetOutputConfig(_ context.Context, _ string) (*core.OutputConfigEntry, error) {
 	return nil, errors.New("db failure")
 }
 
@@ -384,7 +406,7 @@ func TestHandleGetConfigDBError(t *testing.T) {
 func TestHandleGetOutputsDBError(t *testing.T) {
 	srv := buildTestServerWithDB(t, &errorDB{})
 
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/outputs", http.NoBody)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/pipeline/outputs", http.NoBody)
 	resp, err := srv.app.Test(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -414,7 +436,7 @@ func TestGetReadableStoreResolvesFromPipeline(t *testing.T) {
 	require.NoError(t, err)
 	p.Start(context.Background(), func() {})
 
-	srv, err := NewServer(&ServerConfig{Pipeline: p, EventSource: "inmemory"})
+	srv, err := NewServer(&ServerConfig{Pipeline: p, Catalog: newTestCatalog(t), EventSource: "inmemory"})
 	require.NoError(t, err)
 
 	rs := srv.GetReadableStore()
@@ -433,7 +455,7 @@ func TestGetReadableStoreReturnsNilForNonReadableOutput(t *testing.T) {
 	require.NoError(t, err)
 	p.Start(context.Background(), func() {})
 
-	srv, err := NewServer(&ServerConfig{Pipeline: p, EventSource: "slack"})
+	srv, err := NewServer(&ServerConfig{Pipeline: p, Catalog: newTestCatalog(t), EventSource: "slack"})
 	require.NoError(t, err)
 
 	assert.Nil(t, srv.GetReadableStore(), "non-ReadableStore output must return nil")
@@ -452,5 +474,9 @@ func (m *mockReadableStoreOutput) Count(_ context.Context, _ *output.Filters) (i
 }
 
 func (m *mockReadableStoreOutput) CountBy(_ context.Context, _ string, _ *output.Filters) (map[string]int64, error) {
+	return nil, nil
+}
+
+func (m *mockReadableStoreOutput) GetEvent(_ context.Context, _ string) (*event.Event, error) {
 	return nil, nil
 }
