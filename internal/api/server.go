@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"io/fs"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/adaptor"
@@ -40,6 +41,7 @@ type ServerConfig struct {
 	Metrics     core.MetricsCollector
 	Registry    *prometheus.Registry
 	TLS         *core.TLSConfig
+	UIAssets    fs.FS // optional; serves under GET / when non-nil
 	Address     string
 	EventSource string // output name implementing ReadableStore; resolved dynamically via Pipeline
 	Port        int
@@ -53,6 +55,7 @@ type Server struct {
 	catalog     *catalog.Catalog
 	metrics     core.MetricsCollector
 	tls         *core.TLSConfig
+	uiAssets    fs.FS
 	address     string
 	eventSource string
 }
@@ -78,6 +81,7 @@ func NewServer(cfg *ServerConfig) (*Server, error) {
 		catalog:     cfg.Catalog,
 		metrics:     cfg.Metrics,
 		tls:         cfg.TLS,
+		uiAssets:    cfg.UIAssets,
 		address:     fmt.Sprintf("%s:%d", cfg.Address, cfg.Port),
 		eventSource: cfg.EventSource,
 	}
@@ -124,6 +128,8 @@ func (s *Server) mountRoutes(registry *prometheus.Registry) *fiber.App {
 		app.Get("/metrics", adaptor.HTTPHandler(handler))
 	}
 
+	registerStaticUI(app, s.uiAssets)
+
 	return app
 }
 
@@ -140,17 +146,15 @@ func (s *Server) GetReadableStore() output.ReadableStore {
 // Start begins listening for HTTP requests. Blocks until the server stops.
 // Uses TLS when configured, including mutual TLS with client cert verification.
 func (s *Server) Start() error {
+	cfg := fiber.ListenConfig{DisableStartupMessage: true}
 	if s.tls != nil && s.tls.Enabled {
-		cfg := fiber.ListenConfig{
-			CertFile:    s.tls.CertFile,
-			CertKeyFile: s.tls.KeyFile,
-		}
+		cfg.CertFile = s.tls.CertFile
+		cfg.CertKeyFile = s.tls.KeyFile
 		if s.tls.MutualTLS {
 			cfg.CertClientFile = s.tls.CACertFile
 		}
-		return s.app.Listen(s.address, cfg)
 	}
-	return s.app.Listen(s.address)
+	return s.app.Listen(s.address, cfg)
 }
 
 // Shutdown gracefully stops the server, bounded by the caller's context.

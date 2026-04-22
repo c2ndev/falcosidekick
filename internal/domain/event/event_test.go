@@ -208,3 +208,32 @@ func TestEventJSONRoundTrip(t *testing.T) {
 	// Priority serialized as string in JSON
 	assert.Contains(t, string(data), `"priority":"error"`)
 }
+
+func TestValidateNormalizesPriorityCase(t *testing.T) {
+	cases := []struct {
+		name  string
+		input Priority
+		want  Priority
+	}{
+		{"lowercase", Priority("warning"), PriorityWarning},
+		{"title case from Falco HTTP output", Priority("Warning"), PriorityWarning},
+		{"all caps", Priority("EMERGENCY"), PriorityEmergency},
+		{"whitespace", Priority(" Warning "), PriorityWarning},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			evt := &Event{
+				Time:         time.Now(),
+				Rule:         "r",
+				Priority:     tc.input,
+				OutputFields: map[string]interface{}{"k": "v"},
+			}
+			if err := evt.Validate(); err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+			if evt.Priority != tc.want {
+				t.Fatalf("Priority not normalized: got %q want %q", evt.Priority, tc.want)
+			}
+		})
+	}
+}
