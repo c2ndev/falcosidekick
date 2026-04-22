@@ -112,9 +112,11 @@ func (e *Event) Validate() error {
 	if e.Time.IsZero() {
 		return fmt.Errorf("%w: time is required", ErrInvalidEvent)
 	}
-	if _, err := ParsePriority(string(e.Priority)); err != nil {
+	normalized, err := ParsePriority(string(e.Priority))
+	if err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidEvent, err)
 	}
+	e.Priority = normalized
 	if len(e.OutputFields) == 0 {
 		return fmt.Errorf("%w: output_fields is required", ErrInvalidEvent)
 	}

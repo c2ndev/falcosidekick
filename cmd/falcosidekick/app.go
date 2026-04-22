@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -36,6 +37,7 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/metrics"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
 	"github.com/falcosecurity/falcosidekick/internal/reload"
+	"github.com/falcosecurity/falcosidekick/ui"
 )
 
 // app holds the running application resources built during startup.
@@ -105,6 +107,8 @@ func buildApp(
 		return nil, fmt.Errorf("pipeline: %w", err)
 	}
 
+	uiAssets := resolveUIAssets(cfg.UI.Enabled, ui.Dist)
+
 	srv, err := api.NewServer(&api.ServerConfig{
 		Pipeline:    pipe,
 		Database:    db,
@@ -112,6 +116,7 @@ func buildApp(
 		Metrics:     collector,
 		Registry:    collector.Registry(),
 		TLS:         cfg.TLS,
+		UIAssets:    uiAssets,
 		Address:     cfg.ListenAddress,
 		EventSource: cfg.UI.EventSource,
 		Port:        cfg.ListenPort,
@@ -223,6 +228,21 @@ func (a *app) shutdown() {
 	slog.Info("stopped")
 }
 
+// resolveUIAssets returns the asset filesystem to serve under GET / when
+// the UI is both configured and compiled in. When the operator asks for a
+// UI on a binary built without -tags=builtinui, a warning is logged and nil
+// is returned so event ingestion continues unaffected.
+func resolveUIAssets(enabled bool, dist fs.FS) fs.FS {
+	if !enabled {
+		return nil
+	}
+	if dist == nil {
+		slog.Warn("ui enabled in config but binary built without -tags=builtinui; API will serve, UI will not")
+		return nil
+	}
+	return dist
+}
+
 func createDatabase(cfg core.DatabaseConfig) (core.Database, error) {
 	switch cfg.Backend {
 	case core.DatabaseInMemory:
@@ -264,7 +284,7 @@ func createOutputs(
 
 		out := pipeline.NewOutput(driver, &outCfg, mc)
 		outputs = append(outputs, out)
-		slog.Info("output enabled", "output", name, "min_priority", outCfg.MinPriority)
+		slog.Info("output enabled", "output", name, "minimum_priority", outCfg.MinPriority)
 	}
 
 	return outputs, nil

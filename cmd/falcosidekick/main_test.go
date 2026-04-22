@@ -31,6 +31,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -538,6 +539,91 @@ func TestAppServePropagatesStartError(t *testing.T) {
 		assert.Contains(t, receivedErr.Error(), "bind")
 	case <-time.After(5 * time.Second):
 		t.Fatal("serve() did not propagate Start error to channel within 5s")
+	}
+}
+
+func TestResolveUIAssetsDisabled(t *testing.T) {
+	assets := resolveUIAssets(false, fstest.MapFS{"index.html": {Data: []byte("x")}})
+	assert.Nil(t, assets, "ui.enabled=false must yield nil regardless of embedded assets")
+}
+
+func TestResolveUIAssetsEnabledNoEmbed(t *testing.T) {
+	assets := resolveUIAssets(true, nil)
+	assert.Nil(t, assets, "ui.enabled=true on a stub binary must yield nil (warning is logged)")
+}
+
+func TestResolveUIAssetsEnabledWithEmbed(t *testing.T) {
+	dist := fstest.MapFS{"index.html": {Data: []byte("stub-index")}}
+	assets := resolveUIAssets(true, dist)
+	require.NotNil(t, assets)
+	assert.Equal(t, dist, assets, "ui.enabled=true + embedded assets must pass through unchanged")
+}
+
+func TestRunUIEnabledStubBinaryDoesNotServeStaticAssets(t *testing.T) {
+	port := findFreePort(t)
+	cfg := writeTestConfig(t, fmt.Sprintf(
+		"listen_port: %d\nlisten_address: 127.0.0.1\nui:\n  enabled: true\n  event_source: inmemory",
+		port,
+	))
+	outs := writeTestOutputs(t, "outputs:\n  inmemory:\n    capacity: 1000\n")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, cfg, []string{outs})
+	}()
+
+	waitForServer(t, port)
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", port)) //nolint:noctx // test helper
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode,
+		"GET / on stub build must fall through to Fiber's 405 (POST / registered, no UI assets)")
+
+	healthResp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", port)) //nolint:noctx // test helper
+	require.NoError(t, err)
+	_ = healthResp.Body.Close()
+	assert.Equal(t, http.StatusOK, healthResp.StatusCode, "API must remain healthy on stub build with ui.enabled=true")
+
+	cancel()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("run() did not exit within 15 seconds")
+	}
+}
+
+func TestRunUIDisabledDoesNotServeStaticAssets(t *testing.T) {
+	port := findFreePort(t)
+	cfg := writeTestConfig(t, fmt.Sprintf("listen_port: %d\nlisten_address: 127.0.0.1", port))
+	outs := writeTestOutputs(t, "outputs:\n  webhook:\n    url: http://127.0.0.1:19999\n")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, cfg, []string{outs})
+	}()
+
+	waitForServer(t, port)
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", port)) //nolint:noctx // test helper
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode,
+		"GET / must fall through to Fiber's 405 when ui.enabled=false")
+
+	cancel()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("run() did not exit within 15 seconds")
 	}
 }
 

@@ -132,23 +132,26 @@ v3-verify: v3-lint v3-test ui-build ui-lint ## Run all v3 Go and UI checks
 
 ## --------------------------------------
 ## Frontend (ui/)
+## UI helpers run through Bun (see $(BUN) in the v3 section below). npm is
+## not required by any target; the UI toolchain is Bun-exclusive.
 ## --------------------------------------
 
 .PHONY: ui-install
-ui-install: ## Install frontend dependencies
-	cd ui && npm install
+ui-install: ## Install frontend dependencies (Bun)
+	cd ui && $(BUN) install --frozen-lockfile
 
 .PHONY: ui-build
-ui-build: ## Build frontend for production
-	cd ui && npm run build
+ui-build: ## Build frontend for production (Bun)
+	cd ui && $(BUN) install --frozen-lockfile
+	cd ui && $(BUN) run build
 
 .PHONY: ui-lint
-ui-lint: ## Lint frontend
-	cd ui && npm run lint
+ui-lint: ## Lint frontend (Bun)
+	cd ui && $(BUN) run lint
 
 .PHONY: ui-dev
-ui-dev: ## Start frontend dev server
-	cd ui && npm run dev
+ui-dev: ## Start frontend dev server (Bun)
+	cd ui && $(BUN) run dev
 
 ## --------------------------------------
 ## Full verification
@@ -173,3 +176,138 @@ goreleaser-snapshot: ## Release snapshot using goreleaser
 clean: ## Remove build artifacts
 	rm -rf dist
 	rm -rf coverage.out
+
+## --------------------------------------
+## v3 Build Surface (parallel to v2)
+## v2 targets above stay unchanged. Everything below is v3-only.
+## --------------------------------------
+
+BUN            ?= $(HOME)/.bun/bin/bun
+V3_BINARY_UI   := falcosidekick-v3
+V3_BINARY_SLIM := falcosidekick-v3-slim
+V3_IMAGE       ?= ghcr.io/c2ndev/falcosidekick
+V3_DIST        := dist
+
+# v3 version string: closest v3.* tag, or `v3-dev-<short-sha>` before the
+# first v3 tag exists. v2 git tags are explicitly ignored.
+V3_GIT_DESCRIBE := $(shell git describe --tags --match 'v3.*' --dirty 2>/dev/null)
+V3_GIT_DIRTY    := $(shell git diff --quiet 2>/dev/null || echo -dirty)
+V3_GIT_SHORT    := $(shell git rev-parse --short HEAD 2>/dev/null)
+ifeq ($(V3_GIT_DESCRIBE),)
+V3_GIT_VERSION := v3-dev-$(V3_GIT_SHORT)$(V3_GIT_DIRTY)
+else
+V3_GIT_VERSION := $(V3_GIT_DESCRIBE)
+endif
+V3_LDFLAGS = -X $(VERSION_PKG).Version=$(V3_GIT_VERSION) -X $(VERSION_PKG).Commit=$(GIT_HASH) -X $(VERSION_PKG).BuildDate=$(BUILD_DATE)
+
+.PHONY: ui-v3-install
+ui-v3-install: ## Install UI dependencies via Bun
+	cd ui && $(BUN) install --frozen-lockfile
+
+.PHONY: ui-v3-build
+ui-v3-build: ## Build the UI for production (populates ui/dist/)
+	cd ui && $(BUN) install --frozen-lockfile
+	cd ui && $(BUN) run build
+
+.PHONY: ui-v3-lint
+ui-v3-lint: ## Lint UI sources with ESLint
+	cd ui && $(BUN) run lint
+
+.PHONY: ui-v3-typecheck
+ui-v3-typecheck: ## Typecheck UI sources with tsc --noEmit
+	cd ui && $(BUN) run typecheck
+
+.PHONY: ui-v3-dev
+ui-v3-dev: ## Start the Bun.serve dev server with API proxy
+	cd ui && $(BUN) run dev
+
+.PHONY: falcosidekick-v3
+falcosidekick-v3: ui-v3-build ## Build v3 binary with embedded UI (host OS+arch, tag builtinui)
+	$(GO) build -trimpath -tags=builtinui -ldflags "$(V3_LDFLAGS)" -o $(V3_BINARY_UI) ./cmd/falcosidekick/
+
+.PHONY: falcosidekick-v3-slim
+falcosidekick-v3-slim: ## Build v3 binary without the UI (host OS+arch)
+	$(GO) build -trimpath -ldflags "$(V3_LDFLAGS)" -o $(V3_BINARY_SLIM) ./cmd/falcosidekick/
+
+.PHONY: falcosidekick-v3-linux-amd64
+falcosidekick-v3-linux-amd64: ui-v3-build
+	GOOS=linux GOARCH=amd64 $(GO) build -trimpath -tags=builtinui -ldflags "$(V3_LDFLAGS)" \
+		-o $(V3_DIST)/linux/amd64/$(V3_BINARY_UI) ./cmd/falcosidekick/
+
+.PHONY: falcosidekick-v3-linux-arm64
+falcosidekick-v3-linux-arm64: ui-v3-build
+	GOOS=linux GOARCH=arm64 $(GO) build -trimpath -tags=builtinui -ldflags "$(V3_LDFLAGS)" \
+		-o $(V3_DIST)/linux/arm64/$(V3_BINARY_UI) ./cmd/falcosidekick/
+
+.PHONY: falcosidekick-v3-linux-amd64-slim
+falcosidekick-v3-linux-amd64-slim:
+	GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags "$(V3_LDFLAGS)" \
+		-o $(V3_DIST)/linux/amd64/$(V3_BINARY_SLIM) ./cmd/falcosidekick/
+
+.PHONY: falcosidekick-v3-linux-arm64-slim
+falcosidekick-v3-linux-arm64-slim:
+	GOOS=linux GOARCH=arm64 $(GO) build -trimpath -ldflags "$(V3_LDFLAGS)" \
+		-o $(V3_DIST)/linux/arm64/$(V3_BINARY_SLIM) ./cmd/falcosidekick/
+
+V3_LOCAL_PLATFORM ?= linux/$(GOARCH)
+
+.PHONY: v3-dist-license
+v3-dist-license:
+	cp LICENSE $(V3_DIST)/LICENSE
+
+.PHONY: build-image-v3-local
+build-image-v3-local: falcosidekick-v3-linux-$(GOARCH) v3-dist-license ## Build v3 UI image locally (host arch) using Dockerfile.v3 and --load into Docker
+	$(DOCKER) buildx build --platform $(V3_LOCAL_PLATFORM) \
+		-f Dockerfile.v3 \
+		--build-arg BINARY=$(V3_BINARY_UI) \
+		--build-arg VARIANT=ui \
+		-t $(V3_IMAGE):v3-local \
+		--load $(V3_DIST)
+
+.PHONY: build-image-v3-slim-local
+build-image-v3-slim-local: falcosidekick-v3-linux-$(GOARCH)-slim v3-dist-license ## Build v3 slim image locally (host arch)
+	$(DOCKER) buildx build --platform $(V3_LOCAL_PLATFORM) \
+		-f Dockerfile.v3 \
+		--build-arg BINARY=$(V3_BINARY_SLIM) \
+		--build-arg VARIANT=slim \
+		-t $(V3_IMAGE):v3-local-slim \
+		--load $(V3_DIST)
+
+.PHONY: build-image-v3-multiarch
+build-image-v3-multiarch: falcosidekick-v3-linux-amd64 falcosidekick-v3-linux-arm64 v3-dist-license ## Build v3 UI image for both archs (no --load; requires --push or additional output)
+	$(DOCKER) buildx build --platform linux/amd64,linux/arm64 \
+		-f Dockerfile.v3 \
+		--build-arg BINARY=$(V3_BINARY_UI) \
+		--build-arg VARIANT=ui \
+		-t $(V3_IMAGE):v3-local \
+		$(V3_DIST)
+
+.PHONY: v3-test-default
+v3-test-default: ## Run v3 Go tests (default build, includes ./ui)
+	$(GO) vet $(V3_PACKAGES) ./ui
+	$(GO) test $(TEST_FLAGS) $(V3_PACKAGES) ./ui
+
+.PHONY: v3-test-ui-tag
+v3-test-ui-tag: ui-v3-build ## Run v3 Go tests with -tags=builtinui (includes ./ui)
+	$(GO) vet -tags=builtinui $(V3_PACKAGES) ./ui
+	$(GO) test -tags=builtinui $(TEST_FLAGS) $(V3_PACKAGES) ./ui
+
+.PHONY: v3-lint-full
+v3-lint-full: ## Run golangci-lint across v3 Go packages including ./ui
+	golangci-lint run $(V3_PACKAGES) ./ui
+
+.PHONY: v3-verify-full
+v3-verify-full: v3-lint-full v3-test-default v3-test-ui-tag ui-v3-build ui-v3-lint ui-v3-typecheck ## Full v3 verification: Go default + tagged, golangci, Bun install/build/lint/typecheck
+
+.PHONY: v3-live-test
+v3-live-test: build-image-v3-local ## Deploy v3 to the local kind cluster and run the live-test protocol
+	./hack/live-test/run.sh
+
+.PHONY: v3-goreleaser-snapshot
+v3-goreleaser-snapshot: ## Dry-run v3 goreleaser snapshot build (no sign, no publish)
+	LDFLAGS="$(LDFLAGS)" goreleaser release --config .goreleaser.v3.yml --snapshot --clean --skip=sign,publish
+
+.PHONY: v3-clean
+v3-clean: ## Remove v3 build artifacts
+	rm -rf $(V3_DIST) $(V3_BINARY_UI) $(V3_BINARY_SLIM) coverage-v3.out
+	rm -rf ui/dist ui/node_modules

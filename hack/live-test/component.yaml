@@ -1,0 +1,101 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: falcosidekick-config
+  namespace: falco
+data:
+  sidekick.yaml: |
+    listen_address: 0.0.0.0
+    listen_port: 2801
+    log_level: debug
+    log_format: text
+    ui:
+      enabled: true
+      event_source: inmemory
+    database:
+      backend: inmemory
+    runtime_defaults:
+      workers: 2
+      queue_size: 1000
+      minimum_priority: informational
+      retry:
+        max_attempts: 3
+        initial_interval: 100ms
+        max_interval: 2s
+        multiplier: 2.0
+      circuit_breaker:
+        failure_threshold: 5
+        success_threshold: 2
+        reset_timeout: 30s
+    reload:
+      poll_interval: 0s
+  outputs.yaml: |
+    outputs:
+      inmemory:
+        capacity: 10000
+        ttl: "0"
+      webhook:
+        url: "http://webhook-receiver.falco.svc.cluster.local:8080/"
+        method: POST
+        runtime:
+          minimum_priority: informational
+---
+apiVersion: instance.falcosecurity.dev/v1alpha1
+kind: Component
+metadata:
+  name: falcosidekick
+  namespace: falco
+  labels:
+    app.kubernetes.io/managed-by: falco-operator
+spec:
+  component:
+    type: falcosidekick
+  podTemplateSpec:
+    spec:
+      containers:
+        - name: falcosidekick
+          image: ghcr.io/c2ndev/falcosidekick:v3-local
+          imagePullPolicy: IfNotPresent
+          args:
+            - "-c"
+            - "/config/sidekick.yaml"
+            - "-o"
+            - "/config/outputs.yaml"
+          ports:
+            - name: http
+              containerPort: 2801
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: falcosidekick-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: falcosidekick
+  namespace: falco
+  labels:
+    app.kubernetes.io/managed-by: falco-operator
+spec:
+  selector:
+    app.kubernetes.io/name: falcosidekick
+  ports:
+    - name: http
+      port: 2801
+      targetPort: http
