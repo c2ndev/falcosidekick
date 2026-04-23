@@ -20,9 +20,11 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"log/slog"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/adaptor"
+	"github.com/gofiber/fiber/v3/middleware/compress"
 	"github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -31,59 +33,81 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/domain/core"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
+	"github.com/falcosecurity/falcosidekick/internal/reload"
 )
 
 // ServerConfig holds HTTP server dependencies.
 type ServerConfig struct {
-	Pipeline    *pipeline.Pipeline
-	Database    core.Database
-	Catalog     *catalog.Catalog
-	Metrics     core.MetricsCollector
-	Registry    *prometheus.Registry
-	TLS         *core.TLSConfig
-	UIAssets    fs.FS // optional; serves under GET / when non-nil
-	Address     string
-	EventSource string // output name implementing ReadableStore; resolved dynamically via Pipeline
-	Port        int
+	Pipeline *pipeline.Pipeline
+	Database core.Database
+	Catalog  *catalog.Catalog
+	Metrics  core.MetricsCollector
+	Registry *prometheus.Registry
+	Reloader *reload.Reloader // optional; required for UI-driven output mutations
+	UIAssets fs.FS            // optional; serves under GET / when non-nil
+	Config   *core.Config
+	Logger   *slog.Logger
 }
 
 // Server manages the Fiber HTTP application.
 type Server struct {
-	app         *fiber.App
-	pipeline    *pipeline.Pipeline
-	database    core.Database
-	catalog     *catalog.Catalog
-	metrics     core.MetricsCollector
-	tls         *core.TLSConfig
-	uiAssets    fs.FS
-	address     string
-	eventSource string
+	app          *fiber.App
+	pipeline     *pipeline.Pipeline
+	database     core.Database
+	catalog      *catalog.Catalog
+	metrics      core.MetricsCollector
+	tls          *core.TLSConfig
+	reloader     *reload.Reloader
+	logger       *slog.Logger
+	uiAssets     fs.FS
+	address      string
+	eventSource  string
+	provisioning core.ProvisioningConfig
 }
 
 // NewServer creates a Fiber-based HTTP Server.
 func NewServer(cfg *ServerConfig) (*Server, error) {
+	var tls *core.TLSConfig
+	var eventSource string
+	var provisioning core.ProvisioningConfig
+	address := "0.0.0.0"
+	port := 2801
+
 	if cfg.Pipeline == nil {
 		return nil, fmt.Errorf("server: pipeline is required")
 	}
 	if cfg.Catalog == nil {
 		return nil, fmt.Errorf("server: catalog is required")
 	}
-	if cfg.Address == "" {
-		cfg.Address = "0.0.0.0"
+	if cfg.Config != nil {
+		tls = cfg.Config.TLS
+		eventSource = cfg.Config.UI.EventSource
+		provisioning = cfg.Config.Provisioning
+		if cfg.Config.ListenAddress != "" {
+			address = cfg.Config.ListenAddress
+		}
+		if cfg.Config.ListenPort != 0 {
+			port = cfg.Config.ListenPort
+		}
 	}
-	if cfg.Port <= 0 {
-		cfg.Port = 2801
+
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
 	}
 
 	s := &Server{
-		pipeline:    cfg.Pipeline,
-		database:    cfg.Database,
-		catalog:     cfg.Catalog,
-		metrics:     cfg.Metrics,
-		tls:         cfg.TLS,
-		uiAssets:    cfg.UIAssets,
-		address:     fmt.Sprintf("%s:%d", cfg.Address, cfg.Port),
-		eventSource: cfg.EventSource,
+		pipeline:     cfg.Pipeline,
+		database:     cfg.Database,
+		catalog:      cfg.Catalog,
+		metrics:      cfg.Metrics,
+		reloader:     cfg.Reloader,
+		uiAssets:     cfg.UIAssets,
+		logger:       logger,
+		address:      fmt.Sprintf("%s:%d", address, port),
+		eventSource:  eventSource,
+		provisioning: provisioning,
+		tls:          tls,
 	}
 
 	s.app = s.mountRoutes(cfg.Registry)
@@ -95,6 +119,7 @@ func NewServer(cfg *ServerConfig) (*Server, error) {
 func (s *Server) mountRoutes(registry *prometheus.Registry) *fiber.App {
 	app := fiber.New()
 	app.Use(recover.New())
+	app.Use(compress.New())
 
 	app.Post("/", s.handlePostEvent)
 	app.Get("/healthz", s.handleGetHealthz)
@@ -114,11 +139,15 @@ func (s *Server) mountRoutes(registry *prometheus.Registry) *fiber.App {
 	pipe.Get("/status", s.handlePipelineStatus)
 	pipe.Get("/status/:name", s.handlePipelineStatusByName)
 
+	pipe.Put("/layout", s.handlePipelineLayoutPut)
+
 	outputs := pipe.Group("/outputs")
 	outputs.Get("", s.handlePipelineOutputs)
 	outputs.Get("/types", s.handlePipelineOutputTypes)
 	outputs.Get("/types/:name", s.handlePipelineOutputTypeByName)
 	outputs.Get("/:name", s.handlePipelineOutputByName)
+	outputs.Put("/:name", s.handlePipelineOutputPut)
+	outputs.Delete("/:name", s.handlePipelineOutputDelete)
 
 	v1.Get("/config", s.handleGetConfig)
 	v1.Get("/version", s.handleGetVersion)
@@ -154,6 +183,7 @@ func (s *Server) Start() error {
 			cfg.CertClientFile = s.tls.CACertFile
 		}
 	}
+	s.logger.Info("listening", "address", s.address, "outputs", s.pipeline.Dispatcher().OutputNames())
 	return s.app.Listen(s.address, cfg)
 }
 

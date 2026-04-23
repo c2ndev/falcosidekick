@@ -24,67 +24,77 @@ import (
 
 const metricsNamespace = "falcosidekick"
 
+// Allowed values for the "source" label on reload_* counters/histogram.
+const (
+	SourceFile = "file"
+	SourceUI   = "ui"
+)
+
 type reloadMetrics struct {
-	total       prometheus.Counter
-	failures    prometheus.Counter
-	partial     prometheus.Counter
+	total       *prometheus.CounterVec
+	failures    *prometheus.CounterVec
+	partial     *prometheus.CounterVec
+	duration    *prometheus.HistogramVec
 	lastSuccess prometheus.Gauge
-	duration    prometheus.Histogram
 }
 
 // newReloadMetrics constructs and optionally registers the reload metrics.
 // A nil registerer skips registration.
 func newReloadMetrics(reg prometheus.Registerer) *reloadMetrics {
 	m := &reloadMetrics{
-		total: prometheus.NewCounter(prometheus.CounterOpts{
+		total: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: metricsNamespace,
 			Name:      "reload_total",
-			Help:      "Total output config reload attempts including no-op (success + failure + no-change).",
-		}),
-		failures: prometheus.NewCounter(prometheus.CounterOpts{
+			Help:      "Total reload attempts including no-op. Label source is file (file-driven) or ui (UI-driven apply).",
+		}, []string{"source"}),
+		failures: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: metricsNamespace,
 			Name:      "reload_failures_total",
-			Help:      "Failed output config reload attempts.",
-		}),
-		partial: prometheus.NewCounter(prometheus.CounterOpts{
+			Help:      "Failed reload attempts by source (file or ui).",
+		}, []string{"source"}),
+		partial: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: metricsNamespace,
 			Name:      "reload_partial_total",
-			Help:      "Reload attempts where runtime apply succeeded but a non-runtime step (e.g. DB sync) failed.",
-		}),
+			Help:      "Reload attempts where runtime apply succeeded but a non-runtime step failed, by source.",
+		}, []string{"source"}),
+		duration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: metricsNamespace,
+			Name:      "reload_duration_seconds",
+			Help:      "Duration of reload cycles in seconds, by source.",
+			Buckets:   prometheus.DefBuckets,
+		}, []string{"source"}),
 		lastSuccess: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: metricsNamespace,
 			Name:      "reload_last_success_timestamp",
-			Help:      "Unix timestamp of last successful reload.",
-		}),
-		duration: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Namespace: metricsNamespace,
-			Name:      "reload_duration_seconds",
-			Help:      "Duration of reload cycles in seconds.",
-			Buckets:   prometheus.DefBuckets,
+			Help:      "Unix timestamp of last fully successful reload from any source.",
 		}),
 	}
 
 	if reg != nil {
-		reg.MustRegister(m.total, m.failures, m.partial, m.lastSuccess, m.duration)
+		reg.MustRegister(m.total, m.failures, m.partial, m.duration, m.lastSuccess)
 	}
 
 	return m
 }
 
-func (m *reloadMetrics) recordSuccess(d time.Duration) {
-	m.total.Inc()
+func (m *reloadMetrics) recordSuccess(d time.Duration, source string) {
+	m.total.WithLabelValues(source).Inc()
+	m.duration.WithLabelValues(source).Observe(d.Seconds())
 	m.lastSuccess.SetToCurrentTime()
-	m.duration.Observe(d.Seconds())
 }
 
-func (m *reloadMetrics) recordPartialSuccess(d time.Duration) {
-	m.total.Inc()
-	m.partial.Inc()
-	m.duration.Observe(d.Seconds())
+func (m *reloadMetrics) recordPartialSuccess(d time.Duration, source string) {
+	m.total.WithLabelValues(source).Inc()
+	m.partial.WithLabelValues(source).Inc()
+	m.duration.WithLabelValues(source).Observe(d.Seconds())
 }
 
-func (m *reloadMetrics) recordFailure(d time.Duration) {
-	m.total.Inc()
-	m.failures.Inc()
-	m.duration.Observe(d.Seconds())
+func (m *reloadMetrics) recordFailure(d time.Duration, source string) {
+	m.total.WithLabelValues(source).Inc()
+	m.failures.WithLabelValues(source).Inc()
+	m.duration.WithLabelValues(source).Observe(d.Seconds())
+}
+
+func (m *reloadMetrics) recordNoop(source string) {
+	m.total.WithLabelValues(source).Inc()
 }

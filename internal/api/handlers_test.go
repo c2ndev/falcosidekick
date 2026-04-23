@@ -32,8 +32,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/falcosecurity/falcosidekick/internal/catalog"
 	"github.com/falcosecurity/falcosidekick/internal/database"
+	databasetestutil "github.com/falcosecurity/falcosidekick/internal/database/testutil"
 	"github.com/falcosecurity/falcosidekick/internal/domain/core"
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
@@ -41,57 +41,6 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
 )
-
-func newTestCatalog(t *testing.T) *catalog.Catalog {
-	t.Helper()
-	cat, err := catalog.New([]output.Type{{
-		Name:   "noop",
-		Schema: output.Schema{},
-		New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
-			return &testutil.MockDriver{DriverName: "noop"}, nil
-		},
-	}})
-	require.NoError(t, err)
-	return cat
-}
-
-var defaultTestOutputConfig = output.RuntimeConfig{
-	QueueSize: 100,
-	Workers:   1,
-	Retry: &output.RetryConfig{
-		MaxAttempts:     1,
-		InitialInterval: 10 * time.Millisecond,
-		MaxInterval:     100 * time.Millisecond,
-		Multiplier:      2.0,
-	},
-	CircuitBreaker: &output.CircuitBreakerConfig{
-		FailureThreshold: 5,
-		SuccessThreshold: 2,
-		ResetTimeout:     30 * time.Second,
-	},
-}
-
-func buildTestServer(t *testing.T, outputs []*pipeline.Output) *Server {
-	t.Helper()
-	enricher, _ := pipeline.NewEnricher(output.EnricherConfig{
-		TruncateEventThreshold: 4096,
-		TruncateFieldThreshold: 512,
-	})
-	dispatcher := pipeline.NewDispatcher(outputs)
-
-	p, err := pipeline.NewPipeline(enricher, dispatcher, nil)
-	if err != nil {
-		t.Fatalf("build pipeline: %v", err)
-	}
-
-	p.Start(context.Background(), func() {})
-
-	srv, err := NewServer(&ServerConfig{Pipeline: p, Catalog: newTestCatalog(t)})
-	if err != nil {
-		t.Fatalf("build server: %v", err)
-	}
-	return srv
-}
 
 func createValidEventJSON() []byte {
 	evt := event.Event{
@@ -110,7 +59,7 @@ func createValidEventJSON() []byte {
 
 func TestHandlePostEventValid(t *testing.T) {
 	var received atomic.Int64
-	cfg := defaultTestOutputConfig
+	cfg := testutil.DefaultRuntimeConfig()
 	cfg.MinPriority = event.PriorityDebug
 	out := pipeline.NewOutput(&testutil.MockDriver{DriverName: "test", SendFunc: func(_ context.Context, _ *event.Event) error {
 		received.Add(1)
@@ -227,27 +176,6 @@ func TestNewServerRejectsNilCatalog(t *testing.T) {
 	_, err = NewServer(&ServerConfig{Pipeline: p})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "catalog is required")
-}
-
-func buildTestServerWithDB(t *testing.T, db core.Database) *Server {
-	t.Helper()
-	return buildTestServerWithDBAndCatalog(t, db, newTestCatalog(t))
-}
-
-func buildTestServerWithDBAndCatalog(t *testing.T, db core.Database, cat *catalog.Catalog) *Server {
-	t.Helper()
-	enricher, _ := pipeline.NewEnricher(output.EnricherConfig{
-		TruncateEventThreshold: 4096,
-		TruncateFieldThreshold: 512,
-	})
-	dispatcher := pipeline.NewDispatcher(nil)
-	p, err := pipeline.NewPipeline(enricher, dispatcher, nil)
-	require.NoError(t, err)
-	p.Start(context.Background(), func() {})
-
-	srv, err := NewServer(&ServerConfig{Pipeline: p, Database: db, Catalog: cat})
-	require.NoError(t, err)
-	return srv
 }
 
 func TestHandleGetConfigProvisioned(t *testing.T) {
@@ -374,24 +302,17 @@ func TestNewServerWithMetricsRegistry(t *testing.T) {
 	assert.Equal(t, 200, resp.StatusCode)
 }
 
-type errorDB struct{ core.Database }
-
-func (e *errorDB) GetConfig(_ context.Context) (*core.ConfigEntry, error) {
-	return nil, errors.New("db failure")
+func allReadsFailDB() *databasetestutil.Mock {
+	err := errors.New("db failure")
+	return &databasetestutil.Mock{
+		GetConfigErr:        err,
+		GetOutputConfigsErr: err,
+		GetOutputConfigErr:  err,
+	}
 }
-
-func (e *errorDB) GetOutputConfigs(_ context.Context) (map[string]core.OutputConfigEntry, error) {
-	return nil, errors.New("db failure")
-}
-
-func (e *errorDB) GetOutputConfig(_ context.Context, _ string) (*core.OutputConfigEntry, error) {
-	return nil, errors.New("db failure")
-}
-
-func (e *errorDB) Close() error { return nil }
 
 func TestHandleGetConfigDBError(t *testing.T) {
-	srv := buildTestServerWithDB(t, &errorDB{})
+	srv := buildTestServerWithDB(t, allReadsFailDB())
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/config", http.NoBody)
 	resp, err := srv.app.Test(req)
@@ -404,7 +325,7 @@ func TestHandleGetConfigDBError(t *testing.T) {
 }
 
 func TestHandleGetOutputsDBError(t *testing.T) {
-	srv := buildTestServerWithDB(t, &errorDB{})
+	srv := buildTestServerWithDB(t, allReadsFailDB())
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/pipeline/outputs", http.NoBody)
 	resp, err := srv.app.Test(req)
@@ -424,8 +345,9 @@ func TestGetReadableStoreReturnsNilWhenNoEventSource(t *testing.T) {
 }
 
 func TestGetReadableStoreResolvesFromPipeline(t *testing.T) {
-	store := &mockReadableStoreOutput{MockDriver: testutil.MockDriver{DriverName: "inmemory"}}
-	out := pipeline.NewOutput(store, &defaultTestOutputConfig, nil)
+	store := &fakeReadableStore{MockDriver: testutil.MockDriver{DriverName: "inmemory"}}
+	cfg := testutil.DefaultRuntimeConfig()
+	out := pipeline.NewOutput(store, &cfg, nil)
 
 	enricher, _ := pipeline.NewEnricher(output.EnricherConfig{
 		TruncateEventThreshold: 4096,
@@ -436,7 +358,17 @@ func TestGetReadableStoreResolvesFromPipeline(t *testing.T) {
 	require.NoError(t, err)
 	p.Start(context.Background(), func() {})
 
-	srv, err := NewServer(&ServerConfig{Pipeline: p, Catalog: newTestCatalog(t), EventSource: "inmemory"})
+	srv, err := NewServer(
+		&ServerConfig{
+			Pipeline: p,
+			Catalog:  newTestCatalog(t),
+			Config: &core.Config{
+				UI: core.UIConfig{
+					EventSource: "inmemory",
+				},
+			},
+		},
+	)
 	require.NoError(t, err)
 
 	rs := srv.GetReadableStore()
@@ -444,7 +376,8 @@ func TestGetReadableStoreResolvesFromPipeline(t *testing.T) {
 }
 
 func TestGetReadableStoreReturnsNilForNonReadableOutput(t *testing.T) {
-	out := pipeline.NewOutput(&testutil.MockDriver{DriverName: "slack"}, &defaultTestOutputConfig, nil)
+	cfg := testutil.DefaultRuntimeConfig()
+	out := pipeline.NewOutput(&testutil.MockDriver{DriverName: "slack"}, &cfg, nil)
 
 	enricher, _ := pipeline.NewEnricher(output.EnricherConfig{
 		TruncateEventThreshold: 4096,
@@ -455,28 +388,18 @@ func TestGetReadableStoreReturnsNilForNonReadableOutput(t *testing.T) {
 	require.NoError(t, err)
 	p.Start(context.Background(), func() {})
 
-	srv, err := NewServer(&ServerConfig{Pipeline: p, Catalog: newTestCatalog(t), EventSource: "slack"})
+	srv, err := NewServer(
+		&ServerConfig{
+			Pipeline: p,
+			Catalog:  newTestCatalog(t),
+			Config: &core.Config{
+				UI: core.UIConfig{
+					EventSource: "slack",
+				},
+			},
+		},
+	)
 	require.NoError(t, err)
 
 	assert.Nil(t, srv.GetReadableStore(), "non-ReadableStore output must return nil")
-}
-
-type mockReadableStoreOutput struct {
-	testutil.MockDriver
-}
-
-func (m *mockReadableStoreOutput) Search(_ context.Context, _ *output.SearchQuery) (*output.SearchResult, error) {
-	return &output.SearchResult{}, nil
-}
-
-func (m *mockReadableStoreOutput) Count(_ context.Context, _ *output.Filters) (int64, error) {
-	return 0, nil
-}
-
-func (m *mockReadableStoreOutput) CountBy(_ context.Context, _ string, _ *output.Filters) (map[string]int64, error) {
-	return nil, nil
-}
-
-func (m *mockReadableStoreOutput) GetEvent(_ context.Context, _ string) (*event.Event, error) {
-	return nil, nil
 }

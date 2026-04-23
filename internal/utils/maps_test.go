@@ -56,3 +56,56 @@ func TestDeepCopyMapEmpty(t *testing.T) {
 	assert.NotNil(t, cp)
 	assert.Empty(t, cp)
 }
+
+func TestDeepMergeMap(t *testing.T) {
+	tests := []struct {
+		dst  map[string]any
+		src  map[string]any
+		want map[string]any
+		name string
+	}{
+		{
+			name: "flat overwrite",
+			dst:  map[string]any{"a": "old", "b": "keep"},
+			src:  map[string]any{"a": "new"},
+			want: map[string]any{"a": "new", "b": "keep"},
+		},
+		{
+			name: "nested merge",
+			dst:  map[string]any{"n": map[string]any{"a": 1, "b": 2}},
+			src:  map[string]any{"n": map[string]any{"b": 3, "c": 4}},
+			want: map[string]any{"n": map[string]any{"a": 1, "b": 3, "c": 4}},
+		},
+		{
+			name: "new key addition",
+			dst:  map[string]any{"a": 1},
+			src:  map[string]any{"b": 2},
+			want: map[string]any{"a": 1, "b": 2},
+		},
+		{
+			name: "scalar overwrites map",
+			dst:  map[string]any{"a": map[string]any{"x": 1}},
+			src:  map[string]any{"a": "scalar"},
+			want: map[string]any{"a": "scalar"},
+		},
+		{
+			name: "map overwrites scalar",
+			dst:  map[string]any{"a": "scalar"},
+			src:  map[string]any{"a": map[string]any{"x": 1}},
+			want: map[string]any{"a": map[string]any{"x": 1}},
+		},
+		{
+			name: "empty src leaves dst unchanged",
+			dst:  map[string]any{"a": 1},
+			src:  map[string]any{},
+			want: map[string]any{"a": 1},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			DeepMergeMap(tt.dst, tt.src)
+			assert.Equal(t, tt.want, tt.dst)
+		})
+	}
+}

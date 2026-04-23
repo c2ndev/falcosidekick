@@ -151,10 +151,104 @@ func TestDeleteOutputConfig(t *testing.T) {
 	assert.Nil(t, entry, "after delete, lookup must return a nil entry")
 }
 
-func TestDeleteOutputConfigNotFound(t *testing.T) {
+func TestDeleteOutputConfigMissReturnsNil(t *testing.T) {
 	s := NewMemory()
 	err := s.DeleteOutputConfig(context.Background(), "nonexistent")
-	assert.Error(t, err)
+	require.NoError(t, err,
+		"miss must return nil; any error indicates a real backend failure (contract aligned with GetOutputConfig)")
+}
+
+func TestProvisionOverwritesUIEditedProvisionedEntry(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	// Seed: file-provisioned entry.
+	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
+		Outputs: map[string]map[string]any{"slack": {"webhookurl": "file-v1"}},
+	}))
+	// UI edits the provisioned entry (save preserves the Provisioned flag).
+	require.NoError(t, s.SaveOutputConfig(ctx, "slack", map[string]any{"webhookurl": "ui-edit"}))
+	after, err := s.GetOutputConfig(ctx, "slack")
+	require.NoError(t, err)
+	require.NotNil(t, after)
+	require.True(t, after.Provisioned,
+		"SaveOutputConfig must preserve the Provisioned flag on an existing file-provisioned entry")
+	require.Equal(t, "ui-edit", after.Config["webhookurl"])
+
+	// File reload overrides the UI edit: file is authoritative.
+	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
+		Outputs: map[string]map[string]any{"slack": {"webhookurl": "file-v2"}},
+	}))
+	got, err := s.GetOutputConfig(ctx, "slack")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.True(t, got.Provisioned, "still provisioned after reload")
+	assert.Equal(t, "file-v2", got.Config["webhookurl"],
+		"file reload must overwrite the UI edit with the file version")
+}
+
+func TestProvisionDisableDeletionKeepsOrphanProvisioned(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
+		Outputs: map[string]map[string]any{
+			"slack":   {"url": "slack-file"},
+			"webhook": {"url": "webhook-file"},
+		},
+	}))
+
+	// File now drops webhook; DisableDeletion=true preserves it as a
+	// Provisioned:true orphan instead of removing it from the store.
+	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
+		Outputs:         map[string]map[string]any{"slack": {"url": "slack-file"}},
+		DisableDeletion: true,
+	}))
+
+	orphan, err := s.GetOutputConfig(ctx, "webhook")
+	require.NoError(t, err)
+	require.NotNil(t, orphan, "DisableDeletion=true must preserve the orphaned Provisioned:true entry")
+	assert.True(t, orphan.Provisioned)
+}
+
+func TestProvisionDisableDeletionFalseDeletesOrphanProvisioned(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
+		Outputs: map[string]map[string]any{
+			"slack":   {"url": "slack-file"},
+			"webhook": {"url": "webhook-file"},
+		},
+	}))
+	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
+		Outputs:         map[string]map[string]any{"slack": {"url": "slack-file"}},
+		DisableDeletion: false,
+	}))
+
+	orphan, err := s.GetOutputConfig(ctx, "webhook")
+	require.NoError(t, err)
+	assert.Nil(t, orphan, "DisableDeletion=false must delete the orphaned Provisioned:true entry")
+}
+
+func TestSaveOutputConfigPreservesProvisionedFlag(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemory()
+
+	// Existing Provisioned:true entry: save preserves the flag.
+	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
+		Outputs: map[string]map[string]any{"slack": {"url": "file"}},
+	}))
+	require.NoError(t, s.SaveOutputConfig(ctx, "slack", map[string]any{"url": "edited"}))
+	got, err := s.GetOutputConfig(ctx, "slack")
+	require.NoError(t, err)
+	require.True(t, got.Provisioned, "UI edit of file-provisioned entry keeps Provisioned:true")
+
+	// Brand-new name: starts Provisioned:false (UI-only).
+	require.NoError(t, s.SaveOutputConfig(ctx, "ui-only-webhook", map[string]any{"address": "http://x"}))
+	fresh, err := s.GetOutputConfig(ctx, "ui-only-webhook")
+	require.NoError(t, err)
+	assert.False(t, fresh.Provisioned, "new UI-only entry starts as Provisioned:false")
 }
 
 func TestPipelineLayoutRoundTrip(t *testing.T) {
@@ -191,7 +285,7 @@ func TestGetOutputConfigsReturnsDefensiveCopy(t *testing.T) {
 	require.NoError(t, s.SaveOutputConfig(ctx, "test", map[string]any{"key": "val"}))
 
 	entries1, _ := s.GetOutputConfigs(ctx)
-	entries1["injected"] = core.OutputConfigEntry{Name: "injected"}
+	entries1["injected"] = &core.OutputConfigEntry{Name: "injected"}
 
 	entries2, _ := s.GetOutputConfigs(ctx)
 	assert.NotContains(t, entries2, "injected", "external mutation must not affect internal state")

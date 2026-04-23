@@ -29,7 +29,7 @@ import (
 // Memory implements domain.Database with in-memory maps.
 // All data is lost on restart and re-provisioned from files.
 type Memory struct {
-	outputs    map[string]core.OutputConfigEntry
+	outputs    map[string]*core.OutputConfigEntry
 	coreConfig *core.ConfigEntry
 	layout     *core.PipelineLayout
 	mu         sync.RWMutex
@@ -38,7 +38,7 @@ type Memory struct {
 // NewMemory creates a memory-backed Database.
 func NewMemory() *Memory {
 	return &Memory{
-		outputs: make(map[string]core.OutputConfigEntry),
+		outputs: make(map[string]*core.OutputConfigEntry),
 	}
 }
 
@@ -54,34 +54,28 @@ func (s *Memory) Provision(_ context.Context, req *core.ProvisionRequest) error 
 	now := time.Now()
 
 	if req.Config != nil {
-		ver := int64(1)
-		if s.coreConfig != nil {
-			ver = s.coreConfig.Version + 1
-		}
 		s.coreConfig = &core.ConfigEntry{
 			Config:    req.Config.DeepCopy(),
-			Version:   ver,
+			Version:   nextVersion(s.coreConfig),
 			UpdatedAt: now,
 		}
 	}
 
-	for name, entry := range s.outputs {
-		if entry.Provisioned {
-			if _, exists := req.Outputs[name]; !exists {
-				delete(s.outputs, name)
+	if !req.DisableDeletion {
+		for name, entry := range s.outputs {
+			if entry.Provisioned {
+				if _, exists := req.Outputs[name]; !exists {
+					delete(s.outputs, name)
+				}
 			}
 		}
 	}
 
 	for name, cfg := range req.Outputs {
-		ver := int64(1)
-		if existing, ok := s.outputs[name]; ok {
-			ver = existing.Version + 1
-		}
-		s.outputs[name] = core.OutputConfigEntry{
+		s.outputs[name] = &core.OutputConfigEntry{
 			Name:        name,
 			Config:      utils.DeepCopyMap(cfg),
-			Version:     ver,
+			Version:     nextVersion(s.outputs[name]),
 			Provisioned: true,
 			UpdatedAt:   now,
 		}
@@ -98,11 +92,7 @@ func (s *Memory) GetConfig(_ context.Context) (*core.ConfigEntry, error) {
 	if s.coreConfig == nil {
 		return nil, nil
 	}
-	entry := *s.coreConfig
-	if entry.Config != nil {
-		entry.Config = entry.Config.DeepCopy()
-	}
-	return &entry, nil
+	return s.coreConfig.DeepCopy(), nil
 }
 
 // SaveConfig persists the core configuration.
@@ -110,27 +100,22 @@ func (s *Memory) SaveConfig(_ context.Context, cfg *core.Config) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	ver := int64(1)
-	if s.coreConfig != nil {
-		ver = s.coreConfig.Version + 1
-	}
 	s.coreConfig = &core.ConfigEntry{
 		Config:    cfg.DeepCopy(),
-		Version:   ver,
+		Version:   nextVersion(s.coreConfig),
 		UpdatedAt: time.Now(),
 	}
 	return nil
 }
 
 // GetOutputConfigs returns a defensive copy of all output entries.
-func (s *Memory) GetOutputConfigs(_ context.Context) (map[string]core.OutputConfigEntry, error) {
+func (s *Memory) GetOutputConfigs(_ context.Context) (map[string]*core.OutputConfigEntry, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	result := make(map[string]core.OutputConfigEntry, len(s.outputs))
+	result := make(map[string]*core.OutputConfigEntry, len(s.outputs))
 	for k, v := range s.outputs {
-		v.Config = utils.DeepCopyMap(v.Config)
-		result[k] = v
+		result[k] = v.DeepCopy()
 	}
 	return result, nil
 }
@@ -146,37 +131,36 @@ func (s *Memory) GetOutputConfig(_ context.Context, name string) (*core.OutputCo
 	if !ok {
 		return nil, nil
 	}
-	entry.Config = utils.DeepCopyMap(entry.Config)
-	return &entry, nil
+	return entry.DeepCopy(), nil
 }
 
-// SaveOutputConfig persists one output entry as non-provisioned.
+// SaveOutputConfig stores the config. Existing entries preserve the
+// Provisioned flag and bump Version; new entries start as Provisioned:false.
 func (s *Memory) SaveOutputConfig(_ context.Context, name string, cfg map[string]any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	ver := int64(1)
-	if existing, ok := s.outputs[name]; ok {
-		ver = existing.Version + 1
+	existing := s.outputs[name]
+	var provisioned bool
+	if existing != nil {
+		provisioned = existing.Provisioned
 	}
-	s.outputs[name] = core.OutputConfigEntry{
+	s.outputs[name] = &core.OutputConfigEntry{
 		Name:        name,
 		Config:      utils.DeepCopyMap(cfg),
-		Version:     ver,
-		Provisioned: false,
+		Version:     nextVersion(existing),
+		Provisioned: provisioned,
 		UpdatedAt:   time.Now(),
 	}
 	return nil
 }
 
-// DeleteOutputConfig removes one output entry.
+// DeleteOutputConfig removes one output entry. A miss returns nil; any
+// error return indicates a real backend failure.
 func (s *Memory) DeleteOutputConfig(_ context.Context, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.outputs[name]; !ok {
-		return fmt.Errorf("database: output %q not found", name)
-	}
 	delete(s.outputs, name)
 	return nil
 }
@@ -189,8 +173,7 @@ func (s *Memory) GetPipelineLayout(_ context.Context) (*core.PipelineLayout, err
 	if s.layout == nil {
 		return nil, nil
 	}
-	cp := *s.layout
-	return &cp, nil
+	return s.layout.DeepCopy(), nil
 }
 
 // SavePipelineLayout persists the UI pipeline node positions.
@@ -198,11 +181,9 @@ func (s *Memory) SavePipelineLayout(_ context.Context, layout *core.PipelineLayo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cp := *layout
+	cp := layout.DeepCopy()
 	cp.UpdatedAt = time.Now()
-	cp.Nodes = make([]core.LayoutNode, len(layout.Nodes))
-	copy(cp.Nodes, layout.Nodes)
-	s.layout = &cp
+	s.layout = cp
 	return nil
 }
 

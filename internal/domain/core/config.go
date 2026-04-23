@@ -26,14 +26,29 @@ import (
 // Config holds Sidekick core configuration settings
 // Loaded from sidekick.yaml. Requires restart on change.
 type Config struct {
-	TLS           *TLSConfig     `json:"tls,omitempty" mapstructure:"tls,omitempty"`
-	LogFormat     LogFormat      `json:"log_format" mapstructure:"log_format"`
-	LogLevel      LogLevel       `json:"log_level" mapstructure:"log_level"`
-	ListenAddress string         `json:"listen_address" mapstructure:"listen_address"`
-	Database      DatabaseConfig `json:"database" mapstructure:"database"`
-	UI            UIConfig       `json:"ui" mapstructure:"ui"`
-	Reload        ReloadConfig   `json:"reload" mapstructure:"reload"`
-	ListenPort    int            `json:"listen_port" mapstructure:"listen_port"`
+	TLS           *TLSConfig         `json:"tls,omitempty" mapstructure:"tls,omitempty"`
+	LogFormat     LogFormat          `json:"log_format" mapstructure:"log_format"`
+	LogLevel      LogLevel           `json:"log_level" mapstructure:"log_level"`
+	ListenAddress string             `json:"listen_address" mapstructure:"listen_address"`
+	Database      DatabaseConfig     `json:"database" mapstructure:"database"`
+	UI            UIConfig           `json:"ui" mapstructure:"ui"`
+	Reload        ReloadConfig       `json:"reload" mapstructure:"reload"`
+	Provisioning  ProvisioningConfig `json:"provisioning" mapstructure:"provisioning"`
+	ListenPort    int                `json:"listen_port" mapstructure:"listen_port"`
+}
+
+// ProvisioningConfig controls the interaction between file-based
+// provisioning and UI-driven writes. Both flags default to false.
+//   - AllowUIUpdates: when false, PUT/DELETE on Provisioned:true
+//     entries return 409. When true, UI writes are accepted on any
+//     entry; the next file reload restores the file version for
+//     file-provisioned names.
+//   - DisableDeletion: when false, Provisioned:true entries not in
+//     the file set are removed on reload. When true, they are kept
+//     in the database and continue running.
+type ProvisioningConfig struct {
+	AllowUIUpdates  bool `json:"allow_ui_updates" mapstructure:"allow_ui_updates"`
+	DisableDeletion bool `json:"disable_deletion" mapstructure:"disable_deletion"`
 }
 
 // Validate checks core configuration for errors. Does not validate TLS file

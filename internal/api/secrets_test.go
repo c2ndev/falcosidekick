@@ -60,7 +60,7 @@ func publicType(name string) output.Type {
 }
 
 func TestMaskOutputConfig_NoSecretSchemaFields(t *testing.T) {
-	entry := core.OutputConfigEntry{
+	entry := &core.OutputConfigEntry{
 		Name: "slack",
 		Config: map[string]any{
 			"url":     "https://hooks.slack.com/x",
@@ -76,7 +76,7 @@ func TestMaskOutputConfig_NoSecretSchemaFields(t *testing.T) {
 }
 
 func TestMaskOutputConfig_SecretFieldPresent(t *testing.T) {
-	entry := core.OutputConfigEntry{
+	entry := &core.OutputConfigEntry{
 		Name: "elasticsearch",
 		Config: map[string]any{
 			"url":      "https://es:9200",
@@ -91,7 +91,7 @@ func TestMaskOutputConfig_SecretFieldPresent(t *testing.T) {
 }
 
 func TestMaskOutputConfig_SecretFieldAbsent(t *testing.T) {
-	entry := core.OutputConfigEntry{
+	entry := &core.OutputConfigEntry{
 		Name: "elasticsearch",
 		Config: map[string]any{
 			"url": "https://es:9200",
@@ -107,7 +107,7 @@ func TestMaskOutputConfig_SecretFieldAbsent(t *testing.T) {
 }
 
 func TestMaskOutputConfig_MultipleSecretFields(t *testing.T) {
-	entry := core.OutputConfigEntry{
+	entry := &core.OutputConfigEntry{
 		Name: "elasticsearch",
 		Config: map[string]any{
 			"url":      "https://es:9200",
@@ -123,7 +123,7 @@ func TestMaskOutputConfig_MultipleSecretFields(t *testing.T) {
 }
 
 func TestMaskOutputConfig_UnknownType_MasksAllStrings(t *testing.T) {
-	entry := core.OutputConfigEntry{
+	entry := &core.OutputConfigEntry{
 		Name: "legacy",
 		Config: map[string]any{
 			"url":    "https://x",
@@ -140,7 +140,7 @@ func TestMaskOutputConfig_UnknownType_MasksAllStrings(t *testing.T) {
 }
 
 func TestMaskOutputConfig_CaseSensitiveMatch(t *testing.T) {
-	entry := core.OutputConfigEntry{
+	entry := &core.OutputConfigEntry{
 		Name: "weird",
 		Config: map[string]any{
 			"Password": "plaintext",
@@ -155,7 +155,7 @@ func TestMaskOutputConfig_CaseSensitiveMatch(t *testing.T) {
 }
 
 func TestMaskOutputConfig_DoesNotMutateInput(t *testing.T) {
-	entry := core.OutputConfigEntry{
+	entry := &core.OutputConfigEntry{
 		Name: "elasticsearch",
 		Config: map[string]any{
 			"password": "original",
@@ -169,7 +169,7 @@ func TestMaskOutputConfig_DoesNotMutateInput(t *testing.T) {
 }
 
 func TestMaskOutputConfig_NilConfig(t *testing.T) {
-	entry := core.OutputConfigEntry{Name: "x", Config: nil}
+	entry := &core.OutputConfigEntry{Name: "x", Config: nil}
 
 	masked := maskOutputConfig(entry, secretType("x"))
 
@@ -180,7 +180,7 @@ func TestMaskOutputConfigs_LooksUpPerType(t *testing.T) {
 	cat, err := catalog.New([]output.Type{secretType("elasticsearch"), publicType("slack")})
 	require.NoError(t, err)
 
-	entries := map[string]core.OutputConfigEntry{
+	entries := map[string]*core.OutputConfigEntry{
 		"elasticsearch": {Name: "elasticsearch", Config: map[string]any{"password": "x", "url": "u"}},
 		"slack":         {Name: "slack", Config: map[string]any{"url": "https://s", "channel": "#c"}},
 		"unknown":       {Name: "unknown", Config: map[string]any{"token": "t", "port": 80}},
@@ -221,4 +221,76 @@ func TestMaskCoreConfig_CopiesAndReturnsEquivalent(t *testing.T) {
 
 func TestMaskCoreConfig_Nil(t *testing.T) {
 	assert.Nil(t, maskCoreConfig(nil))
+}
+
+func nestedSecretType() output.Type {
+	return output.Type{
+		Name: "kafka",
+		New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
+			return nil, assert.AnError
+		},
+		Schema: output.Schema{
+			Fields: []output.SchemaField{
+				{Name: "topic", Type: "string"},
+				{Name: "auth.sasl", Type: "string"},
+				{Name: "auth.username", Type: "string"},
+				{Name: "auth.password", Type: "string", Secret: true},
+			},
+		},
+	}
+}
+
+func TestMaskOutputConfig_NestedSecretPath(t *testing.T) {
+	entry := &core.OutputConfigEntry{
+		Name: "kafka",
+		Config: map[string]any{
+			"topic": "falco-events",
+			"auth": map[string]any{
+				"sasl":     "plain",
+				"username": "alice",
+				"password": "real-password",
+			},
+		},
+	}
+
+	masked := maskOutputConfig(entry, nestedSecretType())
+
+	auth := masked.Config["auth"].(map[string]any)
+	assert.Equal(t, SecretMask, auth["password"], "nested auth.password must be masked")
+	assert.Equal(t, "plain", auth["sasl"], "non-secret nested siblings must not be touched")
+	assert.Equal(t, "alice", auth["username"])
+
+	origAuth := entry.Config["auth"].(map[string]any)
+	assert.Equal(t, "real-password", origAuth["password"], "original entry must not be mutated")
+}
+
+func TestMaskOutputConfig_NestedSecretPathAbsentParent(t *testing.T) {
+	entry := &core.OutputConfigEntry{
+		Name:   "kafka",
+		Config: map[string]any{"topic": "t"},
+	}
+	masked := maskOutputConfig(entry, nestedSecretType())
+	_, hasAuth := masked.Config["auth"]
+	assert.False(t, hasAuth, "absent parent must not be synthesized by the masker")
+}
+
+func TestContainsSecretPlaceholder_NestedPath(t *testing.T) {
+	cfg := map[string]any{
+		"topic": "t",
+		"auth": map[string]any{
+			"username": "alice",
+			"password": SecretMask,
+		},
+	}
+	field := containsSecretPlaceholder(cfg, nestedSecretType())
+	assert.Equal(t, "auth.password", field)
+}
+
+func TestContainsSecretPlaceholder_NestedPathAbsentIsSafe(t *testing.T) {
+	cfg := map[string]any{
+		"topic": "t",
+		"auth":  map[string]any{"username": "alice"},
+	}
+	assert.Empty(t, containsSecretPlaceholder(cfg, nestedSecretType()),
+		"absent nested secret is a valid keep-existing PUT; must not be rejected")
 }

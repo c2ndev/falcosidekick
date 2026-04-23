@@ -16,12 +16,40 @@
 
 package core
 
-// DeepCopy returns a deep copy of the Config, including pointer fields.
+import "github.com/falcosecurity/falcosidekick/internal/utils"
+
+// DeepCopy returns a deep copy of c.
 func (c *Config) DeepCopy() *Config {
 	cp := *c
 	if c.TLS != nil {
 		tlsCopy := *c.TLS
 		cp.TLS = &tlsCopy
+	}
+	return &cp
+}
+
+// DeepCopy returns a deep copy of e.
+func (e OutputConfigEntry) DeepCopy() *OutputConfigEntry {
+	cp := e
+	cp.Config = utils.DeepCopyMap(e.Config)
+	return &cp
+}
+
+// DeepCopy returns a deep copy of e.
+func (e *ConfigEntry) DeepCopy() *ConfigEntry {
+	cp := *e
+	if e.Config != nil {
+		cp.Config = e.Config.DeepCopy()
+	}
+	return &cp
+}
+
+// DeepCopy returns a deep copy of l.
+func (l *PipelineLayout) DeepCopy() *PipelineLayout {
+	cp := *l
+	if l.Nodes != nil {
+		cp.Nodes = make([]LayoutNode, len(l.Nodes))
+		copy(cp.Nodes, l.Nodes)
 	}
 	return &cp
 }

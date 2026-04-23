@@ -24,8 +24,11 @@ import (
 // Database persists all configuration. Dedicated and synchronous -
 // not an output, not in the pipeline.
 type Database interface {
-	// Provision writes file-based config into the store.
-	// Called at startup and on hot-reload. Marks entries as provisioned.
+	// Provision writes the file-based config into the store. Entries
+	// named in req.Outputs are upserted as Provisioned:true.
+	// Provisioned:true entries absent from req.Outputs are deleted
+	// unless req.DisableDeletion is true. Provisioned:false entries
+	// are preserved.
 	Provision(ctx context.Context, req *ProvisionRequest) error
 
 	// GetConfig returns the stored core configuration.
@@ -35,7 +38,7 @@ type Database interface {
 	SaveConfig(ctx context.Context, cfg *Config) error
 
 	// GetOutputConfigs returns all output configurations.
-	GetOutputConfigs(ctx context.Context) (map[string]OutputConfigEntry, error)
+	GetOutputConfigs(ctx context.Context) (map[string]*OutputConfigEntry, error)
 
 	// GetOutputConfig returns a single output configuration by name.
 	// Returns (nil, nil) when the named output does not exist. Any error
@@ -45,7 +48,9 @@ type Database interface {
 	// SaveOutputConfig persists one output configuration.
 	SaveOutputConfig(ctx context.Context, name string, cfg map[string]any) error
 
-	// DeleteOutputConfig removes one output configuration.
+	// DeleteOutputConfig removes one output configuration. A miss
+	// (no entry with that name) returns nil; any error return
+	// indicates a real backend failure.
 	DeleteOutputConfig(ctx context.Context, name string) error
 
 	// GetPipelineLayout returns the UI pipeline layout.
@@ -58,9 +63,13 @@ type Database interface {
 }
 
 // ProvisionRequest holds file-based config for initial provisioning.
+// DisableDeletion, when true, instructs Provision to preserve
+// Provisioned:true entries that are no longer present in Outputs
+// instead of deleting them.
 type ProvisionRequest struct {
-	Config  *Config
-	Outputs map[string]map[string]any
+	Config          *Config
+	Outputs         map[string]map[string]any
+	DisableDeletion bool
 }
 
 // OutputConfigEntry wraps an output config with metadata.
@@ -72,12 +81,18 @@ type OutputConfigEntry struct {
 	Provisioned bool           `json:"provisioned"`
 }
 
+// GetVersion returns the monotonic version of the entry.
+func (e OutputConfigEntry) GetVersion() int64 { return e.Version }
+
 // ConfigEntry wraps the core config with metadata.
 type ConfigEntry struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	Config    *Config   `json:"config"`
 	Version   int64     `json:"version"`
 }
+
+// GetVersion returns the monotonic version of the entry.
+func (e ConfigEntry) GetVersion() int64 { return e.Version }
 
 // PipelineLayout holds React Flow node positions for the UI.
 type PipelineLayout struct {

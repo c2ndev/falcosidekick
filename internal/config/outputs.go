@@ -21,17 +21,21 @@ import (
 	"os"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
-// OutputsConfig holds output definitions loaded from one or more output files.
+// OutputsConfig holds output definitions loaded from one or more output files and their paths.
 type OutputsConfig struct {
 	Outputs map[string]map[string]any `yaml:"outputs"`
+	Paths   []string                  `yaml:"-"`
 }
 
 // LoadOutputs reads output configurations from one or more YAML files.
 // Files are processed left-to-right; same output names deep-merge.
 func LoadOutputs(paths []string) (*OutputsConfig, error) {
 	merged := &OutputsConfig{
+		Paths:   paths,
 		Outputs: make(map[string]map[string]any),
 	}
 
@@ -57,39 +61,15 @@ func LoadOutputs(paths []string) (*OutputsConfig, error) {
 			return nil, fmt.Errorf("parse output config %q: %w", path, err)
 		}
 
-		mergeOutputs(merged.Outputs, partial.Outputs)
+		for name, srcCfg := range partial.Outputs {
+			dstCfg, exists := merged.Outputs[name]
+			if !exists {
+				merged.Outputs[name] = srcCfg
+				continue
+			}
+			utils.DeepMergeMap(dstCfg, srcCfg)
+		}
 	}
 
 	return merged, nil
-}
-
-// mergeOutputs deep-merges src output configs into dst by output name.
-func mergeOutputs(dst, src map[string]map[string]any) {
-	for name, srcCfg := range src {
-		dstCfg, exists := dst[name]
-		if !exists {
-			dst[name] = srcCfg
-			continue
-		}
-		deepMerge(dstCfg, srcCfg)
-	}
-}
-
-// deepMerge recursively merges src into dst. Maps recurse; scalars overwrite.
-func deepMerge(dst, src map[string]any) {
-	for key, srcVal := range src {
-		dstVal, exists := dst[key]
-		if !exists {
-			dst[key] = srcVal
-			continue
-		}
-
-		srcMap, srcOK := srcVal.(map[string]any)
-		dstMap, dstOK := dstVal.(map[string]any)
-		if srcOK && dstOK {
-			deepMerge(dstMap, srcMap)
-		} else {
-			dst[key] = srcVal
-		}
-	}
 }

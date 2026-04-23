@@ -18,9 +18,8 @@ package api
 
 import (
 	"bytes"
-	"context"
+	"compress/gzip"
 	"io"
-	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -44,27 +43,6 @@ func newUITestFS() fstest.MapFS {
 		"index.html":    {Data: []byte(uiTestIndexBody)},
 		"assets/app.js": {Data: []byte(uiTestAssetBody)},
 	}
-}
-
-func buildUITestServer(t *testing.T, assets fs.FS, registry *prometheus.Registry) *Server {
-	t.Helper()
-	enricher, err := pipeline.NewEnricher(output.EnricherConfig{
-		TruncateEventThreshold: 4096,
-		TruncateFieldThreshold: 512,
-	})
-	require.NoError(t, err)
-	p, err := pipeline.NewPipeline(enricher, pipeline.NewDispatcher(nil), nil)
-	require.NoError(t, err)
-	p.Start(context.Background(), func() {})
-
-	srv, err := NewServer(&ServerConfig{
-		Pipeline: p,
-		Catalog:  newTestCatalog(t),
-		UIAssets: assets,
-		Registry: registry,
-	})
-	require.NoError(t, err)
-	return srv
 }
 
 func TestRegisterStaticUI_NoAssets_NoInterception(t *testing.T) {
@@ -209,6 +187,38 @@ func TestRegisterStaticUI_AssetsPresent_HeadMirrorsGet(t *testing.T) {
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Contains(t, resp.Header.Get("Content-Type"), "text/html")
+}
+
+func TestRegisterStaticUI_AcceptEncodingGzip_Returns200(t *testing.T) {
+	srv := buildUITestServer(t, newUITestFS(), nil)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)
+	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"GET / with Accept-Encoding must return 200, not 405; real browsers always send Accept-Encoding")
+
+	body, readErr := io.ReadAll(resp.Body)
+	require.NoError(t, readErr)
+
+	switch resp.Header.Get("Content-Encoding") {
+	case "gzip":
+		gr, gzErr := gzip.NewReader(bytes.NewReader(body))
+		require.NoError(t, gzErr)
+		defer gr.Close()
+		decoded, decodeErr := io.ReadAll(gr)
+		require.NoError(t, decodeErr)
+		assert.Equal(t, uiTestIndexBody, string(decoded))
+	case "":
+		assert.Equal(t, uiTestIndexBody, string(body),
+			"response without Content-Encoding must be the uncompressed index body")
+	default:
+		assert.Equal(t, uiTestIndexBody, string(body),
+			"unexpected Content-Encoding %q; test only decodes gzip or identity", resp.Header.Get("Content-Encoding"))
+	}
 }
 
 func TestServerConfigUIAssetsOptional(t *testing.T) {
