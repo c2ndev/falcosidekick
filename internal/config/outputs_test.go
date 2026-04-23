@@ -23,6 +23,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
 func TestLoadOutputsSingleFile(t *testing.T) {
@@ -223,7 +225,7 @@ func TestDeepMerge(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			deepMerge(tt.dst, tt.src)
+			utils.DeepMergeMap(tt.dst, tt.src)
 			assert.Equal(t, tt.want, tt.dst)
 		})
 	}

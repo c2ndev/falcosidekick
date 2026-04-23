@@ -11,6 +11,9 @@ ui:
 database:
   backend: inmemory
 
+provisioning:
+  allow_ui_updates: true
+
 runtime_defaults:
   workers: 2
   queue_size: 1000

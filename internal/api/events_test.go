@@ -23,7 +23,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,81 +31,7 @@ import (
 
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
-	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
-	"github.com/falcosecurity/falcosidekick/internal/pipeline"
 )
-
-type fakeReadableStore struct {
-	testutil.MockDriver
-	SearchFn   func(ctx context.Context, q *output.SearchQuery) (*output.SearchResult, error)
-	CountFn    func(ctx context.Context, f *output.Filters) (int64, error)
-	CountByFn  func(ctx context.Context, field string, f *output.Filters) (map[string]int64, error)
-	GetEventFn func(ctx context.Context, uuid string) (*event.Event, error)
-
-	LastSearchQuery  *output.SearchQuery
-	LastCountFilters *output.Filters
-	LastCountByField string
-	LastGetEventUUID string
-	SearchCalls      atomic.Int32
-}
-
-func (f *fakeReadableStore) Search(ctx context.Context, q *output.SearchQuery) (*output.SearchResult, error) {
-	f.SearchCalls.Add(1)
-	f.LastSearchQuery = q
-	if f.SearchFn != nil {
-		return f.SearchFn(ctx, q)
-	}
-	return &output.SearchResult{Events: []event.Event{}, Page: q.Page, Limit: q.Limit}, nil
-}
-
-func (f *fakeReadableStore) Count(ctx context.Context, filters *output.Filters) (int64, error) {
-	f.LastCountFilters = filters
-	if f.CountFn != nil {
-		return f.CountFn(ctx, filters)
-	}
-	return 0, nil
-}
-
-func (f *fakeReadableStore) CountBy(ctx context.Context, field string, filters *output.Filters) (map[string]int64, error) {
-	f.LastCountByField = field
-	if f.CountByFn != nil {
-		return f.CountByFn(ctx, field, filters)
-	}
-	return nil, nil
-}
-
-func (f *fakeReadableStore) GetEvent(ctx context.Context, uuid string) (*event.Event, error) {
-	f.LastGetEventUUID = uuid
-	if f.GetEventFn != nil {
-		return f.GetEventFn(ctx, uuid)
-	}
-	return nil, nil
-}
-
-const testEventSourceName = "inmemory"
-
-func buildTestServerWithStore(t *testing.T, store *fakeReadableStore) *Server {
-	t.Helper()
-	store.DriverName = testEventSourceName
-	out := pipeline.NewOutput(store, &defaultTestOutputConfig, nil)
-
-	enricher, _ := pipeline.NewEnricher(output.EnricherConfig{
-		TruncateEventThreshold: 4096,
-		TruncateFieldThreshold: 512,
-	})
-	dispatcher := pipeline.NewDispatcher([]*pipeline.Output{out})
-	p, err := pipeline.NewPipeline(enricher, dispatcher, nil)
-	require.NoError(t, err)
-	p.Start(context.Background(), func() {})
-
-	srv, err := NewServer(&ServerConfig{
-		Pipeline:    p,
-		Catalog:     newTestCatalog(t),
-		EventSource: testEventSourceName,
-	})
-	require.NoError(t, err)
-	return srv
-}
 
 // --- splitCSV ---
 

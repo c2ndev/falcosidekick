@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
 func writeSecret(t *testing.T, content string) string {
@@ -197,7 +198,7 @@ func TestNavigateMap(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			parent, leaf := navigateMap(tt.m, tt.path)
+			parent, leaf := utils.NavigateMap(tt.m, tt.path)
 			if tt.wantParent {
 				assert.NotNil(t, parent)
 				assert.Equal(t, tt.wantLeaf, leaf)

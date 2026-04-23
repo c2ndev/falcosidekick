@@ -28,6 +28,9 @@ import (
 // registerStaticUI installs the static-asset middleware on app when assets
 // is non-nil. API and operator paths (/api/**, /healthz, /version, /metrics)
 // are always skipped so they remain served by their explicit handlers.
+// Response compression is handled globally by compress.New in mountRoutes;
+// static.Config.Compress is left off because it requires pre-compressed
+// files on disk (.gz/.br/.zst) which the embedded FS does not provide.
 func registerStaticUI(app *fiber.App, assets fs.FS) {
 	if assets == nil {
 		return
@@ -36,7 +39,6 @@ func registerStaticUI(app *fiber.App, assets fs.FS) {
 		FS:            assets,
 		IndexNames:    []string{"index.html"},
 		CacheDuration: 10 * time.Second,
-		Compress:      true,
 		Next:          skipAPIPaths,
 	}))
 }

@@ -25,6 +25,26 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
 )
 
+// DefaultRuntimeConfig returns the runtime defaults shared across
+// api, reload, and pipeline tests.
+func DefaultRuntimeConfig() output.RuntimeConfig {
+	return output.RuntimeConfig{
+		QueueSize: 100,
+		Workers:   1,
+		Retry: &output.RetryConfig{
+			MaxAttempts:     1,
+			InitialInterval: 10 * time.Millisecond,
+			MaxInterval:     100 * time.Millisecond,
+			Multiplier:      2.0,
+		},
+		CircuitBreaker: &output.CircuitBreakerConfig{
+			FailureThreshold: 5,
+			SuccessThreshold: 2,
+			ResetTimeout:     30 * time.Second,
+		},
+	}
+}
+
 // CreateValidEvent returns a complete test event.
 func CreateValidEvent() *event.Event {
 	return &event.Event{

@@ -122,16 +122,16 @@ func run(parentCtx context.Context, configPath string, outputPaths []string) err
 		}
 	}
 
-	a, err := buildApp(appCtx, cfg, outsCfg, outputPaths, collector, cat)
+	app, err := NewApp(appCtx, cfg, outsCfg, collector, cat, logger)
 	if err != nil {
 		return err
 	}
 
-	a.pipe.Start(workerRunCtx, stopWorkers)
-	a.startReloadWatchers(appCtx, workerRunCtx, outputPaths, cfg.Reload)
+	app.pipe.Start(workerRunCtx, stopWorkers)
+	app.startReloadWatchers(appCtx, workerRunCtx, outsCfg.Paths, cfg.Reload)
 
 	serverErr := make(chan error, 1)
-	a.serve(serverErr)
+	app.serve(serverErr)
 
 	select {
 	case <-appCtx.Done():
@@ -142,7 +142,7 @@ func run(parentCtx context.Context, configPath string, outputPaths []string) err
 	}
 
 	slog.Info("shutting down")
-	a.shutdown()
+	app.shutdown()
 
 	return err
 }

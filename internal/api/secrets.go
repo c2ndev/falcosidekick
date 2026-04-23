@@ -31,37 +31,41 @@ const SecretMask = "****"
 // maskOutputConfig returns a copy with fields flagged Secret in the
 // schema replaced by SecretMask. When t.Name == "" every string value
 // is masked as a conservative fallback.
-func maskOutputConfig(entry core.OutputConfigEntry, t output.Type) core.OutputConfigEntry {
-	entry.Config = utils.DeepCopyMap(entry.Config)
-	if entry.Config == nil {
-		return entry
+func maskOutputConfig(entry *core.OutputConfigEntry, t output.Type) *core.OutputConfigEntry {
+	masked := entry.DeepCopy()
+	if masked.Config == nil {
+		return masked
 	}
 
 	if t.Name == "" {
-		for k, v := range entry.Config {
+		for k, v := range masked.Config {
 			if _, ok := v.(string); ok {
-				entry.Config[k] = SecretMask
+				masked.Config[k] = SecretMask
 			}
 		}
-		return entry
+		return masked
 	}
 
 	for _, f := range t.Schema.Fields {
 		if !f.Secret {
 			continue
 		}
-		if _, ok := entry.Config[f.Name]; ok {
-			entry.Config[f.Name] = SecretMask
+		parent, leaf := utils.NavigateMap(masked.Config, f.Name)
+		if parent == nil {
+			continue
+		}
+		if _, ok := parent[leaf]; ok {
+			parent[leaf] = SecretMask
 		}
 	}
-	return entry
+	return masked
 }
 
-func maskOutputConfigs(entries map[string]core.OutputConfigEntry, cat *catalog.Catalog) map[string]core.OutputConfigEntry {
+func maskOutputConfigs(entries map[string]*core.OutputConfigEntry, cat *catalog.Catalog) map[string]*core.OutputConfigEntry {
 	if entries == nil {
 		return nil
 	}
-	result := make(map[string]core.OutputConfigEntry, len(entries))
+	result := make(map[string]*core.OutputConfigEntry, len(entries))
 	for name, entry := range entries {
 		t, _ := cat.Get(name)
 		result[name] = maskOutputConfig(entry, t)
@@ -74,4 +78,36 @@ func maskCoreConfig(cfg *core.Config) *core.Config {
 		return nil
 	}
 	return cfg.DeepCopy()
+}
+
+// containsSecretPlaceholder returns the name of the first schema-marked
+// Secret field in cfg whose value equals SecretMask. The empty string
+// return means no secret-sentinel is present and the body is safe to
+// accept. When t.Name == "" (unknown type) any string value equal to
+// SecretMask triggers the rejection as a conservative fallback.
+func containsSecretPlaceholder(cfg map[string]any, t output.Type) string {
+	if cfg == nil {
+		return ""
+	}
+	if t.Name == "" {
+		for k, v := range cfg {
+			if s, ok := v.(string); ok && s == SecretMask {
+				return k
+			}
+		}
+		return ""
+	}
+	for _, f := range t.Schema.Fields {
+		if !f.Secret {
+			continue
+		}
+		parent, leaf := utils.NavigateMap(cfg, f.Name)
+		if parent == nil {
+			continue
+		}
+		if s, ok := parent[leaf].(string); ok && s == SecretMask {
+			return f.Name
+		}
+	}
+	return ""
 }

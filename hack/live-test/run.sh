@@ -205,11 +205,41 @@ else
   curl_ok "http://127.0.0.1:$LOCAL_PORT/api/v1/pipeline/status" 2>&1 | sed 's/^/    /' >&2 || true
 fi
 
-log "9/9 UI shell"
-if body=$(curl_ok "http://127.0.0.1:$LOCAL_PORT/") && [[ -n "$body" ]] && [[ "$body" == *'<html'* ]]; then
-  log "  ok: GET / returned UI HTML shell [criterion 8]"
+log "9/10 UI shell (browser-shape request)"
+if decoded=$(curl -sS --compressed -H "Accept-Encoding: gzip" "http://127.0.0.1:$LOCAL_PORT/") && [[ "$decoded" == *'<html'* ]]; then
+  log "  ok: GET / with Accept-Encoding returned UI HTML shell [criterion 8]"
 else
-  fail "GET / did not return HTML (variant may be slim; set V3_TAG=v3-local-slim to skip this criterion)"
+  fail "GET / with Accept-Encoding did not return decoded HTML (variant may be slim; set V3_TAG=v3-local-slim to skip this criterion)"
+fi
+
+log "10/10 UI-driven output PUT (updates provisioned webhook under allow_ui_updates=true; next file reload would restore the file version)"
+UI_WRITE_WAIT="${V3_UI_WRITE_WAIT:-10}"
+pre_ui_sent="$(webhook_sent_total)"
+put_resp=$(curl -sS -w '\n%{http_code}' -X PUT \
+  -H "Content-Type: application/json" \
+  -d '{"config":{"method":"POST"}}' \
+  "http://127.0.0.1:$LOCAL_PORT/api/v1/pipeline/outputs/webhook" || true)
+status=$(echo "$put_resp" | tail -n1)
+if [[ "$status" == "200" ]]; then
+  log "  ok: PUT /api/v1/pipeline/outputs/webhook -> 200 [criterion 9a]"
+  start_ts=$(date +%s)
+  while :; do
+    sleep 1
+    curl -sS -X POST -H 'Content-Type: application/json' \
+      -d "$(printf '{"time":"%s","output":"ui-apply-probe","priority":"Error","rule":"ui-apply","source":"test"}' "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)")" \
+      "http://127.0.0.1:$LOCAL_PORT/" >/dev/null 2>&1 || true
+    new_sent="$(webhook_sent_total)"
+    if [[ "$new_sent" -gt "$pre_ui_sent" ]]; then
+      log "  ok: UI-updated webhook output delivered events (sent_total ${pre_ui_sent} -> ${new_sent}) [criterion 9b]"
+      break
+    fi
+    if (( $(date +%s) - start_ts >= UI_WRITE_WAIT )); then
+      fail "UI-updated webhook output did not deliver any event within ${UI_WRITE_WAIT}s (baseline=${pre_ui_sent})"
+      break
+    fi
+  done
+else
+  fail "PUT /api/v1/pipeline/outputs/webhook returned '$status' (expected 200)"
 fi
 
 if [[ "$FAIL" -gt 0 ]]; then

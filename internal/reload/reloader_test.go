@@ -18,6 +18,7 @@ package reload
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -33,6 +34,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/falcosecurity/falcosidekick/internal/catalog"
+	"github.com/falcosecurity/falcosidekick/internal/database"
+	databasetestutil "github.com/falcosecurity/falcosidekick/internal/database/testutil"
 	"github.com/falcosecurity/falcosidekick/internal/domain/core"
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
@@ -62,33 +65,12 @@ func failingInitOutputType(name string) output.Type {
 			Fields: []output.SchemaField{},
 		},
 		New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
-			return &failingInitDriver{MockDriver: testutil.MockDriver{DriverName: name}}, nil
-		},
-	}
-}
-
-type failingInitDriver struct {
-	testutil.MockDriver
-}
-
-func (d *failingInitDriver) Init(_ context.Context) error {
-	return fmt.Errorf("init failed for %s", d.DriverName)
-}
-
-func testRuntimeDefaults() output.RuntimeConfig {
-	return output.RuntimeConfig{
-		QueueSize: 100,
-		Workers:   1,
-		Retry: &output.RetryConfig{
-			MaxAttempts:     1,
-			InitialInterval: 10 * time.Millisecond,
-			MaxInterval:     100 * time.Millisecond,
-			Multiplier:      2.0,
-		},
-		CircuitBreaker: &output.CircuitBreakerConfig{
-			FailureThreshold: 5,
-			SuccessThreshold: 2,
-			ResetTimeout:     30 * time.Second,
+			return &testutil.MockDriver{
+				DriverName: name,
+				InitFunc: func(_ context.Context) error {
+					return fmt.Errorf("init failed for %s", name)
+				},
+			}, nil
 		},
 	}
 }
@@ -141,7 +123,7 @@ func TestReloaderSuccessAddOutput(t *testing.T) {
 		OutputPaths:     []string{path},
 		Catalog:         cat,
 		Dispatcher:      env.d,
-		RuntimeDefaults: testRuntimeDefaults(),
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
 		Deps:            output.Deps{Logger: slog.Default()},
 		Logger:          slog.Default(),
 		InitialOutputs:  map[string]map[string]any{},
@@ -183,7 +165,7 @@ func TestReloaderSuccessRemoveOutput(t *testing.T) {
 		OutputPaths:     []string{path},
 		Catalog:         cat,
 		Dispatcher:      env.d,
-		RuntimeDefaults: testRuntimeDefaults(),
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
 		Deps:            output.Deps{Logger: slog.Default()},
 		Logger:          slog.Default(),
 		InitialOutputs:  map[string]map[string]any{"slack": {"webhook_url": "old"}},
@@ -213,7 +195,7 @@ func TestReloaderNoChangeIsNoop(t *testing.T) {
 		OutputPaths:     []string{path},
 		Catalog:         cat,
 		Dispatcher:      env.d,
-		RuntimeDefaults: testRuntimeDefaults(),
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
 		Deps:            output.Deps{Logger: slog.Default()},
 		Logger:          slog.Default(),
 		InitialOutputs:  initial,
@@ -239,7 +221,7 @@ func TestReloaderParseErrorKeepsOldConfig(t *testing.T) {
 		OutputPaths:     []string{path},
 		Catalog:         cat,
 		Dispatcher:      env.d,
-		RuntimeDefaults: testRuntimeDefaults(),
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
 		Deps:            output.Deps{Logger: slog.Default()},
 		Logger:          slog.Default(),
 		InitialOutputs:  map[string]map[string]any{"slack": {"webhook_url": "old"}},
@@ -267,7 +249,7 @@ func TestReloaderUnknownOutputKeepsOldConfig(t *testing.T) {
 		OutputPaths:     []string{path},
 		Catalog:         cat,
 		Dispatcher:      env.d,
-		RuntimeDefaults: testRuntimeDefaults(),
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
 		Deps:            output.Deps{Logger: slog.Default()},
 		Logger:          slog.Default(),
 		InitialOutputs:  map[string]map[string]any{},
@@ -295,7 +277,7 @@ func TestReloaderConcurrentReloadsSerialized(t *testing.T) {
 		OutputPaths:     []string{path},
 		Catalog:         cat,
 		Dispatcher:      env.d,
-		RuntimeDefaults: testRuntimeDefaults(),
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
 		Deps:            output.Deps{Logger: slog.Default()},
 		Logger:          slog.Default(),
 		InitialOutputs:  map[string]map[string]any{},
@@ -342,7 +324,7 @@ func TestReloaderChangedOutputTriggersReplace(t *testing.T) {
 		OutputPaths:     []string{path},
 		Catalog:         cat,
 		Dispatcher:      env.d,
-		RuntimeDefaults: testRuntimeDefaults(),
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
 		Deps:            output.Deps{Logger: slog.Default()},
 		Logger:          slog.Default(),
 		InitialOutputs:  initial,
@@ -399,7 +381,7 @@ func TestReloaderInitFailureClosesPartialOutputs(t *testing.T) {
 		OutputPaths:     []string{path},
 		Catalog:         cat,
 		Dispatcher:      env.d,
-		RuntimeDefaults: testRuntimeDefaults(),
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
 		Deps:            output.Deps{Logger: slog.Default()},
 		Logger:          slog.Default(),
 		InitialOutputs:  map[string]map[string]any{},
@@ -420,34 +402,6 @@ const (
 	metricReloadPartial     = "falcosidekick_reload_partial_total"
 	metricReloadLastSuccess = "falcosidekick_reload_last_success_timestamp"
 )
-
-// mockDatabase implements core.Database for testing reload DB sync paths.
-type mockDatabase struct {
-	provisionErr error
-}
-
-func (m *mockDatabase) Provision(_ context.Context, _ *core.ProvisionRequest) error {
-	return m.provisionErr
-}
-func (m *mockDatabase) GetConfig(_ context.Context) (*core.ConfigEntry, error) { return nil, nil }
-func (m *mockDatabase) SaveConfig(_ context.Context, _ *core.Config) error     { return nil }
-func (m *mockDatabase) GetOutputConfigs(_ context.Context) (map[string]core.OutputConfigEntry, error) {
-	return nil, nil
-}
-func (m *mockDatabase) GetOutputConfig(_ context.Context, _ string) (*core.OutputConfigEntry, error) {
-	return nil, nil
-}
-func (m *mockDatabase) SaveOutputConfig(_ context.Context, _ string, _ map[string]any) error {
-	return nil
-}
-func (m *mockDatabase) DeleteOutputConfig(_ context.Context, _ string) error { return nil }
-func (m *mockDatabase) GetPipelineLayout(_ context.Context) (*core.PipelineLayout, error) {
-	return nil, nil
-}
-func (m *mockDatabase) SavePipelineLayout(_ context.Context, _ *core.PipelineLayout) error {
-	return nil
-}
-func (m *mockDatabase) Close() error { return nil }
 
 // getMetricValue extracts a counter or gauge value from a gathered metric family.
 func getMetricValue(gathered []*dto.MetricFamily, name string) float64 {
@@ -518,7 +472,7 @@ func TestReloaderReplaceRetireTimeoutKeepsLiveReplacement(t *testing.T) {
 		OutputPaths:     []string{path},
 		Catalog:         cat,
 		Dispatcher:      env.d,
-		RuntimeDefaults: testRuntimeDefaults(),
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
 		Deps:            output.Deps{Logger: slog.Default()},
 		Registry:        reg,
 		Logger:          slog.Default(),
@@ -536,7 +490,7 @@ func TestReloaderReplaceRetireTimeoutKeepsLiveReplacement(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	assert.GreaterOrEqual(t, newSendCalls.Load(), int64(1), "live replacement must receive events")
 
-	assert.Equal(t, "http://changed", r.current["myout"]["url"], "current state must reflect new config")
+	assert.Equal(t, "http://changed", r.fileState["myout"]["url"], "file state must reflect new config")
 
 	gathered, gatherErr := reg.Gather()
 	require.NoError(t, gatherErr)
@@ -578,7 +532,7 @@ func TestReloaderRemoveRetireTimeoutIsWarning(t *testing.T) {
 		OutputPaths:     []string{path},
 		Catalog:         cat,
 		Dispatcher:      env.d,
-		RuntimeDefaults: testRuntimeDefaults(),
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
 		Deps:            output.Deps{Logger: slog.Default()},
 		Logger:          slog.Default(),
 		InitialOutputs:  map[string]map[string]any{"myout": {"url": "http://old"}},
@@ -627,7 +581,7 @@ func TestReloaderRejectsDuringShutdown(t *testing.T) {
 		OutputPaths:     []string{path},
 		Catalog:         cat,
 		Dispatcher:      env.d,
-		RuntimeDefaults: testRuntimeDefaults(),
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
 		Deps:            output.Deps{Logger: slog.Default()},
 		Registry:        reg,
 		Logger:          slog.Default(),
@@ -642,7 +596,7 @@ func TestReloaderRejectsDuringShutdown(t *testing.T) {
 	assert.Contains(t, err.Error(), "dispatcher stopped")
 
 	assert.True(t, closeCalled.Load(), "orphaned output must be closed on rejection")
-	assert.Empty(t, r.current, "current state must not be updated on rejected reload")
+	assert.Empty(t, r.fileState, "file state must not be updated on rejected reload")
 
 	gathered, gatherErr := reg.Gather()
 	require.NoError(t, gatherErr)
@@ -673,7 +627,7 @@ func TestReloadNoOpCountsAsAttempt(t *testing.T) {
 		OutputPaths:     []string{path},
 		Catalog:         cat,
 		Dispatcher:      env.d,
-		RuntimeDefaults: testRuntimeDefaults(),
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
 		Deps:            output.Deps{Logger: slog.Default()},
 		Registry:        reg,
 		Logger:          slog.Default(),
@@ -703,13 +657,13 @@ func TestReloaderSuccessWithDBSync(t *testing.T) {
 	defer env.shutdown(t)
 
 	reg := prometheus.NewRegistry()
-	db := &mockDatabase{}
+	db := &databasetestutil.Mock{}
 	r := NewReloader(&ReloaderConfig{
 		OutputPaths:     []string{path},
 		Catalog:         cat,
 		Dispatcher:      env.d,
 		Database:        db,
-		RuntimeDefaults: testRuntimeDefaults(),
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
 		Deps:            output.Deps{Logger: slog.Default()},
 		Registry:        reg,
 		Logger:          slog.Default(),
@@ -720,7 +674,7 @@ func TestReloaderSuccessWithDBSync(t *testing.T) {
 	defer cancel()
 	require.NoError(t, r.Reload(reloadCtx, env.workerRunCtx, 10*time.Second))
 
-	assert.Contains(t, r.current, "slack", "current state must include new output")
+	assert.Contains(t, r.fileState, "slack", "file state must include new output")
 
 	gathered, gatherErr := reg.Gather()
 	require.NoError(t, gatherErr)
@@ -742,13 +696,13 @@ func TestReloaderPartialSuccessDBSyncFailure(t *testing.T) {
 	defer env.shutdown(t)
 
 	reg := prometheus.NewRegistry()
-	db := &mockDatabase{provisionErr: fmt.Errorf("db provision failed")}
+	db := &databasetestutil.Mock{ProvisionErr: fmt.Errorf("db provision failed")}
 	r := NewReloader(&ReloaderConfig{
 		OutputPaths:     []string{path},
 		Catalog:         cat,
 		Dispatcher:      env.d,
 		Database:        db,
-		RuntimeDefaults: testRuntimeDefaults(),
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
 		Deps:            output.Deps{Logger: slog.Default()},
 		Registry:        reg,
 		Logger:          slog.Default(),
@@ -761,7 +715,7 @@ func TestReloaderPartialSuccessDBSyncFailure(t *testing.T) {
 	// Reload returns nil because runtime accepted the new config even though DB failed.
 	require.NoError(t, r.Reload(reloadCtx, env.workerRunCtx, 10*time.Second))
 
-	assert.Contains(t, r.current, "slack", "current state must reflect new config despite DB failure")
+	assert.Contains(t, r.fileState, "slack", "file state must reflect new config despite DB failure")
 
 	gathered, gatherErr := reg.Gather()
 	require.NoError(t, gatherErr)
@@ -769,4 +723,563 @@ func TestReloaderPartialSuccessDBSyncFailure(t *testing.T) {
 	assert.Equal(t, float64(0), getMetricValue(gathered, metricReloadFailures), "reload_failures_total must be 0")
 	assert.Equal(t, float64(1), getMetricValue(gathered, metricReloadPartial), "reload_partial_total must be 1")
 	assert.Equal(t, float64(0), getLastSuccessTimestamp(gathered), "reload_last_success_timestamp must NOT be updated on partial")
+}
+
+// newApplyReloader builds a Reloader suitable for ApplyOutput/RemoveOutput tests.
+// db may be nil for tests that do not exercise the non-file-provisioned
+// (Provisioned:false) apply path.
+func newApplyReloader(t *testing.T, cat *catalog.Catalog, env *reloaderTestEnv, initial map[string]map[string]any) *Reloader {
+	t.Helper()
+	r := NewReloader(&ReloaderConfig{
+		OutputPaths:     nil,
+		Catalog:         cat,
+		Dispatcher:      env.d,
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
+		Deps:            output.Deps{Logger: slog.Default()},
+		Logger:          slog.Default(),
+		InitialOutputs:  initial,
+	})
+	r.BindWorkerContext(env.workerRunCtx, 2*time.Second)
+	return r
+}
+
+func TestReloaderApplyOutput_RequiresBind(t *testing.T) {
+	cat, err := catalog.New([]output.Type{stubOutputType("slack", nil)})
+	require.NoError(t, err)
+
+	env := newReloaderTestEnv(t, nil)
+	defer env.shutdown(t)
+
+	r := NewReloader(&ReloaderConfig{
+		Catalog:         cat,
+		Dispatcher:      env.d,
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
+		Deps:            output.Deps{Logger: slog.Default()},
+		Logger:          slog.Default(),
+		InitialOutputs:  map[string]map[string]any{},
+	})
+
+	err = r.ApplyOutput(context.Background(), "slack", map[string]any{"webhook_url": "x"})
+	require.ErrorIs(t, err, ErrReloaderNotBound)
+
+	err = r.RemoveOutput(context.Background(), "slack")
+	require.ErrorIs(t, err, ErrReloaderNotBound)
+}
+
+func TestReloaderBindWorkerContext_PanicsOnSecondCall(t *testing.T) {
+	env := newReloaderTestEnv(t, nil)
+	defer env.shutdown(t)
+
+	cat, err := catalog.New([]output.Type{stubOutputType("slack", nil)})
+	require.NoError(t, err)
+
+	r := NewReloader(&ReloaderConfig{
+		Catalog: cat, Dispatcher: env.d,
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
+		Deps:            output.Deps{Logger: slog.Default()},
+		Logger:          slog.Default(),
+	})
+	r.BindWorkerContext(env.workerRunCtx, time.Second)
+
+	assert.Panics(t, func() {
+		r.BindWorkerContext(env.workerRunCtx, time.Second)
+	})
+}
+
+func TestReloaderApplyOutput_AddsNewOutput(t *testing.T) {
+	var slackCalls atomic.Int64
+	cat, err := catalog.New([]output.Type{
+		stubOutputType("slack", func(_ context.Context, _ *event.Event) error {
+			slackCalls.Add(1)
+			return nil
+		}),
+	})
+	require.NoError(t, err)
+
+	env := newReloaderTestEnv(t, nil)
+	defer env.shutdown(t)
+
+	r := newApplyReloader(t, cat, env, map[string]map[string]any{})
+
+	require.NoError(t, r.ApplyOutput(context.Background(), "slack", map[string]any{"webhook_url": "https://hooks.slack.com/ui"}))
+
+	assert.Contains(t, env.d.OutputNames(), "slack", "ApplyOutput must add the output to the dispatcher")
+
+	env.d.DispatchEvent(&event.Event{Priority: event.PriorityError, Rule: "t", Source: "t"})
+	env.shutdown(t)
+	assert.Equal(t, int64(1), slackCalls.Load())
+}
+
+func TestReloaderApplyOutput_ReplacesExistingOutput(t *testing.T) {
+	cat, err := catalog.New([]output.Type{stubOutputType("slack", nil)})
+	require.NoError(t, err)
+
+	initialOut := pipeline.NewOutput(&testutil.MockDriver{DriverName: "slack"}, &output.RuntimeConfig{
+		QueueSize: 100, Workers: 1,
+		Retry:          &output.RetryConfig{MaxAttempts: 1, InitialInterval: time.Millisecond, MaxInterval: time.Millisecond, Multiplier: 1},
+		CircuitBreaker: &output.CircuitBreakerConfig{FailureThreshold: 5, SuccessThreshold: 2, ResetTimeout: time.Second},
+	}, nil)
+	env := newReloaderTestEnv(t, []*pipeline.Output{initialOut})
+	defer env.shutdown(t)
+
+	r := newApplyReloader(t, cat, env, map[string]map[string]any{"slack": {"webhook_url": "old"}})
+
+	require.NoError(t, r.ApplyOutput(context.Background(), "slack", map[string]any{"webhook_url": "new"}))
+
+	assert.Contains(t, env.d.OutputNames(), "slack")
+}
+
+func TestReloaderApplyOutput_UnknownTypeRejected(t *testing.T) {
+	cat, err := catalog.New([]output.Type{stubOutputType("slack", nil)})
+	require.NoError(t, err)
+
+	env := newReloaderTestEnv(t, nil)
+	defer env.shutdown(t)
+
+	r := newApplyReloader(t, cat, env, map[string]map[string]any{})
+
+	err = r.ApplyOutput(context.Background(), "not-a-real-output", map[string]any{})
+	require.ErrorIs(t, err, ErrUnknownOutputType)
+	assert.Empty(t, env.d.OutputNames(), "dispatcher must not gain the unknown output")
+}
+
+func TestReloaderApplyOutput_InitFailureLeavesStateUnchanged(t *testing.T) {
+	cat, err := catalog.New([]output.Type{failingInitOutputType("broken")})
+	require.NoError(t, err)
+
+	env := newReloaderTestEnv(t, nil)
+	defer env.shutdown(t)
+
+	r := newApplyReloader(t, cat, env, map[string]map[string]any{})
+
+	err = r.ApplyOutput(context.Background(), "broken", map[string]any{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "apply init")
+	assert.Empty(t, env.d.OutputNames(), "dispatcher must be untouched on Init failure")
+}
+
+func TestReloaderRemoveOutput_RemovesFromDispatcher(t *testing.T) {
+	cat, err := catalog.New([]output.Type{stubOutputType("slack", nil)})
+	require.NoError(t, err)
+
+	initialOut := pipeline.NewOutput(&testutil.MockDriver{DriverName: "slack"}, &output.RuntimeConfig{
+		QueueSize: 100, Workers: 1,
+		Retry:          &output.RetryConfig{MaxAttempts: 1, InitialInterval: time.Millisecond, MaxInterval: time.Millisecond, Multiplier: 1},
+		CircuitBreaker: &output.CircuitBreakerConfig{FailureThreshold: 5, SuccessThreshold: 2, ResetTimeout: time.Second},
+	}, nil)
+	env := newReloaderTestEnv(t, []*pipeline.Output{initialOut})
+	defer env.shutdown(t)
+
+	r := newApplyReloader(t, cat, env, map[string]map[string]any{"slack": {"webhook_url": "x"}})
+
+	require.NoError(t, r.RemoveOutput(context.Background(), "slack"))
+	assert.NotContains(t, env.d.OutputNames(), "slack", "RemoveOutput must drop the output from the dispatcher")
+}
+
+func TestReloaderRemoveOutput_MissIsNoop(t *testing.T) {
+	cat, err := catalog.New([]output.Type{stubOutputType("slack", nil)})
+	require.NoError(t, err)
+
+	env := newReloaderTestEnv(t, nil)
+	defer env.shutdown(t)
+
+	r := newApplyReloader(t, cat, env, map[string]map[string]any{})
+
+	require.NoError(t, r.RemoveOutput(context.Background(), "never-existed"), "RemoveOutput on a missing name must be a no-op")
+}
+
+// TestReloaderApplyThenReload_FileWinsOverUIEdit encodes the
+// file-authoritative contract: UI edits to a file-provisioned name are
+// accepted by the runtime and the database, but the next file reload
+// is authoritative and restores the file version via ReplaceOutput.
+func TestReloaderApplyThenReload_FileWinsOverUIEdit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "outputs.yaml")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: file-value\n")
+
+	cat, err := catalog.New([]output.Type{stubOutputType("slack", nil)})
+	require.NoError(t, err)
+
+	env := newReloaderTestEnv(t, nil)
+	defer env.shutdown(t)
+
+	db := &databasetestutil.Mock{Outputs: map[string]*core.OutputConfigEntry{
+		"slack": {Name: "slack", Config: map[string]any{"webhook_url": "file-value"}, Provisioned: true},
+	}}
+
+	r := NewReloader(&ReloaderConfig{
+		OutputPaths:     []string{path},
+		Catalog:         cat,
+		Dispatcher:      env.d,
+		Database:        db,
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
+		Deps:            output.Deps{Logger: slog.Default()},
+		Logger:          slog.Default(),
+		InitialOutputs:  map[string]map[string]any{"slack": {"webhook_url": "file-value"}},
+	})
+	r.BindWorkerContext(env.workerRunCtx, time.Second)
+
+	applyCtx, applyCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer applyCancel()
+	require.NoError(t, r.ApplyOutput(applyCtx, "slack", map[string]any{"webhook_url": "ui-value"}))
+	require.Contains(t, env.d.OutputNames(), "slack")
+	require.Equal(t, map[string]any{"webhook_url": "ui-value"}, r.fileState["slack"],
+		"r.fileState must track the UI edit so the next file reload sees a Changed diff")
+
+	reloadCtx, reloadCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer reloadCancel()
+	require.NoError(t, r.Reload(reloadCtx, env.workerRunCtx, time.Second))
+
+	assert.Contains(t, env.d.OutputNames(), "slack")
+	assert.Equal(t, map[string]any{"webhook_url": "file-value"}, r.fileState["slack"],
+		"file reload must overwrite the UI edit with the file version")
+}
+
+// TestReloaderReload_DisableDeletionKeepsOrphanedOutputRunning
+// exercises the runtime side of disable_deletion: a name dropped
+// from the file set must NOT be retired from the dispatcher when
+// DisableDeletion=true, and its DB entry must be preserved.
+func TestReloaderReload_DisableDeletionKeepsOrphanedOutputRunning(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "outputs.yaml")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: slack-cfg\n  webhook:\n    url: webhook-cfg\n")
+
+	cat, err := catalog.New([]output.Type{
+		stubOutputType("slack", nil),
+		stubOutputType("webhook", nil),
+	})
+	require.NoError(t, err)
+
+	env := newReloaderTestEnv(t, nil)
+	defer env.shutdown(t)
+
+	db := database.NewMemory()
+
+	r := NewReloader(&ReloaderConfig{
+		OutputPaths:     []string{path},
+		Catalog:         cat,
+		Dispatcher:      env.d,
+		Database:        db,
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
+		Provisioning:    core.ProvisioningConfig{DisableDeletion: true},
+		Deps:            output.Deps{Logger: slog.Default()},
+		Logger:          slog.Default(),
+		InitialOutputs:  map[string]map[string]any{},
+	})
+
+	// First reload: both outputs provisioned from files.
+	require.NoError(t, r.Reload(context.Background(), env.workerRunCtx, time.Second))
+	require.ElementsMatch(t, []string{"slack", "webhook"}, env.d.OutputNames())
+
+	// File drops webhook; DisableDeletion=true must preserve it.
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: slack-cfg\n")
+	require.NoError(t, r.Reload(context.Background(), env.workerRunCtx, time.Second))
+
+	assert.ElementsMatch(t, []string{"slack", "webhook"}, env.d.OutputNames(),
+		"orphaned webhook must stay running when DisableDeletion=true")
+	stored, err := db.GetOutputConfig(context.Background(), "webhook")
+	require.NoError(t, err)
+	require.NotNil(t, stored, "DB entry must be preserved when DisableDeletion=true")
+	assert.True(t, stored.Provisioned)
+}
+
+func TestReloaderReload_DisableDeletionFalseRetiresOrphan(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "outputs.yaml")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: slack-cfg\n  webhook:\n    url: webhook-cfg\n")
+
+	cat, err := catalog.New([]output.Type{
+		stubOutputType("slack", nil),
+		stubOutputType("webhook", nil),
+	})
+	require.NoError(t, err)
+
+	env := newReloaderTestEnv(t, nil)
+	defer env.shutdown(t)
+
+	db := database.NewMemory()
+
+	r := NewReloader(&ReloaderConfig{
+		OutputPaths:     []string{path},
+		Catalog:         cat,
+		Dispatcher:      env.d,
+		Database:        db,
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
+		Provisioning:    core.ProvisioningConfig{DisableDeletion: false},
+		Deps:            output.Deps{Logger: slog.Default()},
+		Logger:          slog.Default(),
+		InitialOutputs:  map[string]map[string]any{},
+	})
+
+	require.NoError(t, r.Reload(context.Background(), env.workerRunCtx, time.Second))
+	require.ElementsMatch(t, []string{"slack", "webhook"}, env.d.OutputNames())
+
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: slack-cfg\n")
+	require.NoError(t, r.Reload(context.Background(), env.workerRunCtx, time.Second))
+
+	assert.ElementsMatch(t, []string{"slack"}, env.d.OutputNames(),
+		"orphaned webhook must be retired when DisableDeletion=false")
+	stored, err := db.GetOutputConfig(context.Background(), "webhook")
+	require.NoError(t, err)
+	assert.Nil(t, stored, "DB entry must be deleted when DisableDeletion=false")
+}
+
+// TestReloaderApplyThenReload_PartialFailureNextReloadRestoresFile
+// covers the partial-failure aftermath contract: a UI PUT on a
+// file-provisioned name succeeds in the runtime but the DB save
+// fails. The file stays unchanged. The next file reload must
+// observe that the dispatcher diverged from the file and rebuild
+// the output from the file version via ReplaceOutput. The build
+// counter proves the reload re-ran catalog.Create (UI-apply + file
+// restore = 2 builds) rather than no-op'ing (1 build).
+func TestReloaderApplyThenReload_PartialFailureNextReloadRestoresFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "outputs.yaml")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: file-value\n")
+
+	var builds atomic.Int32
+	cat, err := catalog.New([]output.Type{{
+		Name:   "slack",
+		Schema: output.Schema{Fields: []output.SchemaField{}},
+		New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
+			builds.Add(1)
+			return &testutil.MockDriver{DriverName: "slack"}, nil
+		},
+	}})
+	require.NoError(t, err)
+
+	env := newReloaderTestEnv(t, nil)
+	defer env.shutdown(t)
+
+	db := &databasetestutil.Mock{
+		Outputs: map[string]*core.OutputConfigEntry{
+			"slack": {Name: "slack", Config: map[string]any{"webhook_url": "file-value"}, Provisioned: true},
+		},
+	}
+
+	r := NewReloader(&ReloaderConfig{
+		OutputPaths:     []string{path},
+		Catalog:         cat,
+		Dispatcher:      env.d,
+		Database:        db,
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
+		Deps:            output.Deps{Logger: slog.Default()},
+		Logger:          slog.Default(),
+		InitialOutputs:  map[string]map[string]any{"slack": {"webhook_url": "file-value"}},
+	})
+	r.BindWorkerContext(env.workerRunCtx, time.Second)
+
+	db.SaveOutputConfigErr = errors.New("db save boom")
+	err = r.ApplyOutput(context.Background(), "slack", map[string]any{"webhook_url": "ui-value"})
+	require.ErrorIs(t, err, ErrDBSyncFailed,
+		"runtime apply succeeded but DB save failed; ApplyOutput must report ErrDBSyncFailed")
+	require.Contains(t, env.d.OutputNames(), "slack")
+	require.Equal(t, int32(1), builds.Load(), "UI apply must build the slack driver once")
+
+	db.SaveOutputConfigErr = nil
+
+	require.NoError(t, r.Reload(context.Background(), env.workerRunCtx, time.Second))
+
+	assert.Equal(t, int32(2), builds.Load(),
+		"the reload must detect dispatcher/file divergence and rebuild slack from the file version")
+	assert.Equal(t, map[string]any{"webhook_url": "file-value"}, r.fileState["slack"],
+		"post-reload r.fileState must reflect the file version")
+}
+
+// TestReloaderReload_ReAddsNameAlreadyLiveAsReplace covers the
+// defensive Added-to-Changed reclassification. A UI-only PUT creates
+// a live output; a later file reload declares the same name; the
+// diff classifies it as Added, but the dispatcher already has it, so
+// Reloader must route through ReplaceOutput rather than orphaning
+// the old Output via a bare AddOutput overwrite.
+func TestReloaderReload_ReAddsNameAlreadyLiveAsReplace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "outputs.yaml")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: file-version\n")
+
+	cat, err := catalog.New([]output.Type{stubOutputType("slack", nil)})
+	require.NoError(t, err)
+
+	env := newReloaderTestEnv(t, nil)
+	defer env.shutdown(t)
+
+	db := &databasetestutil.Mock{Outputs: map[string]*core.OutputConfigEntry{}}
+
+	r := NewReloader(&ReloaderConfig{
+		OutputPaths:     []string{path},
+		Catalog:         cat,
+		Dispatcher:      env.d,
+		Database:        db,
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
+		Deps:            output.Deps{Logger: slog.Default()},
+		Logger:          slog.Default(),
+		InitialOutputs:  map[string]map[string]any{},
+	})
+	r.BindWorkerContext(env.workerRunCtx, time.Second)
+
+	require.NoError(t, r.ApplyOutput(context.Background(), "slack", map[string]any{"webhook_url": "ui-version"}))
+	require.Contains(t, env.d.OutputNames(), "slack")
+	require.NotContains(t, r.fileState, "slack",
+		"UI-only apply must not write to the file-view")
+
+	require.NoError(t, r.Reload(context.Background(), env.workerRunCtx, time.Second))
+
+	count := 0
+	for _, n := range env.d.OutputNames() {
+		if n == "slack" {
+			count++
+		}
+	}
+	assert.Equal(t, 1, count, "dispatcher must have exactly one slack (Replace, not duplicate Add)")
+	assert.Equal(t, map[string]any{"webhook_url": "file-version"}, r.fileState["slack"],
+		"post-reload r.fileState reflects the file version")
+}
+
+// TestReloaderApplyOutput_DBSaveFailureReturnsErrDBSyncFailed proves the
+// Bug-2 metric-truthfulness contract: runtime apply succeeded but DB
+// save failed; ApplyOutput returns ErrDBSyncFailed and the metric
+// records partial_success, not success.
+func TestReloaderApplyOutput_DBSaveFailureReturnsErrDBSyncFailed(t *testing.T) {
+	cat, err := catalog.New([]output.Type{stubOutputType("slack", nil)})
+	require.NoError(t, err)
+
+	env := newReloaderTestEnv(t, nil)
+	defer env.shutdown(t)
+
+	reg := prometheus.NewRegistry()
+	db := &databasetestutil.Mock{Outputs: map[string]*core.OutputConfigEntry{}, SaveOutputConfigErr: errors.New("db save boom")}
+
+	r := NewReloader(&ReloaderConfig{
+		Catalog:         cat,
+		Dispatcher:      env.d,
+		Database:        db,
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
+		Deps:            output.Deps{Logger: slog.Default()},
+		Registry:        reg,
+		Logger:          slog.Default(),
+		InitialOutputs:  map[string]map[string]any{},
+	})
+	r.BindWorkerContext(env.workerRunCtx, time.Second)
+
+	err = r.ApplyOutput(context.Background(), "slack", map[string]any{"webhook_url": "x"})
+	require.ErrorIs(t, err, ErrDBSyncFailed)
+
+	assert.Contains(t, env.d.OutputNames(), "slack",
+		"runtime apply must have landed even though DB save failed")
+
+	gathered, gatherErr := reg.Gather()
+	require.NoError(t, gatherErr)
+	assert.Equal(t, float64(1), getMetricValueByLabel(gathered, metricReloadPartial, "source", "ui"),
+		"partial_total{source=ui} must increment when DB save fails after runtime apply")
+	assert.Equal(t, float64(0), getMetricValueByLabel(gathered, metricReloadFailures, "source", "ui"),
+		"failures_total{source=ui} must not increment when runtime apply succeeded")
+}
+
+// TestReloaderRemoveOutput_DBDeleteFailureReturnsErrDBSyncFailed mirrors
+// the Bug-2 contract for RemoveOutput.
+func TestReloaderRemoveOutput_DBDeleteFailureReturnsErrDBSyncFailed(t *testing.T) {
+	cat, err := catalog.New([]output.Type{stubOutputType("slack", nil)})
+	require.NoError(t, err)
+
+	initialOut := pipeline.NewOutput(&testutil.MockDriver{DriverName: "slack"}, &output.RuntimeConfig{
+		QueueSize: 100, Workers: 1,
+		Retry:          &output.RetryConfig{MaxAttempts: 1, InitialInterval: time.Millisecond, MaxInterval: time.Millisecond, Multiplier: 1},
+		CircuitBreaker: &output.CircuitBreakerConfig{FailureThreshold: 5, SuccessThreshold: 2, ResetTimeout: time.Second},
+	}, nil)
+	env := newReloaderTestEnv(t, []*pipeline.Output{initialOut})
+	defer env.shutdown(t)
+
+	reg := prometheus.NewRegistry()
+	db := &databasetestutil.Mock{Outputs: map[string]*core.OutputConfigEntry{}, DeleteOutputConfigErr: errors.New("db delete boom")}
+
+	r := NewReloader(&ReloaderConfig{
+		Catalog:         cat,
+		Dispatcher:      env.d,
+		Database:        db,
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
+		Deps:            output.Deps{Logger: slog.Default()},
+		Registry:        reg,
+		Logger:          slog.Default(),
+		InitialOutputs:  map[string]map[string]any{},
+	})
+	r.BindWorkerContext(env.workerRunCtx, time.Second)
+
+	err = r.RemoveOutput(context.Background(), "slack")
+	require.ErrorIs(t, err, ErrDBSyncFailed)
+
+	assert.NotContains(t, env.d.OutputNames(), "slack",
+		"runtime retire must have landed even though DB delete failed")
+
+	gathered, gatherErr := reg.Gather()
+	require.NoError(t, gatherErr)
+	assert.Equal(t, float64(1), getMetricValueByLabel(gathered, metricReloadPartial, "source", "ui"))
+}
+
+func TestReloaderRemoveOutput_FileReloadRestoresFileProvisioned(t *testing.T) {
+	// file-provisioned output → UI DELETE → unchanged file reload must
+	// reinstate it. Regression for the file-authoritative contract: the
+	// file stays source of truth; UI delete is ephemeral until the
+	// operator edits the file.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "outputs.yaml")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: https://hooks.slack.com/file\n")
+
+	cat, err := catalog.New([]output.Type{stubOutputType("slack", nil)})
+	require.NoError(t, err)
+
+	env := newReloaderTestEnv(t, nil)
+	defer env.shutdown(t)
+
+	db := database.NewMemory()
+
+	r := NewReloader(&ReloaderConfig{
+		OutputPaths:     []string{path},
+		Catalog:         cat,
+		Dispatcher:      env.d,
+		Database:        db,
+		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
+		Deps:            output.Deps{Logger: slog.Default()},
+		Logger:          slog.Default(),
+		InitialOutputs:  map[string]map[string]any{},
+	})
+	r.BindWorkerContext(env.workerRunCtx, time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	require.NoError(t, r.Reload(ctx, env.workerRunCtx, 10*time.Second))
+	require.Contains(t, env.d.OutputNames(), "slack", "initial file reload must add slack")
+	require.Contains(t, r.fileState, "slack", "file state must track file-provisioned name")
+
+	require.NoError(t, r.RemoveOutput(ctx, "slack"))
+	assert.NotContains(t, env.d.OutputNames(), "slack", "UI DELETE must retire the runtime output")
+	assert.NotContains(t, r.fileState, "slack",
+		"UI DELETE must drop the name from fileState so the next file reload re-adds it")
+
+	require.NoError(t, r.Reload(ctx, env.workerRunCtx, 10*time.Second))
+	assert.Contains(t, env.d.OutputNames(), "slack",
+		"unchanged file reload after UI DELETE must restore the file-provisioned output")
+	assert.Contains(t, r.fileState, "slack", "fileState must track the restored name")
+
+	entry, err := db.GetOutputConfig(ctx, "slack")
+	require.NoError(t, err)
+	require.NotNil(t, entry, "DB must carry the restored entry")
+	assert.True(t, entry.Provisioned, "restored entry must be marked Provisioned:true")
+}
+
+// getMetricValueByLabel returns the counter value for (name, labelKey=labelValue).
+func getMetricValueByLabel(gathered []*dto.MetricFamily, name, labelKey, labelValue string) float64 {
+	for _, mf := range gathered {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetName() == labelKey && l.GetValue() == labelValue {
+					return m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return 0
 }

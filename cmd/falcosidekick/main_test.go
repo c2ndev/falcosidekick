@@ -23,6 +23,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -40,12 +41,14 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/api"
 	"github.com/falcosecurity/falcosidekick/internal/catalog"
 	"github.com/falcosecurity/falcosidekick/internal/config"
+	"github.com/falcosecurity/falcosidekick/internal/database"
 	"github.com/falcosecurity/falcosidekick/internal/domain/core"
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/metrics"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
+	"github.com/falcosecurity/falcosidekick/ui"
 )
 
 func writeTestConfig(t *testing.T, content string) string {
@@ -262,7 +265,60 @@ func TestCreateOutputsInitFailure(t *testing.T) {
 		"initfail": {},
 	}, cat, metrics.NewCollector())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `output "initfail" init`)
+	assert.Contains(t, err.Error(), `output "initfail": init:`)
+}
+
+func TestRestoreFromDB_BuildsFromProvisionedFalseEntries(t *testing.T) {
+	ctx := context.Background()
+	cfg := loadDefaultConfigForCmdTest(t)
+
+	cat, err := catalog.New([]output.Type{{
+		Name:   "webhook",
+		Schema: output.Schema{Fields: []output.SchemaField{{Name: "address", Type: "string"}}},
+		New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
+			return &testutil.MockDriver{DriverName: "webhook"}, nil
+		},
+	}})
+	require.NoError(t, err)
+
+	db := database.NewMemory()
+	// A prior UI PUT persisted a UI-only output.
+	require.NoError(t, db.SaveOutputConfig(ctx, "webhook", map[string]any{"address": "http://sink"}))
+
+	fileOutputs := map[string]map[string]any{}
+	outs, err := restoreFromDB(ctx, cfg, db, cat, metrics.NewCollector(), fileOutputs)
+	require.NoError(t, err)
+	require.Len(t, outs, 1, "UI-only entry must be rebuilt into a live Output on startup")
+	assert.Equal(t, "webhook", outs[0].Name())
+
+	for _, o := range outs {
+		_ = o.Close()
+	}
+}
+
+func TestRestoreFromDB_SkipsProvisionedEntries(t *testing.T) {
+	ctx := context.Background()
+	cfg := loadDefaultConfigForCmdTest(t)
+
+	cat, err := catalog.New([]output.Type{{
+		Name:   "webhook",
+		Schema: output.Schema{Fields: []output.SchemaField{{Name: "address", Type: "string"}}},
+		New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
+			return &testutil.MockDriver{DriverName: "webhook"}, nil
+		},
+	}})
+	require.NoError(t, err)
+
+	db := database.NewMemory()
+	// File provisions "webhook"; startup's Provision call marks it Provisioned:true.
+	require.NoError(t, db.Provision(ctx, &core.ProvisionRequest{
+		Outputs: map[string]map[string]any{"webhook": {"address": "http://from-file"}},
+	}))
+	// The file path built its Output already; restore must not double-build.
+	fileOutputs := map[string]map[string]any{"webhook": {"address": "http://from-file"}}
+	outs, err := restoreFromDB(ctx, cfg, db, cat, metrics.NewCollector(), fileOutputs)
+	require.NoError(t, err)
+	assert.Empty(t, outs, "provisioned entries must not be rebuilt by the UI-only restore path")
 }
 
 func TestCreateOutputsRuntimeConfigFailure(t *testing.T) {
@@ -300,7 +356,7 @@ func TestCreateOutputsRuntimeConfigFailure(t *testing.T) {
 		"badcfg": {},
 	}, cat, metrics.NewCollector())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `output "badcfg" config`)
+	assert.Contains(t, err.Error(), `output "badcfg": runtime merge:`)
 }
 
 func TestRunNegativePollInterval(t *testing.T) {
@@ -519,15 +575,17 @@ func TestAppServePropagatesStartError(t *testing.T) {
 	srv, err := api.NewServer(&api.ServerConfig{
 		Pipeline: pipe,
 		Catalog:  cat,
-		Address:  "127.0.0.1",
-		Port:     port,
+		Config: &core.Config{
+			ListenAddress: "127.0.0.1",
+			ListenPort:    port,
+		},
+		Logger: slog.Default(),
 	})
 	require.NoError(t, err)
 
 	a := &app{
-		srv:        srv,
-		listenAddr: "127.0.0.1",
-		listenPort: port,
+		pipe: pipe,
+		srv:  srv,
 	}
 
 	errCh := make(chan error, 1)
@@ -559,7 +617,7 @@ func TestResolveUIAssetsEnabledWithEmbed(t *testing.T) {
 	assert.Equal(t, dist, assets, "ui.enabled=true + embedded assets must pass through unchanged")
 }
 
-func TestRunUIEnabledStubBinaryDoesNotServeStaticAssets(t *testing.T) {
+func TestRunUIEnabledBinaryRoutingMatchesTag(t *testing.T) {
 	port := findFreePort(t)
 	cfg := writeTestConfig(t, fmt.Sprintf(
 		"listen_port: %d\nlisten_address: 127.0.0.1\nui:\n  enabled: true\n  event_source: inmemory",
@@ -580,13 +638,19 @@ func TestRunUIEnabledStubBinaryDoesNotServeStaticAssets(t *testing.T) {
 	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", port)) //nolint:noctx // test helper
 	require.NoError(t, err)
 	_ = resp.Body.Close()
-	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode,
-		"GET / on stub build must fall through to Fiber's 405 (POST / registered, no UI assets)")
+	if ui.Enabled {
+		assert.Equal(t, http.StatusOK, resp.StatusCode,
+			"GET / on builtinui build with ui.enabled=true must serve the embedded index")
+		assert.Contains(t, resp.Header.Get("Content-Type"), "text/html")
+	} else {
+		assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode,
+			"GET / on stub build must fall through to Fiber's 405 (POST / registered, no UI assets)")
+	}
 
 	healthResp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", port)) //nolint:noctx // test helper
 	require.NoError(t, err)
 	_ = healthResp.Body.Close()
-	assert.Equal(t, http.StatusOK, healthResp.StatusCode, "API must remain healthy on stub build with ui.enabled=true")
+	assert.Equal(t, http.StatusOK, healthResp.StatusCode, "API must remain healthy in both build modes")
 
 	cancel()
 	select {
@@ -630,14 +694,12 @@ func TestRunUIDisabledDoesNotServeStaticAssets(t *testing.T) {
 func TestCloseOutputsLogsOnCloseError(t *testing.T) {
 	t.Helper()
 
+	cfg := testutil.DefaultRuntimeConfig()
+	cfg.QueueSize = 1
 	failing := pipeline.NewOutput(&testutil.MockDriver{
 		DriverName: "failing",
 		CloseFunc:  func() error { return errors.New("close failed") },
-	}, &output.RuntimeConfig{
-		QueueSize: 1, Workers: 1,
-		Retry:          &output.RetryConfig{MaxAttempts: 1, InitialInterval: time.Millisecond, MaxInterval: time.Millisecond, Multiplier: 1},
-		CircuitBreaker: &output.CircuitBreakerConfig{FailureThreshold: 5, SuccessThreshold: 2, ResetTimeout: time.Second},
-	}, nil)
+	}, &cfg, nil)
 
 	// No panic; log branch exercised.
 	closeOutputs([]*pipeline.Output{failing})

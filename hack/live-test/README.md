@@ -40,7 +40,7 @@ Override the image variant with `V3_TAG=v3-local-slim` (use after `make build-im
 
 ## Success criteria
 
-All 8 criteria defined in [`ai/core/live-test-protocol.md`](../../ai/core/live-test-protocol.md) must pass. Every criterion is a hard blocker: any failure exits the script non-zero and blocks `ready to commit`.
+All 10 criteria defined in [`ai/core/live-test-protocol.md`](../../ai/core/live-test-protocol.md) must pass. Every criterion is a hard blocker: any failure exits the script non-zero and blocks `ready to commit`.
 
 Criterion summary:
 - **1** pod Ready.
@@ -51,7 +51,9 @@ Criterion summary:
 - **5b** webhook output's `sent_total` advances after the synthetic POST (observed via `/api/v1/pipeline/status`).
 - **6** real Falco rule trigger (`cat /etc/shadow` in an alpine pod) causes the webhook output's `sent_total` to advance again.
 - **7** `falcosidekick_input_total{source="syscall"}` metric advances beyond baseline.
-- **8** `GET /` returns HTML (UI-embedded variant only; skipped when `V3_TAG=v3-local-slim`).
+- **8** `GET /` with a browser-shape `Accept-Encoding: gzip` returns 200 and decoded HTML (UI-embedded variant only; skipped when `V3_TAG=v3-local-slim`).
+- **9a** `PUT /api/v1/pipeline/outputs/webhook` returns 200.
+- **9b** after 9a, posting synthetic events shows the webhook output still delivering (the UI write applied, the output is live in the dispatcher).
 
 ## Files
 

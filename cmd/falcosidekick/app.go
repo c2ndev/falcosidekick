@@ -42,24 +42,21 @@ import (
 
 // app holds the running application resources built during startup.
 type app struct {
-	db          core.Database
-	pipe        *pipeline.Pipeline
-	srv         *api.Server
-	reloader    *reload.Reloader
-	listenAddr  string
-	listenPort  int
-	outputCount int
+	db       core.Database
+	pipe     *pipeline.Pipeline
+	srv      *api.Server
+	reloader *reload.Reloader
 }
 
-// buildApp builds all application resources. On failure, resources built
+// NewApp builds all application resources. On failure, resources built
 // so far are closed before returning; the caller does not need deferred cleanup.
-func buildApp(
+func NewApp(
 	ctx context.Context,
 	cfg *config.Config,
 	outsCfg *config.OutputsConfig,
-	outputPaths []string,
 	collector *metrics.Collector,
 	cat *catalog.Catalog,
+	logger *slog.Logger,
 ) (_ *app, retErr error) {
 	db, err := createDatabase(cfg.Database)
 	if err != nil {
@@ -72,8 +69,9 @@ func buildApp(
 	}()
 
 	if err := db.Provision(ctx, &core.ProvisionRequest{
-		Config:  &cfg.Config,
-		Outputs: outsCfg.Outputs,
+		Config:          &cfg.Config,
+		Outputs:         outsCfg.Outputs,
+		DisableDeletion: cfg.Provisioning.DisableDeletion,
 	}); err != nil {
 		return nil, fmt.Errorf("database provision: %w", err)
 	}
@@ -94,6 +92,17 @@ func buildApp(
 		}
 	}()
 
+	restored, err := restoreFromDB(ctx, cfg, db, cat, collector, outsCfg.Outputs)
+	if err != nil {
+		return nil, fmt.Errorf("restore outputs: %w", err)
+	}
+	defer func() {
+		if retErr != nil {
+			closeOutputs(restored)
+		}
+	}()
+	outputs = append(outputs, restored...)
+
 	dispatcher := pipeline.NewDispatcher(outputs)
 
 	if cfg.UI.Enabled {
@@ -109,52 +118,53 @@ func buildApp(
 
 	uiAssets := resolveUIAssets(cfg.UI.Enabled, ui.Dist)
 
+	reloader := reload.NewReloader(&reload.ReloaderConfig{
+		OutputPaths:     outsCfg.Paths,
+		Catalog:         cat,
+		Dispatcher:      dispatcher,
+		Database:        db,
+		RuntimeDefaults: cfg.RuntimeDefaults,
+		Provisioning:    cfg.Provisioning,
+		Deps:            output.Deps{Logger: logger, Metrics: collector},
+		Registry:        collector.Registry(),
+		Logger:          logger,
+		InitialOutputs:  outsCfg.Outputs,
+	})
+
 	srv, err := api.NewServer(&api.ServerConfig{
-		Pipeline:    pipe,
-		Database:    db,
-		Catalog:     cat,
-		Metrics:     collector,
-		Registry:    collector.Registry(),
-		TLS:         cfg.TLS,
-		UIAssets:    uiAssets,
-		Address:     cfg.ListenAddress,
-		EventSource: cfg.UI.EventSource,
-		Port:        cfg.ListenPort,
+		Pipeline: pipe,
+		Database: db,
+		Catalog:  cat,
+		Metrics:  collector,
+		Registry: collector.Registry(),
+		Config:   &cfg.Config,
+		Reloader: reloader,
+		UIAssets: uiAssets,
+		Logger:   logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("server: %w", err)
 	}
 
-	reloader := reload.NewReloader(&reload.ReloaderConfig{
-		OutputPaths:     outputPaths,
-		Catalog:         cat,
-		Dispatcher:      dispatcher,
-		Database:        db,
-		RuntimeDefaults: cfg.RuntimeDefaults,
-		Deps:            output.Deps{Logger: slog.Default(), Metrics: collector},
-		Registry:        collector.Registry(),
-		Logger:          slog.Default(),
-		InitialOutputs:  outsCfg.Outputs,
-	})
-
 	return &app{
-		db:          db,
-		pipe:        pipe,
-		srv:         srv,
-		reloader:    reloader,
-		listenAddr:  cfg.ListenAddress,
-		listenPort:  cfg.ListenPort,
-		outputCount: len(outputs),
+		db:       db,
+		pipe:     pipe,
+		srv:      srv,
+		reloader: reloader,
 	}, nil
 }
 
 // startReloadWatchers wires the fsnotify, poller, and SIGHUP reload
-// triggers. All goroutines exit when appCtx is canceled.
+// triggers. All goroutines exit when appCtx is canceled. Also binds the
+// worker context on the Reloader so UI-driven ApplyOutput/RemoveOutput
+// calls share the same long-lived context as file-driven reloads.
 func (a *app) startReloadWatchers(
 	appCtx, workerRunCtx context.Context,
 	outputPaths []string,
 	reloadCfg core.ReloadConfig,
 ) {
+	a.reloader.BindWorkerContext(workerRunCtx, reloadCfg.RetireTimeout)
+
 	if len(outputPaths) == 0 {
 		return
 	}
@@ -201,7 +211,6 @@ func (a *app) startReloadWatchers(
 // errors are sent to errCh. The caller owns the channel.
 func (a *app) serve(errCh chan<- error) {
 	go func() {
-		slog.Info("listening", "address", a.listenAddr, "port", a.listenPort, "outputs", a.outputCount)
 		if err := a.srv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
@@ -266,28 +275,46 @@ func createOutputs(
 		}
 	}()
 
+	deps := output.Deps{Logger: slog.Default(), Metrics: mc}
 	for name, outputCfg := range rawOutputs {
-		driver, err := cat.Create(name, outputCfg, output.Deps{Logger: slog.Default(), Metrics: mc})
+		out, err := pipeline.BuildOutput(ctx, cat, name, outputCfg, cfg.RuntimeDefaults, deps)
 		if err != nil {
 			return nil, fmt.Errorf("output %q: %w", name, err)
 		}
-		if err := driver.Init(ctx); err != nil {
-			_ = driver.Close()
-			return nil, fmt.Errorf("output %q init: %w", name, err)
-		}
-
-		outCfg, err := config.MergeRuntimeConfig(cfg.RuntimeDefaults, name, driver.RuntimeConfig())
-		if err != nil {
-			_ = driver.Close()
-			return nil, fmt.Errorf("output %q config: %w", name, err)
-		}
-
-		out := pipeline.NewOutput(driver, &outCfg, mc)
 		outputs = append(outputs, out)
-		slog.Info("output enabled", "output", name, "minimum_priority", outCfg.MinPriority)
+		slog.Info("output enabled", "output", name)
 	}
 
 	return outputs, nil
+}
+
+// restoreFromDB rebuilds live outputs for every database entry that
+// the file-driven createOutputs step did not already cover. Used at
+// startup so UI-only writes and orphaned provisioned entries from a
+// previous run are reinstated in the dispatcher.
+func restoreFromDB(
+	ctx context.Context,
+	cfg *config.Config,
+	db core.Database,
+	cat *catalog.Catalog,
+	mc core.MetricsCollector,
+	fileOutputs map[string]map[string]any,
+) ([]*pipeline.Output, error) {
+	entries, err := db.GetOutputConfigs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read persisted outputs: %w", err)
+	}
+	raw := make(map[string]map[string]any)
+	for name, entry := range entries {
+		if _, inFiles := fileOutputs[name]; inFiles {
+			continue
+		}
+		raw[name] = entry.Config
+	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	return createOutputs(ctx, cfg, raw, cat, mc)
 }
 
 func closeOutputs(outputs []*pipeline.Output) {
