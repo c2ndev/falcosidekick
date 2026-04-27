@@ -128,7 +128,7 @@ v3-coverage: ## Run v3 tests with coverage report and threshold check
 	fi
 
 .PHONY: v3-verify
-v3-verify: v3-lint v3-test ui-build ui-lint ## Run all v3 Go and UI checks
+v3-verify: v3-lint v3-test ui-build ui-lint ui-v3-typecheck ui-v3-test ## Run all v3 Go and UI checks
 
 ## --------------------------------------
 ## Frontend (ui/)
@@ -221,6 +221,14 @@ ui-v3-typecheck: ## Typecheck UI sources with tsc --noEmit
 ui-v3-dev: ## Start the Bun.serve dev server with API proxy
 	cd ui && $(BUN) run dev
 
+.PHONY: ui-v3-test
+ui-v3-test: ## Run UI unit/component tests via Bun test + happy-dom
+	cd ui && $(BUN) test
+
+.PHONY: ui-v3-dev-cluster
+ui-v3-dev-cluster: ## Run the UI dev server against a backend running in the current kube-context
+	hack/ui-dev-cluster.sh
+
 .PHONY: falcosidekick-v3
 falcosidekick-v3: ui-v3-build ## Build v3 binary with embedded UI (host OS+arch, tag builtinui)
 	$(GO) build -trimpath -tags=builtinui -ldflags "$(V3_LDFLAGS)" -o $(V3_BINARY_UI) ./cmd/falcosidekick/
@@ -297,7 +305,7 @@ v3-lint-full: ## Run golangci-lint across v3 Go packages including ./ui
 	golangci-lint run $(V3_PACKAGES) ./ui
 
 .PHONY: v3-verify-full
-v3-verify-full: v3-lint-full v3-test-default v3-test-ui-tag ui-v3-build ui-v3-lint ui-v3-typecheck ## Full v3 verification: Go default + tagged, golangci, Bun install/build/lint/typecheck
+v3-verify-full: v3-lint-full v3-test-default v3-test-ui-tag ui-v3-build ui-v3-lint ui-v3-typecheck ui-v3-test ## Full v3 verification: Go default + tagged, golangci, Bun install/build/lint/typecheck/test
 
 .PHONY: v3-live-test
 v3-live-test: build-image-v3-local ## Deploy v3 to the local kind cluster and run the live-test protocol
