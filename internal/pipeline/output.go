@@ -29,16 +29,37 @@ import (
 )
 
 // OutputStatus holds observable counters and state for one output.
+//
+// Status is a coarse health token derived from LastError and CircuitState:
+// "error" when LastError is non-empty, "degraded" when the circuit breaker is
+// open or half-open, "idle" when closed and never sent, "ok" otherwise.
+// EventsPerMinute is a rolling 60-second success rate.
 type OutputStatus struct {
-	LastSuccess   time.Time `json:"last_success"`
-	Name          string    `json:"name"`
-	CircuitState  string    `json:"circuit_state"`
-	LastError     string    `json:"last_error"`
-	QueueDepth    int       `json:"queue_depth"`
-	QueueCapacity int       `json:"queue_capacity"`
-	SentTotal     int       `json:"sent_total"`
-	DroppedTotal  int       `json:"dropped_total"`
-	FailedTotal   int       `json:"failed_total"`
+	LastSuccess     time.Time `json:"last_success"`
+	Name            string    `json:"name"`
+	Status          string    `json:"status"`
+	CircuitState    string    `json:"circuit_state"`
+	LastError       string    `json:"last_error"`
+	QueueDepth      int       `json:"queue_depth"`
+	QueueCapacity   int       `json:"queue_capacity"`
+	SentTotal       int       `json:"sent_total"`
+	DroppedTotal    int       `json:"dropped_total"`
+	FailedTotal     int       `json:"failed_total"`
+	EventsPerMinute float64   `json:"events_per_minute"`
+}
+
+func deriveStatusToken(circuit string, lastError string, sentTotal int) string {
+	if lastError != "" {
+		return "error"
+	}
+	switch circuit {
+	case "open", "half-open":
+		return "degraded"
+	}
+	if sentTotal == 0 {
+		return "idle"
+	}
+	return "ok"
 }
 
 // Output is the runtime delivery unit for one output destination.
@@ -51,11 +72,63 @@ type Output struct {
 	queue          chan *event.Event
 	circuitBreaker *CircuitBreaker
 	cancel         context.CancelFunc
+	rateWindow     rateWindow
 	config         output.RuntimeConfig
 	workerDone     sync.WaitGroup
 	sentTotal      atomic.Int64
 	droppedTotal   atomic.Int64
 	failedTotal    atomic.Int64
+}
+
+const rateBuckets = 60
+
+// rateWindow maintains a 60-slot ring of per-second sent-event counters so
+// GetStatus can report a rolling events-per-minute rate without relying on
+// start time or a separate goroutine.
+type rateWindow struct {
+	mu      sync.Mutex
+	buckets [rateBuckets]int64
+	last    int64
+}
+
+func (r *rateWindow) record(count int64, nowSec int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.advance(nowSec)
+	r.buckets[nowSec%rateBuckets] += count
+}
+
+func (r *rateWindow) rate(nowSec int64) float64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.advance(nowSec)
+	var sum int64
+	for _, v := range r.buckets {
+		sum += v
+	}
+	return float64(sum)
+}
+
+func (r *rateWindow) advance(nowSec int64) {
+	if r.last == 0 {
+		r.last = nowSec
+		return
+	}
+	delta := nowSec - r.last
+	if delta <= 0 {
+		return
+	}
+	if delta >= rateBuckets {
+		for i := range r.buckets {
+			r.buckets[i] = 0
+		}
+		r.last = nowSec
+		return
+	}
+	for i := int64(1); i <= delta; i++ {
+		r.buckets[(r.last+i)%rateBuckets] = 0
+	}
+	r.last = nowSec
 }
 
 // NewOutput creates a complete Output from a driver and configuration.
@@ -162,16 +235,20 @@ func (o *Output) waitDone() {
 
 // GetStatus returns a snapshot of this output's counters and state.
 func (o *Output) GetStatus() OutputStatus {
+	circuit := o.circuitBreaker.GetState().String()
+	lastErr := o.lastError.Load().(string)
 	return OutputStatus{
-		Name:          o.driver.Name(),
-		QueueDepth:    len(o.queue),
-		QueueCapacity: o.config.QueueSize,
-		SentTotal:     int(o.sentTotal.Load()),
-		DroppedTotal:  int(o.droppedTotal.Load()),
-		FailedTotal:   int(o.failedTotal.Load()),
-		CircuitState:  o.circuitBreaker.GetState().String(),
-		LastSuccess:   o.lastSuccess.Load().(time.Time),
-		LastError:     o.lastError.Load().(string),
+		Name:            o.driver.Name(),
+		Status:          deriveStatusToken(circuit, lastErr, int(o.sentTotal.Load())),
+		QueueDepth:      len(o.queue),
+		QueueCapacity:   o.config.QueueSize,
+		SentTotal:       int(o.sentTotal.Load()),
+		DroppedTotal:    int(o.droppedTotal.Load()),
+		FailedTotal:     int(o.failedTotal.Load()),
+		CircuitState:    circuit,
+		LastSuccess:     o.lastSuccess.Load().(time.Time),
+		LastError:       lastErr,
+		EventsPerMinute: o.rateWindow.rate(time.Now().Unix()),
 	}
 }
 
@@ -204,7 +281,9 @@ func (o *Output) executeWithRetry(ctx context.Context, count int64, sendFunc fun
 		if err == nil {
 			o.circuitBreaker.RecordSuccess()
 			o.sentTotal.Add(count)
-			o.lastSuccess.Store(time.Now())
+			now := time.Now()
+			o.lastSuccess.Store(now)
+			o.rateWindow.record(count, now.Unix())
 			if o.metrics != nil {
 				o.metrics.RecordOutput(ctx, o.driver.Name(), "ok", duration)
 			}

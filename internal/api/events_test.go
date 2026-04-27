@@ -431,3 +431,165 @@ func TestHandleEventByUUID_NoEventSource(t *testing.T) {
 
 	assert.Equal(t, 503, resp.StatusCode)
 }
+
+func TestHandleEventsHistogram_InvalidSince(t *testing.T) {
+	srv := buildTestServerWithStore(t, &fakeReadableStore{})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/histogram?since=garbage&bucket_ms=60000", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 400, resp.StatusCode)
+}
+
+func TestHandleEventsHistogram_PassesAllParams(t *testing.T) {
+	store := &fakeReadableStore{
+		HistogramFn: func(_ context.Context, req *output.HistogramRequest) (*output.HistogramResult, error) {
+			return &output.HistogramResult{
+				BucketMs: req.BucketMs,
+				GroupBy:  req.GroupBy,
+				From:     1_700_000_000_000,
+				To:       1_700_003_600_000,
+				Buckets: []output.HistogramBucket{
+					{T: 1_700_000_000_000, Count: 3, By: map[string]int64{"syscall": 3}},
+				},
+			}, nil
+		},
+	}
+	srv := buildTestServerWithStore(t, store)
+
+	url := "/api/v1/events/histogram?filter=needle" +
+		"&priority=error,warning" +
+		"&rule=r1,r2" +
+		"&source=syscall" +
+		"&hostname=node-a" +
+		"&tags=x,y" +
+		"&since=1h" +
+		"&bucket_ms=1800000" +
+		"&group_by=source"
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, url, http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, 200, resp.StatusCode)
+
+	last := store.LastHistogramReq
+	require.NotNil(t, last)
+	assert.Equal(t, int64(1_800_000), last.BucketMs)
+	assert.Equal(t, "source", last.GroupBy)
+	assert.Equal(t, "needle", last.Filters.Filter)
+	assert.Equal(t, []string{"error", "warning"}, last.Filters.Priority)
+	assert.Equal(t, []string{"r1", "r2"}, last.Filters.Rule)
+	assert.Equal(t, []string{"syscall"}, last.Filters.Source)
+	assert.Equal(t, []string{"node-a"}, last.Filters.Hostname)
+	assert.Equal(t, []string{"x", "y"}, last.Filters.Tags)
+	assert.Equal(t, time.Hour, last.Filters.Since)
+}
+
+func TestHandleEventsHistogram_Valid(t *testing.T) {
+	store := &fakeReadableStore{
+		HistogramFn: func(_ context.Context, req *output.HistogramRequest) (*output.HistogramResult, error) {
+			return &output.HistogramResult{
+				BucketMs: req.BucketMs,
+				From:     1_000,
+				To:       1_000 + 2*req.BucketMs,
+				GroupBy:  req.GroupBy,
+				Buckets: []output.HistogramBucket{
+					{T: 1_000, Count: 3, By: map[string]int64{"syscall": 3}},
+					{T: 1_000 + req.BucketMs, Count: 5, By: map[string]int64{"syscall": 4, "k8s_audit": 1}},
+				},
+			}, nil
+		},
+	}
+	srv := buildTestServerWithStore(t, store)
+
+	url := "/api/v1/events/histogram?since=1h&bucket_ms=900000&group_by=source&priority=error"
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, url, http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, 200, resp.StatusCode)
+	require.NotNil(t, store.LastHistogramReq)
+	assert.Equal(t, int64(900_000), store.LastHistogramReq.BucketMs)
+	assert.Equal(t, "source", store.LastHistogramReq.GroupBy)
+	assert.Equal(t, time.Hour, store.LastHistogramReq.Filters.Since)
+	assert.Equal(t, []string{"error"}, store.LastHistogramReq.Filters.Priority)
+
+	body := struct {
+		Buckets  []output.HistogramBucket `json:"buckets"`
+		BucketMs int64                    `json:"bucket_ms"`
+		GroupBy  string                   `json:"group_by"`
+	}{}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Equal(t, "source", body.GroupBy)
+	assert.Len(t, body.Buckets, 2)
+	assert.Equal(t, int64(5), body.Buckets[1].Count)
+	assert.Equal(t, int64(4), body.Buckets[1].By["syscall"])
+}
+
+func TestHandleEventsHistogram_MissingBucketMs(t *testing.T) {
+	store := &fakeReadableStore{}
+	srv := buildTestServerWithStore(t, store)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/histogram?since=1h", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 400, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "bucket_ms")
+}
+
+func TestHandleEventsHistogram_InvalidBucketMs(t *testing.T) {
+	store := &fakeReadableStore{}
+	srv := buildTestServerWithStore(t, store)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/histogram?since=1h&bucket_ms=abc", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 400, resp.StatusCode)
+}
+
+func TestHandleEventsHistogram_StoreValidationError(t *testing.T) {
+	store := &fakeReadableStore{}
+	srv := buildTestServerWithStore(t, store)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/histogram?since=1m&bucket_ms=900000", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 400, resp.StatusCode, "domain-layer validation (since < bucket) must surface as 400 not 500")
+}
+
+func TestHandleEventsHistogram_NoEventSource(t *testing.T) {
+	srv := buildTestServer(t, nil)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/histogram?since=1h&bucket_ms=900000", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 503, resp.StatusCode)
+}
+
+func TestHandleEventsHistogram_RouteNotShadowedByUUID(t *testing.T) {
+	store := &fakeReadableStore{}
+	srv := buildTestServerWithStore(t, store)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/events/histogram?since=1h&bucket_ms=900000", http.NoBody)
+	resp, err := srv.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.NotNil(t, store.LastHistogramReq, "must hit Histogram, not GetEvent('histogram')")
+	assert.Empty(t, store.LastGetEventUUID)
+}
