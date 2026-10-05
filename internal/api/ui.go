@@ -18,6 +18,7 @@ package api
 
 import (
 	"io/fs"
+	"net/http"
 	"strings"
 	"time"
 
@@ -28,9 +29,12 @@ import (
 // registerStaticUI installs the static-asset middleware on app when assets
 // is non-nil. API and operator paths (/api/**, /healthz, /version, /metrics)
 // are always skipped so they remain served by their explicit handlers.
-// Response compression is handled globally by compress.New in mountRoutes;
-// static.Config.Compress is left off because it requires pre-compressed
-// files on disk (.gz/.br/.zst) which the embedded FS does not provide.
+// A non-asset GET whose path does not match a file falls back to index.html
+// so client-side router paths such as /events or /pipeline resolve on hard
+// refresh. Response compression is handled globally by compress.New in
+// mountRoutes; static.Config.Compress is left off because it requires
+// pre-compressed files on disk (.gz/.br/.zst) which the embedded FS does
+// not provide.
 func registerStaticUI(app *fiber.App, assets fs.FS) {
 	if assets == nil {
 		return
@@ -41,6 +45,7 @@ func registerStaticUI(app *fiber.App, assets fs.FS) {
 		CacheDuration: 10 * time.Second,
 		Next:          skipAPIPaths,
 	}))
+	app.Get("/*", spaFallback(assets))
 }
 
 func skipAPIPaths(c fiber.Ctx) bool {
@@ -53,4 +58,21 @@ func skipAPIPaths(c fiber.Ctx) bool {
 		return true
 	}
 	return false
+}
+
+func spaFallback(assets fs.FS) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		if skipAPIPaths(c) {
+			return c.Next()
+		}
+		if strings.Contains(c.Path(), ".") {
+			return c.Status(http.StatusNotFound).SendString("not found")
+		}
+		data, err := fs.ReadFile(assets, "index.html")
+		if err != nil {
+			return c.Next()
+		}
+		c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
+		return c.Send(data)
+	}
 }

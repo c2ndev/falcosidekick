@@ -1,23 +1,44 @@
-import { Button } from "@/components/ui/button"
+import { useEffect } from "react"
+
+import { AppRouter } from "@/app/routes"
+import { Providers } from "@/app/providers"
+import { api } from "@/lib/api-client"
+import { useUIStore } from "@/stores/ui-store"
+
+function AuthEnabledProbe() {
+  const setAuthEnabled = useUIStore((s) => s.setAuthEnabled)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    api
+      .getConfig(controller.signal)
+      .then((config) => {
+        const auth = extractAuthEnabled(config.config)
+        setAuthEnabled(auth)
+      })
+      .catch(() => {
+        setAuthEnabled(null)
+      })
+    return () => controller.abort()
+  }, [setAuthEnabled])
+
+  return null
+}
+
+function extractAuthEnabled(config: Record<string, unknown>): boolean {
+  const auth = config["auth"]
+  if (auth && typeof auth === "object" && "enabled" in auth) {
+    return Boolean((auth as { enabled?: unknown }).enabled)
+  }
+  return false
+}
 
 export function App() {
   return (
-    <div className="flex min-h-screen items-center justify-center">
-      <div className="text-center space-y-4">
-        <h1 className="text-4xl font-bold">Falcosidekick</h1>
-        <p className="text-muted-foreground">v3.0 - UI bootstrap</p>
-        <Button
-          variant="outline"
-          onClick={() =>
-            fetch("/healthz")
-              .then((r) => r.json())
-              .then((data) => console.log(data))
-          }
-        >
-          Check Health
-        </Button>
-      </div>
-    </div>
+    <Providers>
+      <AuthEnabledProbe />
+      <AppRouter />
+    </Providers>
   )
 }
 

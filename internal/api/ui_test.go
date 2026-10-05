@@ -170,13 +170,27 @@ func TestRegisterStaticUI_AssetsPresent_UnregisteredAPIPathReturns404(t *testing
 		"unregistered /api/ paths must not fall through to index.html; skipAPIPaths must skip the static middleware")
 }
 
-func TestRegisterStaticUI_AssetsPresent_AssetMissReturns404(t *testing.T) {
+func TestRegisterStaticUI_AssetsPresent_UnknownRouteServesSPA(t *testing.T) {
 	srv := buildUITestServer(t, newUITestFS(), nil)
 
 	resp, err := srv.app.Test(httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/does-not-exist", http.NoBody))
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, http.StatusOK, resp.StatusCode,
+		"extensionless unknown routes must fall back to index.html so React Router can resolve them client-side")
+	body, readErr := io.ReadAll(resp.Body)
+	require.NoError(t, readErr)
+	assert.Contains(t, string(body), uiTestIndexBody)
+}
+
+func TestRegisterStaticUI_AssetsPresent_MissingStaticFileReturns404(t *testing.T) {
+	srv := buildUITestServer(t, newUITestFS(), nil)
+
+	resp, err := srv.app.Test(httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/missing-asset.png", http.NoBody))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode,
+		"requests with an extension must never fall through to index.html")
 }
 
 func TestRegisterStaticUI_AssetsPresent_HeadMirrorsGet(t *testing.T) {

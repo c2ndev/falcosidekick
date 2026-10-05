@@ -8,10 +8,18 @@ async function proxy(req: Request): Promise<Response> {
   const url = new URL(req.url)
   const target = new URL(url.pathname + url.search, BACKEND)
   try {
-    return await fetch(target, {
+    const upstream = await fetch(target, {
       method: req.method,
       headers: req.headers,
       body: req.body,
+    })
+    const headers = new Headers(upstream.headers)
+    headers.delete("content-encoding")
+    headers.delete("content-length")
+    return new Response(upstream.body, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers,
     })
   } catch (err) {
     return Response.json(
