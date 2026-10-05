@@ -71,7 +71,78 @@ type ReadableStore interface {
 	Search(ctx context.Context, query *SearchQuery) (*SearchResult, error)
 	Count(ctx context.Context, filters *Filters) (int64, error)
 	CountBy(ctx context.Context, field string, filters *Filters) (map[string]int64, error)
+	Histogram(ctx context.Context, req *HistogramRequest) (*HistogramResult, error)
 	GetEvent(ctx context.Context, uuid string) (*event.Event, error)
+}
+
+// HistogramRequest describes a time-bucketed aggregation over the event store.
+// Filters.Since defines the window (must be > 0). BucketMs is the bucket width
+// in milliseconds. GroupBy is optional; when set, each bucket carries per-group
+// counts in addition to the total. Callers must invoke Normalize.
+type HistogramRequest struct {
+	GroupBy  string  `json:"group_by,omitempty"`
+	Filters  Filters `json:"filters"`
+	BucketMs int64   `json:"bucket_ms"`
+}
+
+// HistogramBucket is one time slice of the histogram. T is the bucket start
+// expressed as Unix milliseconds. By is non-nil only when GroupBy was set;
+// it is sparse, containing only groups with at least one event in the bucket.
+type HistogramBucket struct {
+	By    map[string]int64 `json:"by,omitempty"`
+	T     int64            `json:"t"`
+	Count int64            `json:"count"`
+}
+
+// HistogramResult is a dense series of buckets spanning [From, To). The first
+// bucket starts at From; the last bucket ends at To. Consumers can render the
+// slice directly without gap-filling.
+type HistogramResult struct {
+	GroupBy  string            `json:"group_by,omitempty"`
+	Buckets  []HistogramBucket `json:"buckets"`
+	BucketMs int64             `json:"bucket_ms"`
+	From     int64             `json:"from"`
+	To       int64             `json:"to"`
+}
+
+const (
+	histogramMinBucket = time.Second
+	histogramMaxBucket = 24 * time.Hour
+	histogramMaxCount  = 1024
+)
+
+// Normalize validates the request and rejects inputs that would generate an
+// unbounded or malformed histogram.
+func (r *HistogramRequest) Normalize() error {
+	if r.Filters.Since <= 0 {
+		return fmt.Errorf("histogram: since must be > 0")
+	}
+	if r.BucketMs <= 0 {
+		return fmt.Errorf("histogram: bucket_ms must be > 0")
+	}
+	if r.BucketMs < histogramMinBucket.Milliseconds() {
+		return fmt.Errorf("histogram: bucket_ms must be >= %s", histogramMinBucket)
+	}
+	if r.BucketMs > histogramMaxBucket.Milliseconds() {
+		return fmt.Errorf("histogram: bucket_ms must be <= %s", histogramMaxBucket)
+	}
+	bucket := time.Duration(r.BucketMs) * time.Millisecond
+	if r.Filters.Since < bucket {
+		return fmt.Errorf("histogram: since must be >= bucket_ms")
+	}
+	buckets := int64(r.Filters.Since / bucket)
+	if r.Filters.Since%bucket != 0 {
+		buckets++
+	}
+	if buckets > histogramMaxCount {
+		return fmt.Errorf("histogram: window produces %d buckets, max is %d", buckets, histogramMaxCount)
+	}
+	if r.GroupBy != "" {
+		if err := ValidateGroupBy(r.GroupBy); err != nil {
+			return fmt.Errorf("histogram: %w", err)
+		}
+	}
+	return nil
 }
 
 // Type describes an available output kind.
@@ -95,13 +166,15 @@ type Schema struct {
 
 // SchemaField describes a single configuration parameter.
 type SchemaField struct {
-	Default  any      `json:"default,omitempty"`
-	Name     string   `json:"name"`
-	Type     string   `json:"type"`
-	Label    string   `json:"label"`
-	Values   []string `json:"values,omitempty"`
-	Required bool     `json:"required"`
-	Secret   bool     `json:"secret,omitempty"`
+	// EntryFields describes the properties of each value in a map field.
+	EntryFields []SchemaField `json:"entry_fields,omitempty"`
+	Default     any           `json:"default,omitempty"`
+	Name        string        `json:"name"`
+	Type        string        `json:"type"`
+	Label       string        `json:"label"`
+	Values      []string      `json:"values,omitempty"`
+	Required    bool          `json:"required"`
+	Secret      bool          `json:"secret,omitempty"`
 }
 
 // SearchQuery holds parameters for querying stored events.
@@ -143,8 +216,8 @@ func (q *SearchQuery) Normalize() error {
 	if q.Limit <= 0 {
 		q.Limit = 100
 	}
-	if q.Limit > 1000 {
-		q.Limit = 1000
+	if q.Limit > 10000 {
+		q.Limit = 10000
 	}
 	if q.Page <= 0 {
 		q.Page = 1

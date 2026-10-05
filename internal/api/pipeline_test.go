@@ -149,10 +149,11 @@ func TestHandlePipelineOutputs_Masked(t *testing.T) {
 
 	require.Equal(t, 200, resp.StatusCode)
 
-	var got map[string]core.OutputConfigEntry
+	var got map[string]outputConfigResponse
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 
-	assert.Equal(t, SecretMask, got["elasticsearch"].Config["password"], "secret field must be masked")
+	assert.NotContains(t, got["elasticsearch"].Config, "password")
+	assert.True(t, got["elasticsearch"].SecretFields["/password"])
 	assert.Equal(t, "https://es:9200", got["elasticsearch"].Config["url"])
 	assert.Equal(t, "https://hooks.slack.com/x", got["slack"].Config["url"])
 }
@@ -210,10 +211,11 @@ func TestHandlePipelineOutputByName_Hit(t *testing.T) {
 	defer resp.Body.Close()
 
 	require.Equal(t, 200, resp.StatusCode)
-	var got core.OutputConfigEntry
+	var got outputConfigResponse
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 	assert.Equal(t, "elasticsearch", got.Name)
-	assert.Equal(t, SecretMask, got.Config["password"])
+	assert.NotContains(t, got.Config, "password")
+	assert.True(t, got.SecretFields["/password"])
 	assert.Equal(t, "https://es:9200", got.Config["url"])
 }
 
@@ -675,7 +677,7 @@ func TestHandlePipelineOutputs_NestedSecretMaskedInGet(t *testing.T) {
 	var got core.OutputConfigEntry
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 	auth := got.Config["auth"].(map[string]any)
-	assert.Equal(t, SecretMask, auth["password"], "nested auth.password must be masked")
+	assert.NotContains(t, auth, "password")
 	assert.Equal(t, "plain", auth["sasl"], "non-secret sibling must pass through")
 	assert.Equal(t, "alice", auth["username"])
 }

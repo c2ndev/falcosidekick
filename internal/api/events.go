@@ -173,6 +173,38 @@ func (s *Server) handleEventsCountBy(c fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"groups": groups})
 }
 
+func (s *Server) handleEventsHistogram(c fiber.Ctx) error {
+	rs, ok := s.readableStoreOrUnavailable(c)
+	if !ok {
+		return nil
+	}
+	f, err := parseFilters(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	raw := c.Query("bucket_ms")
+	if raw == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "bucket_ms is required"})
+	}
+	bucketMs, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": fmt.Sprintf("invalid bucket_ms: %v", err)})
+	}
+	req := &output.HistogramRequest{
+		Filters:  *f,
+		BucketMs: bucketMs,
+		GroupBy:  c.Query("group_by"),
+	}
+	if err := req.Normalize(); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	res, err := rs.Histogram(c.Context(), req)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.Status(fiber.StatusOK).JSON(res)
+}
+
 func (s *Server) handleEventByUUID(c fiber.Ctx) error {
 	rs, ok := s.readableStoreOrUnavailable(c)
 	if !ok {

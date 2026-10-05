@@ -37,7 +37,9 @@ func (s *Server) handlePipelineStatus(c fiber.Ctx) error {
 
 func (s *Server) handlePipelineStatusByName(c fiber.Ctx) error {
 	name := c.Params("name")
-	for _, st := range s.pipeline.CollectOutputStatus() {
+	statuses := s.pipeline.CollectOutputStatus()
+	for i := range statuses {
+		st := &statuses[i]
 		if st.Name == name {
 			return c.Status(fiber.StatusOK).JSON(st)
 		}
@@ -147,12 +149,14 @@ func (s *Server) handlePipelineOutputPut(c fiber.Ctx) error {
 		existingCfg = existing.Config
 	}
 
-	merged := mergeOutputConfig(existingCfg, body.Config)
-
-	if field := containsSecretPlaceholder(merged, t); field != "" {
+	if field := containsSecretPlaceholder(body.Config, t); field != "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "field '" + field + "' is a secret placeholder; omit the key to keep the existing value",
 		})
+	}
+	merged, err := mergeOutputConfigForSchema(existingCfg, body.Config, t.Schema)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
 	if err := s.reloader.ApplyOutput(c.Context(), name, merged); err != nil {
@@ -214,7 +218,7 @@ func (s *Server) handlePipelineLayoutPut(c fiber.Ctx) error {
 
 // loadMaskedOutputs writes 503/500 and returns (nil, false) when the
 // database is nil or fails; caller must return nil.
-func (s *Server) loadMaskedOutputs(c fiber.Ctx) (map[string]*core.OutputConfigEntry, bool) {
+func (s *Server) loadMaskedOutputs(c fiber.Ctx) (map[string]*outputConfigResponse, bool) {
 	if s.database == nil {
 		_ = c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "database not configured"})
 		return nil, false

@@ -60,10 +60,10 @@ func TestApplyHeaders(t *testing.T) {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://example.com", http.NoBody)
 	require.NoError(t, err)
 
-	ApplyHeaders(req, map[string]string{
-		"X-Custom": "value",
-		"X-Other":  "other",
-	})
+	require.NoError(t, ApplyHeaders(req, map[string]Header{
+		"X-Custom": {Values: []string{"value"}},
+		"X-Other":  {Values: []string{"other"}},
+	}))
 
 	assert.Equal(t, "value", req.Header.Get("X-Custom"))
 	assert.Equal(t, "other", req.Header.Get("X-Other"))
@@ -73,7 +73,7 @@ func TestApplyHeadersNilMap(t *testing.T) {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://example.com", http.NoBody)
 	require.NoError(t, err)
 
-	ApplyHeaders(req, nil)
+	require.NoError(t, ApplyHeaders(req, nil))
 	assert.Empty(t, req.Header.Get("X-Custom"))
 }
 
@@ -96,6 +96,15 @@ func TestHTTPConfigSchemaFields(t *testing.T) {
 	for _, f := range fields {
 		if f.Name == "password" || f.Name == "bearer_token" {
 			assert.True(t, f.Secret, "%s must be marked as secret", f.Name)
+		}
+		if f.Name == "headers" {
+			assert.False(t, f.Secret, "headers must not introduce headers_file")
+			require.Len(t, f.EntryFields, 3)
+			for i, name := range []string{"values", "secrets", "files"} {
+				assert.Equal(t, name, f.EntryFields[i].Name)
+				assert.Equal(t, "string[]", f.EntryFields[i].Type)
+				assert.Equal(t, name == "secrets", f.EntryFields[i].Secret)
+			}
 		}
 	}
 }

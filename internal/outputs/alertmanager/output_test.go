@@ -90,7 +90,9 @@ func TestAlertmanagerPayloadFormat(t *testing.T) {
 			Name:         "sets custom headers",
 			AddressField: "hosts",
 			AddressSlice: true,
-			Config:       map[string]any{"headers": map[string]string{"X-Auth": "token123"}},
+			Config: map[string]any{"headers": map[string]any{
+				"X-Auth": map[string]any{"secrets": []string{"token123"}},
+			}},
 			ValidateReq: func(t *testing.T, req *http.Request, _ []byte) {
 				assert.Equal(t, "token123", req.Header.Get("X-Auth"))
 			},

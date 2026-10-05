@@ -131,6 +131,7 @@ func (s *Server) mountRoutes(registry *prometheus.Registry) *fiber.App {
 	events.Get("/search", s.handleEventsSearch)
 	events.Get("/count", s.handleEventsCount)
 	events.Get("/count/:groupby", s.handleEventsCountBy)
+	events.Get("/histogram", s.handleEventsHistogram)
 	events.Get("/:uuid", s.handleEventByUUID)
 
 	pipe := v1.Group("/pipeline")

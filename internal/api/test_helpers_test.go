@@ -96,14 +96,16 @@ func buildTestServerWithDBAndCatalog(t *testing.T, db core.Database, cat *catalo
 
 type fakeReadableStore struct {
 	testutil.MockDriver
-	SearchFn   func(ctx context.Context, q *output.SearchQuery) (*output.SearchResult, error)
-	CountFn    func(ctx context.Context, f *output.Filters) (int64, error)
-	CountByFn  func(ctx context.Context, field string, f *output.Filters) (map[string]int64, error)
-	GetEventFn func(ctx context.Context, uuid string) (*event.Event, error)
+	SearchFn    func(ctx context.Context, q *output.SearchQuery) (*output.SearchResult, error)
+	CountFn     func(ctx context.Context, f *output.Filters) (int64, error)
+	CountByFn   func(ctx context.Context, field string, f *output.Filters) (map[string]int64, error)
+	HistogramFn func(ctx context.Context, req *output.HistogramRequest) (*output.HistogramResult, error)
+	GetEventFn  func(ctx context.Context, uuid string) (*event.Event, error)
 
 	LastSearchQuery  *output.SearchQuery
 	LastCountFilters *output.Filters
 	LastCountByField string
+	LastHistogramReq *output.HistogramRequest
 	LastGetEventUUID string
 	SearchCalls      atomic.Int32
 }
@@ -131,6 +133,20 @@ func (f *fakeReadableStore) CountBy(ctx context.Context, field string, filters *
 		return f.CountByFn(ctx, field, filters)
 	}
 	return nil, nil
+}
+
+func (f *fakeReadableStore) Histogram(ctx context.Context, req *output.HistogramRequest) (*output.HistogramResult, error) {
+	f.LastHistogramReq = req
+	if f.HistogramFn != nil {
+		return f.HistogramFn(ctx, req)
+	}
+	if err := req.Normalize(); err != nil {
+		return nil, err
+	}
+	return &output.HistogramResult{
+		BucketMs: req.BucketMs,
+		GroupBy:  req.GroupBy,
+	}, nil
 }
 
 func (f *fakeReadableStore) GetEvent(ctx context.Context, uuid string) (*event.Event, error) {

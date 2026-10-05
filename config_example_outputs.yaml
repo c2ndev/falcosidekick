@@ -22,7 +22,21 @@
 #   username:             basic auth username
 #   password:             basic auth password (or password_file)
 #   bearer_token:         bearer token (or bearer_token_file)
-#   headers:              custom HTTP headers (map)
+#   headers:              values, then secrets, then files for each header
+#     X-Team:
+#       values: ["security"]
+#     X-Api-Key:
+#       secrets: ["TOKEN"]
+#     X-Client-Key:
+#       files: ["/run/secrets/client-key"]  # read and trimmed on each request
+#   # Files are checked at startup by config validation and sender construction.
+#   # Relative paths use the process working directory, as scalar _file does.
+#   # Authorization must use secrets or files, without basic/bearer auth.
+#   # Header names are case-insensitive; duplicate names are rejected.
+#   # Each entry accepts only values/secrets/files string lists (or null to clear).
+#   # Duplicate case aliases of those properties are rejected.
+#   # Framing, connection, proxy and compression headers are transport-owned.
+#   # Custom secret headers follow redirects, including redirects to other origins.
 #   tls:
 #     insecure_skip_verify: false
 #     ca_file: ""

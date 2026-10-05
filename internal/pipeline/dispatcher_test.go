@@ -623,6 +623,10 @@ func (m *mockReadableStoreDriver) CountBy(_ context.Context, _ string, _ *output
 	return nil, nil
 }
 
+func (m *mockReadableStoreDriver) Histogram(_ context.Context, _ *output.HistogramRequest) (*output.HistogramResult, error) {
+	return &output.HistogramResult{}, nil
+}
+
 func (m *mockReadableStoreDriver) GetEvent(_ context.Context, _ string) (*event.Event, error) {
 	return nil, nil
 }

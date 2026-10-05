@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 )
 
 const (
@@ -36,7 +37,7 @@ const (
 // Sender handles HTTP request execution and response checking for output drivers.
 type Sender struct {
 	client    *http.Client
-	headers   map[string]string
+	headers   map[string]Header
 	basicUser string
 	basicPass string
 	name      string
@@ -44,16 +45,22 @@ type Sender struct {
 
 // NewSender creates a Sender with a pre-configured HTTP client.
 // Auth from HTTPConfig (basic auth, bearer token) is auto-configured.
-// Returns an error if TLS configuration is invalid.
+// Returns an error if headers, authentication, or TLS configuration is invalid.
+// Header files are checked even if the driver has already validated its config.
 func NewSender(name string, cfg *HTTPConfig) (*Sender, error) {
+	if errs := cfg.Validate(); len(errs) > 0 {
+		return nil, fmt.Errorf("%s: %s", name, errs.Error())
+	}
 	client, err := BuildHTTPClient(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 
-	headers := make(map[string]string, len(cfg.Headers))
+	headers := make(map[string]Header, len(cfg.Headers))
 	for k, v := range cfg.Headers {
-		headers[k] = v
+		headers[http.CanonicalHeaderKey(k)] = Header{
+			Values: slices.Clone(v.Values), Secrets: slices.Clone(v.Secrets), Files: slices.Clone(v.Files),
+		}
 	}
 
 	s := &Sender{
@@ -67,21 +74,21 @@ func NewSender(name string, cfg *HTTPConfig) (*Sender, error) {
 		s.basicPass = cfg.Password
 	}
 	if cfg.BearerToken != "" {
-		s.headers["Authorization"] = "Bearer " + cfg.BearerToken
+		s.SetHeader("Authorization", "Bearer "+cfg.BearerToken)
 	}
 
 	return s, nil
 }
 
-// SetBasicAuth configures basic authentication for all requests.
+// SetBasicAuth configures basic authentication before the sender is used.
 func (s *Sender) SetBasicAuth(user, pass string) {
 	s.basicUser = user
 	s.basicPass = pass
 }
 
-// SetHeader adds a persistent header applied to every request.
+// SetHeader replaces a configured header before the sender is used.
 func (s *Sender) SetHeader(key, value string) {
-	s.headers[key] = value
+	s.headers[http.CanonicalHeaderKey(key)] = Header{Secrets: []string{value}}
 }
 
 // SendJSON marshals payload as JSON and sends with the given HTTP method.
@@ -193,9 +200,13 @@ func (s *Sender) DoReadBody(ctx context.Context, req *http.Request) ([]byte, err
 
 // execute applies headers, auth, and runs the HTTP request.
 func (s *Sender) execute(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	if req.Header == nil {
+		req.Header = make(http.Header)
+	}
 	req.Header.Set("User-Agent", userAgent)
-	for k, v := range s.headers {
-		req.Header.Set(k, v)
+	if err := ApplyHeaders(req, s.headers); err != nil {
+		return nil, fmt.Errorf("%s headers: %w", s.name, err)
 	}
 	if s.basicUser != "" {
 		req.SetBasicAuth(s.basicUser, s.basicPass)
