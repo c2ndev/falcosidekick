@@ -16,6 +16,7 @@ bun run dev                     # Bun.serve dev server (:5173) with HMR and API 
 bun run build                   # production build -> ./dist
 bun run lint                    # eslint
 bun run typecheck               # tsc --noEmit
+bun test                        # unit and component tests via Bun test + happy-dom
 ```
 
 ## Dev server
@@ -77,3 +78,39 @@ src/
 ```
 
 The repo-root files `doc.go`, `embed.go`, `embed_stub.go`, and the embed tests form the Go `ui` package that wires `dist/*` into the falcosidekick binary. They are intentionally in the same directory as the UI source because `go:embed` cannot traverse parent directories.
+
+## Page tree (post-Commit 10)
+
+| Route | Page | Notes |
+|-------|------|-------|
+| `/` | Dashboard | Counter cards, top rules, top sources, output status grid. |
+| `/events` | Events | Filtered table with side-drawer detail. |
+| `/pipeline` | Pipeline | Read-only React Flow graph with output status badges. |
+| `/settings` | Settings | Version info and UI preferences. |
+| `/login` | Sign in | Scaffold until 9d (auth + JWT) lands. |
+| `*` | 404 | Not found. |
+
+All authenticated routes are wrapped in `<AuthGuard>` ([`src/components/auth/auth-guard.tsx`](src/components/auth/auth-guard.tsx)) which is a pass-through while `auth.enabled=false` in the backend config.
+
+## State and data fetching
+
+- HTTP boundary: [`src/lib/api-client.ts`](src/lib/api-client.ts). ESLint forbids raw `fetch` / `axios` outside this file.
+- Query cache: [TanStack Query](https://tanstack.com/query) via [`src/lib/query-client.ts`](src/lib/query-client.ts).
+- Stores (Zustand): [`src/stores/auth-store.ts`](src/stores/auth-store.ts), [`src/stores/ui-store.ts`](src/stores/ui-store.ts), [`src/stores/pipeline-store.ts`](src/stores/pipeline-store.ts).
+
+## Live event feed
+
+`/events` polls `GET /api/v1/events/search` via [`src/hooks/use-events.ts`](src/hooks/use-events.ts). The shared refresh control defaults to 15 seconds and can disable automatic polling. WebSocket streaming is not implemented.
+
+## Testing
+
+```sh
+bun test                         # runs all *.test.ts / *.test.tsx files
+bun test path/to/file.test.tsx   # single file
+```
+
+Harness: `@testing-library/react` over `happy-dom`, wired through `bunfig.toml`'s `[test] preload`. Testing matchers are augmented via [`src/test/jest-dom.d.ts`](src/test/jest-dom.d.ts).
+
+## Theme
+
+Colors live as CSS custom properties in [`styles/globals.css`](styles/globals.css). The primary accent is Falco's official teal `#00AEC7` (see `--brand` and `--ring`). shadcn "new-york" neutral is the base.

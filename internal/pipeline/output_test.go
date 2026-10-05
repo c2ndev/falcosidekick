@@ -18,6 +18,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -56,6 +57,35 @@ func TestOutputGetStatus(t *testing.T) {
 	assert.Equal(t, 0, status.QueueDepth)
 	assert.Equal(t, 100, status.QueueCapacity)
 	assert.Equal(t, "closed", status.CircuitState)
+}
+
+func TestOutputClearsLastErrorAfterRecoveredSend(t *testing.T) {
+	var attempts atomic.Int64
+	out := NewOutput(&testutil.MockDriver{
+		DriverName: "recovering",
+		SendFunc: func(_ context.Context, _ *event.Event) error {
+			if attempts.Add(1) == 1 {
+				return errors.New("temporary send failure")
+			}
+			return nil
+		},
+	}, defaultRuntimeDefaults(), nil)
+
+	out.executeWithRetry(context.Background(), 1, func(ctx context.Context) error {
+		return out.driver.Send(ctx, newTestEvent())
+	})
+	failed := out.GetStatus()
+	require.Equal(t, "error", failed.Status)
+	require.Contains(t, failed.LastError, "temporary send failure")
+
+	out.executeWithRetry(context.Background(), 1, func(ctx context.Context) error {
+		return out.driver.Send(ctx, newTestEvent())
+	})
+	recovered := out.GetStatus()
+	assert.Equal(t, "ok", recovered.Status)
+	assert.Empty(t, recovered.LastError)
+	assert.Equal(t, 1, recovered.FailedTotal)
+	assert.Equal(t, 1, recovered.SentTotal)
 }
 
 func TestRetireGraceful(t *testing.T) {
