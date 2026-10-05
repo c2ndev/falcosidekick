@@ -19,6 +19,7 @@ package inmemory
 import (
 	"context"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -306,6 +307,9 @@ func TestSearchPagination(t *testing.T) {
 		{"second page", 2, 10, 10, 25},
 		{"third page (partial)", 3, 10, 5, 25},
 		{"beyond last page", 4, 10, 0, 25},
+		{"maximum page with default-sized limit", math.MaxInt, 100, 0, 25},
+		{"maximum page with maximum limit", math.MaxInt, 10000, 0, 25},
+		{"exact page boundary", 6, 5, 0, 25},
 	}
 
 	for _, tt := range tests {
@@ -759,6 +763,214 @@ func TestFilterSemanticsWithinFieldOrCrossFieldAnd(t *testing.T) {
 				got = append(got, e.UUID)
 			}
 			assert.ElementsMatch(t, tt.wantUUID, got)
+		})
+	}
+}
+
+func TestHistogramDenseBuckets(t *testing.T) {
+	ctx := context.Background()
+	o := createTestOutput(100)
+	now := time.Now()
+
+	require.NoError(t, o.Send(ctx, testEvent("r", event.PriorityWarning, "syscall", now.Add(-50*time.Minute))))
+	require.NoError(t, o.Send(ctx, testEvent("r", event.PriorityWarning, "syscall", now.Add(-20*time.Minute))))
+	require.NoError(t, o.Send(ctx, testEvent("r", event.PriorityWarning, "syscall", now.Add(-5*time.Minute))))
+	require.NoError(t, o.Send(ctx, testEvent("r", event.PriorityWarning, "syscall", now.Add(-1*time.Minute))))
+
+	res, err := o.Histogram(ctx, &output.HistogramRequest{
+		Filters:  output.Filters{Since: time.Hour},
+		BucketMs: (10 * time.Minute).Milliseconds(),
+	})
+	require.NoError(t, err)
+	require.Len(t, res.Buckets, 6, "1h / 10min = 6 dense buckets")
+	assert.Equal(t, (10 * time.Minute).Milliseconds(), res.BucketMs)
+	assert.Equal(t, res.From+int64(6)*res.BucketMs, res.To)
+
+	var total int64
+	for _, b := range res.Buckets {
+		total += b.Count
+	}
+	assert.Equal(t, int64(4), total, "all four events land in the window")
+	assert.Nil(t, res.Buckets[0].By, "no group_by -> no per-group map")
+}
+
+func TestHistogramExcludesOutOfWindow(t *testing.T) {
+	ctx := context.Background()
+	o := createTestOutput(100)
+	now := time.Now()
+
+	require.NoError(t, o.Send(ctx, testEvent("old", event.PriorityWarning, "syscall", now.Add(-2*time.Hour))))
+	require.NoError(t, o.Send(ctx, testEvent("in1", event.PriorityWarning, "syscall", now.Add(-20*time.Minute))))
+	require.NoError(t, o.Send(ctx, testEvent("in2", event.PriorityWarning, "syscall", now.Add(-1*time.Minute))))
+
+	res, err := o.Histogram(ctx, &output.HistogramRequest{
+		Filters:  output.Filters{Since: time.Hour},
+		BucketMs: (15 * time.Minute).Milliseconds(),
+	})
+	require.NoError(t, err)
+
+	var total int64
+	for _, b := range res.Buckets {
+		total += b.Count
+	}
+	assert.Equal(t, int64(2), total, "event older than since must be excluded")
+}
+
+func TestHistogramGroupByAllFields(t *testing.T) {
+	ctx := context.Background()
+	o := createTestOutput(100)
+	now := time.Now()
+
+	e1 := testEvent("rule-a", event.PriorityError, "syscall", now.Add(-5*time.Minute))
+	e1.Hostname = "node-alpha"
+	e1.Tags = []string{"net", "fs"}
+	require.NoError(t, o.Send(ctx, e1))
+
+	e2 := testEvent("rule-b", event.PriorityWarning, "k8s_audit", now.Add(-10*time.Minute))
+	e2.Hostname = "node-beta"
+	e2.Tags = []string{"net"}
+	require.NoError(t, o.Send(ctx, e2))
+
+	for _, field := range []string{fieldPriority, fieldRule, fieldSource, fieldHostname, fieldTags} {
+		t.Run(field, func(t *testing.T) {
+			res, err := o.Histogram(ctx, &output.HistogramRequest{
+				Filters:  output.Filters{Since: time.Hour},
+				BucketMs: time.Hour.Milliseconds(),
+				GroupBy:  field,
+			})
+			require.NoError(t, err)
+			require.Len(t, res.Buckets, 1)
+			assert.Equal(t, field, res.GroupBy)
+
+			by := res.Buckets[0].By
+			require.NotNil(t, by)
+			switch field {
+			case fieldPriority:
+				assert.Equal(t, int64(1), by["error"])
+				assert.Equal(t, int64(1), by["warning"])
+			case fieldRule:
+				assert.Equal(t, int64(1), by["rule-a"])
+				assert.Equal(t, int64(1), by["rule-b"])
+			case fieldSource:
+				assert.Equal(t, int64(1), by["syscall"])
+				assert.Equal(t, int64(1), by["k8s_audit"])
+			case fieldHostname:
+				assert.Equal(t, int64(1), by["node-alpha"])
+				assert.Equal(t, int64(1), by["node-beta"])
+			case fieldTags:
+				assert.Equal(t, int64(2), by["net"], "tags contributes to every matching key")
+				assert.Equal(t, int64(1), by["fs"])
+			}
+		})
+	}
+}
+
+func TestHistogramHonorsFilters(t *testing.T) {
+	ctx := context.Background()
+	o := createTestOutput(100)
+	now := time.Now()
+
+	e1 := testEvent("rule-a", event.PriorityError, "syscall", now.Add(-5*time.Minute))
+	e1.UUID = "keep"
+	require.NoError(t, o.Send(ctx, e1))
+
+	e2 := testEvent("rule-a", event.PriorityWarning, "syscall", now.Add(-5*time.Minute))
+	e2.UUID = "drop"
+	require.NoError(t, o.Send(ctx, e2))
+
+	res, err := o.Histogram(ctx, &output.HistogramRequest{
+		Filters:  output.Filters{Since: time.Hour, Priority: []string{"error"}},
+		BucketMs: time.Hour.Milliseconds(),
+	})
+	require.NoError(t, err)
+	require.Len(t, res.Buckets, 1)
+	assert.Equal(t, int64(1), res.Buckets[0].Count, "priority filter applied")
+}
+
+func TestTagAggregationsCountEachEventOnce(t *testing.T) {
+	for _, tc := range []struct {
+		want map[string]int64
+		name string
+		tags []string
+	}{
+		{name: "no tags", want: map[string]int64{}},
+		{name: "distinct tags", tags: []string{"security", "network"}, want: map[string]int64{"security": 1, "network": 1}},
+		{name: "duplicate tags", tags: []string{"security", "security", "network", "security"}, want: map[string]int64{"security": 1, "network": 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := createTestOutput(10)
+			e := testEvent("rule", event.PriorityWarning, "syscall", time.Now().Add(-time.Minute))
+			e.Tags = append([]string(nil), tc.tags...)
+			require.NoError(t, o.Send(t.Context(), e))
+			for _, filters := range []output.Filters{{}, {Since: time.Hour}, {Source: []string{"syscall"}}} {
+				counts, err := o.CountBy(t.Context(), "tags", &filters)
+				require.NoError(t, err)
+				assert.Equal(t, tc.want, counts)
+			}
+			histogram, err := o.Histogram(t.Context(), &output.HistogramRequest{
+				Filters: output.Filters{Since: time.Hour}, BucketMs: time.Hour.Milliseconds(), GroupBy: "tags",
+			})
+			require.NoError(t, err)
+			require.Len(t, histogram.Buckets, 1)
+			assert.Equal(t, int64(1), histogram.Buckets[0].Count)
+			assert.Equal(t, tc.want, histogram.Buckets[0].By)
+			assert.Equal(t, tc.tags, e.Tags, "aggregation must not mutate shared events")
+		})
+	}
+}
+
+func TestTagAggregationsKeepDistinctEvents(t *testing.T) {
+	o := createTestOutput(10)
+	for range 2 {
+		e := testEvent("rule", event.PriorityWarning, "syscall", time.Now().Add(-time.Minute))
+		e.Tags = []string{"security", "security"}
+		require.NoError(t, o.Send(t.Context(), e))
+	}
+	for _, filters := range []output.Filters{{}, {Since: time.Hour}, {Source: []string{"syscall"}}} {
+		counts, err := o.CountBy(t.Context(), "tags", &filters)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]int64{"security": 2}, counts)
+	}
+	histogram, err := o.Histogram(t.Context(), &output.HistogramRequest{
+		Filters: output.Filters{Since: time.Hour}, BucketMs: time.Hour.Milliseconds(), GroupBy: "tags",
+	})
+	require.NoError(t, err)
+	require.Len(t, histogram.Buckets, 1)
+	assert.Equal(t, int64(2), histogram.Buckets[0].Count)
+	assert.Equal(t, map[string]int64{"security": 2}, histogram.Buckets[0].By)
+}
+
+func TestHistogramEmptyStore(t *testing.T) {
+	o := createTestOutput(100)
+	res, err := o.Histogram(context.Background(), &output.HistogramRequest{
+		Filters:  output.Filters{Since: time.Hour},
+		BucketMs: (15 * time.Minute).Milliseconds(),
+	})
+	require.NoError(t, err)
+	require.Len(t, res.Buckets, 4)
+	for _, b := range res.Buckets {
+		assert.Zero(t, b.Count)
+		assert.Nil(t, b.By)
+	}
+}
+
+func TestHistogramValidationRejectsBadInput(t *testing.T) {
+	o := createTestOutput(100)
+	tests := []struct {
+		name string
+		req  output.HistogramRequest
+	}{
+		{"missing since", output.HistogramRequest{BucketMs: 60_000}},
+		{"zero bucket", output.HistogramRequest{Filters: output.Filters{Since: time.Hour}}},
+		{"bucket too small", output.HistogramRequest{Filters: output.Filters{Since: time.Hour}, BucketMs: 10}},
+		{"bucket larger than since", output.HistogramRequest{Filters: output.Filters{Since: time.Minute}, BucketMs: time.Hour.Milliseconds()}},
+		{"too many buckets", output.HistogramRequest{Filters: output.Filters{Since: time.Hour}, BucketMs: time.Second.Milliseconds()}},
+		{"invalid group_by", output.HistogramRequest{Filters: output.Filters{Since: time.Hour}, BucketMs: (15 * time.Minute).Milliseconds(), GroupBy: "uuid"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := o.Histogram(context.Background(), &tt.req)
+			assert.Error(t, err)
 		})
 	}
 }

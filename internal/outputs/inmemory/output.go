@@ -192,18 +192,15 @@ func (d *driver) Search(_ context.Context, query *output.SearchQuery) (*output.S
 	sortEvents(candidates, query.SortBy, query.SortDesc)
 
 	total := int64(len(candidates))
-	offset := (query.Page - 1) * query.Limit
-	if offset >= len(candidates) {
+	if query.Page-1 > len(candidates)/query.Limit {
 		return &output.SearchResult{
 			Events: []event.Event{}, Total: total,
 			Page: query.Page, Limit: query.Limit,
 		}, nil
 	}
 
-	end := offset + query.Limit
-	if end > len(candidates) {
-		end = len(candidates)
-	}
+	offset := (query.Page - 1) * query.Limit
+	end := offset + min(query.Limit, len(candidates)-offset)
 
 	page := make([]event.Event, 0, end-offset)
 	for _, e := range candidates[offset:end] {
@@ -254,6 +251,53 @@ func (d *driver) CountBy(_ context.Context, field string, filters *output.Filter
 	}
 
 	return countFromEvents(d.findMatchingEvents(filters, filters.Filter), field), nil
+}
+
+func (d *driver) Histogram(_ context.Context, req *output.HistogramRequest) (*output.HistogramResult, error) {
+	if err := req.Normalize(); err != nil {
+		return nil, err
+	}
+
+	sinceMs := req.Filters.Since.Milliseconds()
+	bucketMs := req.BucketMs
+	nowMs := time.Now().UnixMilli()
+	fromMs := nowMs - sinceMs
+	numBuckets := int(sinceMs / bucketMs)
+	if sinceMs%bucketMs != 0 {
+		numBuckets++
+	}
+	toMs := fromMs + int64(numBuckets)*bucketMs
+
+	buckets := make([]output.HistogramBucket, numBuckets)
+	for i := range buckets {
+		buckets[i].T = fromMs + int64(i)*bucketMs
+	}
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	candidates := d.findMatchingEvents(&req.Filters, req.Filters.Filter)
+	for _, e := range candidates {
+		i := int((e.Time.UnixMilli() - fromMs) / bucketMs)
+		if i < 0 || i >= numBuckets {
+			continue
+		}
+		buckets[i].Count++
+		if req.GroupBy != "" {
+			if buckets[i].By == nil {
+				buckets[i].By = make(map[string]int64)
+			}
+			accumulateByField(buckets[i].By, e, req.GroupBy)
+		}
+	}
+
+	return &output.HistogramResult{
+		Buckets:  buckets,
+		BucketMs: bucketMs,
+		From:     fromMs,
+		To:       toMs,
+		GroupBy:  req.GroupBy,
+	}, nil
 }
 
 // --- Ring buffer internals ---
@@ -414,22 +458,31 @@ func (d *driver) countFromIndex(field string) map[string]int64 {
 func countFromEvents(events []*event.Event, field string) map[string]int64 {
 	result := make(map[string]int64)
 	for _, e := range events {
-		switch field {
-		case fieldPriority:
-			result[string(e.Priority)]++
-		case fieldRule:
-			result[e.Rule]++
-		case fieldSource:
-			result[e.Source]++
-		case fieldHostname:
-			result[e.Hostname]++
-		case fieldTags:
-			for _, tag := range e.Tags {
-				result[tag]++
-			}
-		}
+		accumulateByField(result, e, field)
 	}
 	return result
+}
+
+func accumulateByField(dst map[string]int64, e *event.Event, field string) {
+	switch field {
+	case fieldPriority:
+		dst[string(e.Priority)]++
+	case fieldRule:
+		dst[e.Rule]++
+	case fieldSource:
+		dst[e.Source]++
+	case fieldHostname:
+		dst[e.Hostname]++
+	case fieldTags:
+		seen := make(map[string]struct{}, len(e.Tags))
+		for _, tag := range e.Tags {
+			if _, ok := seen[tag]; ok {
+				continue
+			}
+			seen[tag] = struct{}{}
+			dst[tag]++
+		}
+	}
 }
 
 // --- GC ---

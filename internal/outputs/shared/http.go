@@ -21,6 +21,8 @@ import (
 	"net/http"
 	"time"
 
+	"golang.org/x/net/http/httpguts"
+
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
@@ -34,7 +36,7 @@ const (
 // HTTPConfig holds shared HTTP client settings for outputs.
 // Outputs embed this struct to get TLS, headers, and authentication for free.
 type HTTPConfig struct {
-	Headers     map[string]string `mapstructure:"headers"`
+	Headers     map[string]Header `mapstructure:"headers"`
 	Username    string            `mapstructure:"username"`
 	Password    string            `mapstructure:"password"`
 	BearerToken string            `mapstructure:"bearer_token"`
@@ -47,6 +49,10 @@ func (c *HTTPConfig) Validate() utils.ValidationErrors {
 	if c.BearerToken != "" && c.Password != "" {
 		errs.Add("bearer_token", "cannot use both bearer_token and basic auth (username/password)")
 	}
+	if !httpguts.ValidHeaderFieldValue(c.BearerToken) {
+		errs.Add("bearer_token", "invalid header value")
+	}
+	errs.Merge("", c.validateHeaders())
 	errs.Merge("tls", c.TLS.Validate())
 	if len(errs) > 0 {
 		return errs
@@ -60,7 +66,11 @@ func HTTPConfigSchemaFields() []output.SchemaField {
 		{Name: "username", Type: "string", Label: "Username (Basic Auth)"},
 		{Name: "password", Type: "string", Secret: true, Label: "Password (Basic Auth)"},
 		{Name: "bearer_token", Type: "string", Secret: true, Label: "Bearer Token"},
-		{Name: "headers", Type: "map", Label: "Custom HTTP Headers"},
+		{Name: "headers", Type: "map", Label: "Custom HTTP Headers", EntryFields: []output.SchemaField{
+			{Name: "values", Type: "string[]", Label: "Public Values"},
+			{Name: "secrets", Type: "string[]", Secret: true, Label: "Secret Values"},
+			{Name: "files", Type: "string[]", Label: "Secret File Paths"},
+		}},
 	}, TLSClientSchemaFields()...)
 }
 
@@ -79,11 +89,4 @@ func BuildHTTPClient(cfg *HTTPConfig) (*http.Client, error) {
 			IdleConnTimeout: defaultIdleConnTimeout,
 		},
 	}, nil
-}
-
-// ApplyHeaders sets custom headers on an HTTP request.
-func ApplyHeaders(req *http.Request, headers map[string]string) {
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
 }

@@ -87,7 +87,8 @@ func TestMaskOutputConfig_SecretFieldPresent(t *testing.T) {
 	masked := maskOutputConfig(entry, secretType("elasticsearch"))
 
 	assert.Equal(t, "https://es:9200", masked.Config["url"])
-	assert.Equal(t, SecretMask, masked.Config["password"])
+	assert.NotContains(t, masked.Config, "password")
+	assert.True(t, masked.SecretFields["/password"])
 }
 
 func TestMaskOutputConfig_SecretFieldAbsent(t *testing.T) {
@@ -118,11 +119,12 @@ func TestMaskOutputConfig_MultipleSecretFields(t *testing.T) {
 
 	masked := maskOutputConfig(entry, secretType("elasticsearch"))
 
-	assert.Equal(t, SecretMask, masked.Config["password"])
-	assert.Equal(t, SecretMask, masked.Config["token"])
+	assert.NotContains(t, masked.Config, "password")
+	assert.NotContains(t, masked.Config, "token")
+	assert.Equal(t, map[string]bool{"/password": true, "/token": true}, masked.SecretFields)
 }
 
-func TestMaskOutputConfig_UnknownType_MasksAllStrings(t *testing.T) {
+func TestMaskOutputConfig_UnknownType_ProtectsAllLeaves(t *testing.T) {
 	entry := &core.OutputConfigEntry{
 		Name: "legacy",
 		Config: map[string]any{
@@ -134,12 +136,11 @@ func TestMaskOutputConfig_UnknownType_MasksAllStrings(t *testing.T) {
 
 	masked := maskOutputConfig(entry, output.Type{})
 
-	assert.Equal(t, SecretMask, masked.Config["url"], "string fields masked under unknown-type fallback")
-	assert.Equal(t, 9200, masked.Config["port"], "non-string fields untouched")
-	assert.Equal(t, true, masked.Config["enable"], "non-string fields untouched")
+	assert.Empty(t, masked.Config)
+	assert.Equal(t, map[string]bool{"/url": true, "/port": true, "/enable": true}, masked.SecretFields)
 }
 
-func TestMaskOutputConfig_CaseSensitiveMatch(t *testing.T) {
+func TestMaskOutputConfig_CaseInsensitiveMatch(t *testing.T) {
 	entry := &core.OutputConfigEntry{
 		Name: "weird",
 		Config: map[string]any{
@@ -150,8 +151,8 @@ func TestMaskOutputConfig_CaseSensitiveMatch(t *testing.T) {
 
 	masked := maskOutputConfig(entry, secretType("weird"))
 
-	assert.Equal(t, "plaintext", masked.Config["Password"], "uppercase Password does not match schema field password")
-	assert.Equal(t, SecretMask, masked.Config["password"])
+	assert.Empty(t, masked.Config)
+	assert.Equal(t, map[string]bool{"/Password": true, "/password": true}, masked.SecretFields)
 }
 
 func TestMaskOutputConfig_DoesNotMutateInput(t *testing.T) {
@@ -188,12 +189,13 @@ func TestMaskOutputConfigs_LooksUpPerType(t *testing.T) {
 
 	masked := maskOutputConfigs(entries, cat)
 
-	assert.Equal(t, SecretMask, masked["elasticsearch"].Config["password"])
+	assert.NotContains(t, masked["elasticsearch"].Config, "password")
+	assert.True(t, masked["elasticsearch"].SecretFields["/password"])
 	assert.Equal(t, "u", masked["elasticsearch"].Config["url"])
 	assert.Equal(t, "https://s", masked["slack"].Config["url"])
 	assert.Equal(t, "#c", masked["slack"].Config["channel"])
-	assert.Equal(t, SecretMask, masked["unknown"].Config["token"], "unknown type falls back to all-string mask")
-	assert.Equal(t, 80, masked["unknown"].Config["port"])
+	assert.Empty(t, masked["unknown"].Config)
+	assert.Equal(t, map[string]bool{"/token": true, "/port": true}, masked["unknown"].SecretFields)
 }
 
 func TestMaskOutputConfigs_NilInput(t *testing.T) {
@@ -221,6 +223,31 @@ func TestMaskCoreConfig_CopiesAndReturnsEquivalent(t *testing.T) {
 
 func TestMaskCoreConfig_Nil(t *testing.T) {
 	assert.Nil(t, maskCoreConfig(nil))
+}
+
+func TestMaskOutputConfig_ConfiguredPresence(t *testing.T) {
+	for _, tc := range []struct {
+		value      any
+		name       string
+		configured bool
+	}{
+		{"secret", "string", true},
+		{"", "empty string", false},
+		{0, "zero", true},
+		{false, "false", true},
+		{float64(0), "zero float", true},
+		{nil, "null", false},
+		{[]string{}, "empty list", false},
+		{[]string(nil), "nil list", false},
+		{[]string{"secret"}, "list", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := &core.OutputConfigEntry{Config: map[string]any{"password": tc.value}}
+			masked := maskOutputConfig(entry, secretType("webhook"))
+			assert.NotContains(t, masked.Config, "password")
+			assert.Equal(t, map[string]bool{"/password": tc.configured}, masked.SecretFields)
+		})
+	}
 }
 
 func nestedSecretType() output.Type {
@@ -256,7 +283,8 @@ func TestMaskOutputConfig_NestedSecretPath(t *testing.T) {
 	masked := maskOutputConfig(entry, nestedSecretType())
 
 	auth := masked.Config["auth"].(map[string]any)
-	assert.Equal(t, SecretMask, auth["password"], "nested auth.password must be masked")
+	assert.NotContains(t, auth, "password")
+	assert.True(t, masked.SecretFields["/auth/password"])
 	assert.Equal(t, "plain", auth["sasl"], "non-secret nested siblings must not be touched")
 	assert.Equal(t, "alice", auth["username"])
 

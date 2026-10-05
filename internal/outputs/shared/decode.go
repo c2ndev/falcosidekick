@@ -30,8 +30,11 @@ func DecodeDriverConfig(raw map[string]any, result any) error {
 		ErrorUnused:      true,
 		WeaklyTypedInput: true,
 		Squash:           true,
-		DecodeHook:       mapstructure.StringToTimeDurationHookFunc(),
-		Result:           result,
+		DecodeHook: mapstructure.ComposeDecodeHookFunc(
+			mapstructure.StringToTimeDurationHookFunc(),
+			decodeHeaderHook,
+		),
+		Result: result,
 	})
 	if err != nil {
 		return fmt.Errorf("decoder init: %w", err)

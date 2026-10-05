@@ -17,7 +17,9 @@
 package output
 
 import (
+	"math"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -48,9 +50,14 @@ func TestSearchQueryNormalize(t *testing.T) {
 			wantLimit: 100, wantPage: 1, wantSort: "timestamp",
 		},
 		{
-			name:      "limit capped at 1000",
+			name:      "limit preserved under cap",
 			query:     SearchQuery{Limit: 5000},
-			wantLimit: 1000, wantPage: 1, wantSort: "timestamp",
+			wantLimit: 5000, wantPage: 1, wantSort: "timestamp",
+		},
+		{
+			name:      "limit capped at 10000",
+			query:     SearchQuery{Limit: 50000},
+			wantLimit: 10000, wantPage: 1, wantSort: "timestamp",
 		},
 		{
 			name:      "negative page defaults to 1",
@@ -90,6 +97,98 @@ func TestSearchQueryNormalize(t *testing.T) {
 			assert.Equal(t, tt.wantLimit, tt.query.Limit)
 			assert.Equal(t, tt.wantPage, tt.query.Page)
 			assert.Equal(t, tt.wantSort, tt.query.SortBy)
+		})
+	}
+}
+
+func TestHistogramRequestNormalize(t *testing.T) {
+	baseFilters := Filters{Since: 24 * time.Hour}
+	tests := []struct {
+		wantErr string
+		name    string
+		req     HistogramRequest
+	}{
+		{
+			name: "valid minimal",
+			req:  HistogramRequest{Filters: Filters{Since: 24 * time.Hour}, BucketMs: (15 * time.Minute).Milliseconds()},
+		},
+		{
+			name: "valid with group_by",
+			req:  HistogramRequest{Filters: baseFilters, BucketMs: (15 * time.Minute).Milliseconds(), GroupBy: "source"},
+		},
+		{
+			name: "minimum bucket inclusive",
+			req:  HistogramRequest{Filters: Filters{Since: time.Second}, BucketMs: time.Second.Milliseconds()},
+		},
+		{
+			name: "maximum bucket inclusive",
+			req:  HistogramRequest{Filters: baseFilters, BucketMs: (24 * time.Hour).Milliseconds()},
+		},
+		{
+			name: "maximum bucket count inclusive",
+			req:  HistogramRequest{Filters: Filters{Since: 1024 * time.Second}, BucketMs: time.Second.Milliseconds()},
+		},
+		{
+			name:    "partial bucket exceeds maximum count",
+			req:     HistogramRequest{Filters: Filters{Since: 1024*time.Second + time.Nanosecond}, BucketMs: time.Second.Milliseconds()},
+			wantErr: "max is 1024",
+		},
+		{
+			name:    "bucket duration overflow wraps into valid range",
+			req:     HistogramRequest{Filters: Filters{Since: time.Hour}, BucketMs: 18_446_744_133_710},
+			wantErr: "bucket_ms must be <= 24h0m0s",
+		},
+		{
+			name:    "maximum integer bucket",
+			req:     HistogramRequest{Filters: baseFilters, BucketMs: math.MaxInt64},
+			wantErr: "bucket_ms must be <= 24h0m0s",
+		},
+		{
+			name:    "zero since",
+			req:     HistogramRequest{BucketMs: 60_000},
+			wantErr: "since must be > 0",
+		},
+		{
+			name:    "zero bucket_ms",
+			req:     HistogramRequest{Filters: baseFilters},
+			wantErr: "bucket_ms must be > 0",
+		},
+		{
+			name:    "bucket_ms below minimum",
+			req:     HistogramRequest{Filters: baseFilters, BucketMs: 100},
+			wantErr: "bucket_ms must be >= 1s",
+		},
+		{
+			name:    "bucket_ms above maximum",
+			req:     HistogramRequest{Filters: Filters{Since: 48 * time.Hour}, BucketMs: (25 * time.Hour).Milliseconds()},
+			wantErr: "bucket_ms must be <= 24h0m0s",
+		},
+		{
+			name:    "since smaller than bucket",
+			req:     HistogramRequest{Filters: Filters{Since: time.Minute}, BucketMs: (5 * time.Minute).Milliseconds()},
+			wantErr: "since must be >= bucket_ms",
+		},
+		{
+			name:    "too many buckets",
+			req:     HistogramRequest{Filters: Filters{Since: 24 * time.Hour}, BucketMs: time.Second.Milliseconds()},
+			wantErr: "max is 1024",
+		},
+		{
+			name:    "invalid group_by",
+			req:     HistogramRequest{Filters: baseFilters, BucketMs: (15 * time.Minute).Milliseconds(), GroupBy: "uuid"},
+			wantErr: "invalid group_by",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.req.Normalize()
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			assert.NoError(t, err)
 		})
 	}
 }

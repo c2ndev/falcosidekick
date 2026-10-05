@@ -20,6 +20,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -61,14 +64,15 @@ func TestWebhookSpecificCases(t *testing.T) {
 			Name:         "includes custom headers",
 			AddressField: "url",
 			Config: map[string]any{
-				"headers": map[string]string{
-					"X-Custom":      "value",
-					"Authorization": "Bearer token",
+				"headers": map[string]any{
+					"X-Custom":      map[string]any{"values": []string{"value", "second"}},
+					"Authorization": map[string]any{"secrets": []string{"Bearer token"}},
 				},
 			},
 			ValidateReq: func(t *testing.T, req *http.Request, _ []byte) {
 				t.Helper()
 				assert.Equal(t, "value", req.Header.Get("X-Custom"))
+				assert.Equal(t, []string{"value", "second"}, req.Header.Values("X-Custom"))
 				assert.Equal(t, "Bearer token", req.Header.Get("Authorization"))
 			},
 		},
@@ -220,4 +224,87 @@ func TestCreateOutputInvalidClientCertFailsConstruction(t *testing.T) {
 	}, output.Deps{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cert_file")
+}
+
+func TestWebhookHeaderValidation(t *testing.T) {
+	tests := []struct {
+		cfg  map[string]any
+		name string
+	}{
+		{map[string]any{"headers": map[string]any{"X-Key": "legacy"}}, "legacy flat header"},
+		{map[string]any{"headers_file": "/tmp/unsupported"}, "no headers_file"},
+		{map[string]any{"headers": map[string]any{"X-Key": map[string]any{"secrets_file": "/tmp/unsupported"}}}, "no nested scalar file resolver"},
+		{map[string]any{"headers": map[string]any{"X-Key": map[string]any{"unknown": []string{"value"}}}}, "unknown property"},
+		{map[string]any{"headers": map[string]any{
+			"X-Key": map[string]any{"secrets": []string{"private-token"}},
+			"x-key": map[string]any{"values": []string{"other"}},
+		}}, "case duplicate"},
+		{map[string]any{"headers": map[string]any{
+			"Authorization": map[string]any{"values": []string{"private-token"}},
+		}}, "public authorization"},
+		{map[string]any{"bearer_token": "private-bearer", "headers": map[string]any{
+			"authorization": map[string]any{"secrets": []string{"private-token"}},
+		}}, "bearer conflict"},
+		{map[string]any{"headers": map[string]any{
+			"X-Key": map[string]any{"secrets": []string{"private-token\n"}},
+		}}, "invalid value"},
+		{map[string]any{"headers": map[string]any{
+			"X-Key": map[string]any{"files": []string{filepath.Join(t.TempDir(), "missing")}},
+		}}, "missing file"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.cfg["url"] = "http://example.com"
+			d, err := OutputType.New(tt.cfg, output.Deps{})
+			require.Error(t, err)
+			assert.Nil(t, d)
+			assert.NotContains(t, err.Error(), "private-")
+		})
+	}
+}
+
+func TestWebhookHeaderFileRotation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "authorization")
+	require.NoError(t, os.WriteFile(path, []byte(" Bearer initial\n"), 0o600))
+	captured := make(chan http.Header, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		captured <- req.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	d, err := OutputType.New(map[string]any{
+		"url": server.URL,
+		"HEADERS": map[string]any{
+			"authorization": map[string]any{"FILES": []string{path}},
+			"X-Key":         map[string]any{"VALUES": []any{"public"}, "SECRETS": []any{"protected"}},
+		},
+	}, output.Deps{})
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, d.Close()) })
+	require.NoError(t, d.Send(context.Background(), testutil.CreateValidEvent()))
+	first := <-captured
+	assert.Equal(t, []string{"Bearer initial"}, first.Values("Authorization"))
+	assert.Equal(t, []string{"public", "protected"}, first.Values("X-Key"))
+
+	require.NoError(t, os.WriteFile(path, []byte("Bearer rotated\r\n"), 0o600))
+	require.NoError(t, d.HealthCheck(context.Background()))
+	second := <-captured
+	assert.Equal(t, []string{"Bearer rotated"}, second.Values("Authorization"))
+	assert.Equal(t, []string{"public", "protected"}, second.Values("X-Key"))
+}
+
+func TestWebhookRejectsHeaderPropertyAliases(t *testing.T) {
+	for _, field := range []string{"values", "secrets", "files"} {
+		t.Run(field, func(t *testing.T) {
+			_, err := OutputType.New(map[string]any{
+				"url": "http://example.com",
+				"headers": map[string]any{
+					"X-Key": map[string]any{field: []string{}, strings.ToUpper(field): []string{}},
+				},
+			}, output.Deps{})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "duplicate")
+		})
+	}
 }

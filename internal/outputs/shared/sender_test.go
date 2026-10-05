@@ -88,7 +88,7 @@ func TestSenderDoAppliesHeaders(t *testing.T) {
 	defer server.Close()
 
 	s, _ := NewSender("test", &HTTPConfig{
-		Headers: map[string]string{"X-Custom": "val1"},
+		Headers: map[string]Header{"X-Custom": {Values: []string{"val1"}}},
 	})
 	s.SetHeader("X-Extra", "val2")
 
@@ -199,12 +199,12 @@ func TestSenderHealthCheckFailure(t *testing.T) {
 }
 
 func TestSenderEachInstanceIsIsolated(t *testing.T) {
-	s1, _ := NewSender("output1", &HTTPConfig{Headers: map[string]string{"X-Out": "1"}})
-	s2, _ := NewSender("output2", &HTTPConfig{Headers: map[string]string{"X-Out": "2"}})
+	s1, _ := NewSender("output1", &HTTPConfig{Headers: map[string]Header{"X-Out": {Values: []string{"1"}}}})
+	s2, _ := NewSender("output2", &HTTPConfig{Headers: map[string]Header{"X-Out": {Values: []string{"2"}}}})
 	s1.SetBasicAuth("user1", "pass1")
 
-	assert.Equal(t, "1", s1.headers["X-Out"])
-	assert.Equal(t, "2", s2.headers["X-Out"])
+	assert.Equal(t, []string{"1"}, s1.headers["X-Out"].Values)
+	assert.Equal(t, []string{"2"}, s2.headers["X-Out"].Values)
 	assert.Equal(t, "user1", s1.basicUser)
 	assert.Empty(t, s2.basicUser)
 }
