@@ -1,6 +1,7 @@
 version: 2
 
 project_name: falcosidekick-v3
+dist: dist/release
 
 env:
   - GO111MODULE=on
@@ -17,16 +18,17 @@ checksum:
 
 before:
   hooks:
-    - go mod tidy
-    - /bin/bash -c 'cd ui && ${HOME}/.bun/bin/bun install --frozen-lockfile'
-    - /bin/bash -c 'cd ui && ${HOME}/.bun/bin/bun run build'
-    - /bin/bash -c 'if [ -n "$(git --no-pager diff --exit-code go.mod go.sum)" ]; then exit 1; fi'
+    - cmd: bun install --frozen-lockfile
+      dir: ui
+    - cmd: bun run build
+      dir: ui
 
 sboms:
   - artifacts: archive
 
 builds:
   - id: falcosidekick-v3
+    main: ./cmd/falcosidekick
     binary: falcosidekick-v3
     goos:
       - linux
@@ -36,12 +38,17 @@ builds:
     env:
       - CGO_ENABLED=0
     flags:
+      - -mod=readonly
       - -trimpath
       - -tags=builtinui
     ldflags:
-      - "{{ .Env.LDFLAGS }}"
+      - -s -w
+      - -X github.com/falcosecurity/falcosidekick/internal/version.Version={{ .Version }}
+      - -X github.com/falcosecurity/falcosidekick/internal/version.Commit={{ .FullCommit }}
+      - -X github.com/falcosecurity/falcosidekick/internal/version.BuildDate={{ .Date }}
 
   - id: falcosidekick-v3-slim
+    main: ./cmd/falcosidekick
     binary: falcosidekick-v3-slim
     goos:
       - linux
@@ -51,9 +58,13 @@ builds:
     env:
       - CGO_ENABLED=0
     flags:
+      - -mod=readonly
       - -trimpath
     ldflags:
-      - "{{ .Env.LDFLAGS }}"
+      - -s -w
+      - -X github.com/falcosecurity/falcosidekick/internal/version.Version={{ .Version }}
+      - -X github.com/falcosecurity/falcosidekick/internal/version.Commit={{ .FullCommit }}
+      - -X github.com/falcosecurity/falcosidekick/internal/version.BuildDate={{ .Date }}
 
 archives:
   - id: falcosidekick-v3
@@ -78,9 +89,9 @@ dockers_v2:
     tags:
       - "v3-{{ .Version }}"
       - "v3-latest"
-    build_args_templates:
-      - "BINARY=falcosidekick-v3"
-      - "VARIANT=ui"
+    build_args:
+      BINARY: falcosidekick-v3
+      VARIANT: ui
     labels:
       "org.opencontainers.image.created": "{{ .Date }}"
       "org.opencontainers.image.name": "falcosidekick-v3"
@@ -102,9 +113,9 @@ dockers_v2:
     tags:
       - "v3-{{ .Version }}-slim"
       - "v3-latest-slim"
-    build_args_templates:
-      - "BINARY=falcosidekick-v3-slim"
-      - "VARIANT=slim"
+    build_args:
+      BINARY: falcosidekick-v3-slim
+      VARIANT: slim
     labels:
       "org.opencontainers.image.created": "{{ .Date }}"
       "org.opencontainers.image.name": "falcosidekick-v3"
