@@ -225,6 +225,10 @@ ui-v3-dev: ## Start the Bun.serve dev server with API proxy
 ui-v3-test: ## Run UI unit/component tests via Bun test + happy-dom
 	cd ui && $(BUN) test
 
+.PHONY: ui-v3-dev-cluster
+ui-v3-dev-cluster: ## Run the UI dev server against a backend running in the current kube-context
+	hack/ui-dev-cluster.sh
+
 .PHONY: falcosidekick-v3
 falcosidekick-v3: ui-v3-build ## Build v3 binary with embedded UI (host OS+arch, tag builtinui)
 	$(GO) build -trimpath -tags=builtinui -ldflags "$(V3_LDFLAGS)" -o $(V3_BINARY_UI) ./cmd/falcosidekick/
