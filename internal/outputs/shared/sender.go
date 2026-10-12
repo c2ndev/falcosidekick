@@ -21,6 +21,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,9 +29,7 @@ import (
 )
 
 const (
-	userAgent = "falcosidekick/v3"
-	// maxErrorBodyBytes caps how much of an error response body we read.
-	// Prevents memory issues if a server returns a huge HTML error page.
+	userAgent         = "falcosidekick/v3"
 	maxErrorBodyBytes = 4096
 )
 
@@ -95,7 +94,7 @@ func (s *Sender) SetHeader(key, value string) {
 func (s *Sender) SendJSON(ctx context.Context, method, url string, payload any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("%s marshal: %w", s.name, err)
+		return WrapDeliveryError(s.name, "marshal", err)
 	}
 	return s.SendRaw(ctx, method, url, body, "application/json")
 }
@@ -104,7 +103,7 @@ func (s *Sender) SendJSON(ctx context.Context, method, url string, payload any) 
 func (s *Sender) SendGzipJSON(ctx context.Context, method, url string, payload any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("%s marshal: %w", s.name, err)
+		return WrapDeliveryError(s.name, "marshal", err)
 	}
 	return s.SendGzipRaw(ctx, method, url, body, "application/json")
 }
@@ -122,7 +121,7 @@ func (s *Sender) SendRaw(ctx context.Context, method, url string, body []byte, c
 func (s *Sender) SendGzipRaw(ctx context.Context, method, url string, body []byte, contentType string) error {
 	compressed, err := gzipCompress(body)
 	if err != nil {
-		return fmt.Errorf("%s gzip: %w", s.name, err)
+		return WrapDeliveryError(s.name, "gzip", err)
 	}
 	req, err := s.buildRequest(ctx, method, url, compressed, contentType)
 	if err != nil {
@@ -133,17 +132,18 @@ func (s *Sender) SendGzipRaw(ctx context.Context, method, url string, body []byt
 }
 
 // SendJSONCheckBody marshals, sends, and validates the response body.
-// For APIs that return HTTP 200 with error text (Slack, Teams, Discord).
+// Non-2xx responses always fail; a bounded body check may add a safe DeliveryError code.
 func (s *Sender) SendJSONCheckBody(ctx context.Context, method, url string, payload any, check func(body []byte) error) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("%s marshal: %w", s.name, err)
+		return WrapDeliveryError(s.name, "marshal", err)
 	}
-	respBody, err := s.SendRawReadBody(ctx, method, url, body, "application/json")
+	req, err := s.buildRequest(ctx, method, url, body, "application/json")
 	if err != nil {
 		return err
 	}
-	return check(respBody)
+	_, err = s.readBody(req, check)
+	return err
 }
 
 // SendRawReadBody sends bytes and returns the response body on success.
@@ -160,7 +160,7 @@ func (s *Sender) SendRawReadBody(ctx context.Context, method, url string, body [
 func (s *Sender) HealthCheck(ctx context.Context, url string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
-		return fmt.Errorf("%s healthcheck: %w", s.name, err)
+		return WrapDeliveryError(s.name, "healthcheck", err)
 	}
 	return s.Do(ctx, req)
 }
@@ -174,28 +174,57 @@ func (s *Sender) Do(ctx context.Context, req *http.Request) error {
 	defer drain(resp)
 
 	if resp.StatusCode/100 != 2 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
-		return fmt.Errorf("%s: HTTP %d: %s", s.name, resp.StatusCode, string(body))
+		return &DeliveryError{name: s.name, operation: "response", status: resp.StatusCode}
 	}
 	return nil
 }
 
 // DoReadBody executes a request and returns the full response body on 2xx.
 func (s *Sender) DoReadBody(ctx context.Context, req *http.Request) ([]byte, error) {
+	return s.readBody(req, nil)
+}
+
+func (s *Sender) readBody(req *http.Request, check func([]byte) error) ([]byte, error) {
 	resp, err := s.execute(req)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode/100 != 2 {
+		return nil, s.responseError(resp, check)
+	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("%s read response: %w", s.name, err)
+		return nil, WrapDeliveryError(s.name, "read response", err)
 	}
-	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("%s: HTTP %d: %s", s.name, resp.StatusCode, string(body))
+	if check != nil {
+		if err := check(body); err != nil {
+			return nil, WrapDeliveryError(s.name, "response", err)
+		}
 	}
 	return body, nil
+}
+
+func (s *Sender) responseError(resp *http.Response, check func([]byte) error) error {
+	diagnostic := &DeliveryError{name: s.name, operation: "response", status: resp.StatusCode}
+	if check == nil {
+		return diagnostic
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes+1))
+	if err != nil {
+		diagnostic.cause = err
+		return diagnostic
+	}
+	if len(body) > maxErrorBodyBytes {
+		return diagnostic
+	}
+	diagnostic.cause = check(body)
+	var protocol *DeliveryError
+	if errors.As(diagnostic.cause, &protocol) && protocol != nil {
+		diagnostic.reason = protocol.reason
+	}
+	return diagnostic
 }
 
 // execute applies headers, auth, and runs the HTTP request.
@@ -206,7 +235,7 @@ func (s *Sender) execute(req *http.Request) (*http.Response, error) {
 	}
 	req.Header.Set("User-Agent", userAgent)
 	if err := ApplyHeaders(req, s.headers); err != nil {
-		return nil, fmt.Errorf("%s headers: %w", s.name, err)
+		return nil, &DeliveryError{name: s.name, operation: "headers", reason: err.Error(), cause: err}
 	}
 	if s.basicUser != "" {
 		req.SetBasicAuth(s.basicUser, s.basicPass)
@@ -214,7 +243,7 @@ func (s *Sender) execute(req *http.Request) (*http.Response, error) {
 
 	resp, err := s.client.Do(req) //nolint:gosec // output URLs are user-configured
 	if err != nil {
-		return nil, fmt.Errorf("%s send: %w", s.name, err)
+		return nil, WrapDeliveryError(s.name, "send", err)
 	}
 	return resp, nil
 }
@@ -223,7 +252,7 @@ func (s *Sender) execute(req *http.Request) (*http.Response, error) {
 func (s *Sender) buildRequest(ctx context.Context, method, url string, body []byte, contentType string) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("%s request: %w", s.name, err)
+		return nil, WrapDeliveryError(s.name, "request", err)
 	}
 	req.Header.Set("Content-Type", contentType)
 	return req, nil

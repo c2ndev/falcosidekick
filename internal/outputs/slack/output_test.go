@@ -17,10 +17,13 @@
 package slack
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"text/template"
 
@@ -128,10 +131,73 @@ func TestCheckSlackResponse(t *testing.T) {
 			err := checkSlackResponse(tt.body)
 			if tt.wantErr {
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), "slack:")
+				assert.Contains(t, err.Error(), "slack response:")
 			} else {
 				assert.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestSlackProtocolDiagnosticCodes(t *testing.T) {
+	codes := []string{
+		"action_prohibited", "channel_is_archived", "channel_not_found", "invalid_payload",
+		"invalid_token", "no_active_hooks", "no_service", "no_service_id", "no_team", "no_text",
+		"posting_to_general_channel_denied", "rollup_error", "team_disabled", "too_many_attachments", "user_not_found",
+	}
+	for _, code := range codes {
+		t.Run(code, func(t *testing.T) {
+			err := checkSlackResponse([]byte("\n" + code + "\n"))
+			require.EqualError(t, err, "slack response: "+code)
+			var diagnostic *shared.DeliveryError
+			assert.ErrorAs(t, err, &diagnostic)
+		})
+	}
+}
+
+func TestSlackSendSafeDiagnostics(t *testing.T) {
+	const secret = "SLACK_RESPONSE_SECRET"
+	for _, tc := range []struct {
+		name   string
+		body   string
+		want   string
+		status int
+	}{
+		{name: "known rejection", body: "invalid_token", want: "invalid_token", status: http.StatusOK},
+		{name: "reflected credential", body: secret, want: "unexpected response", status: http.StatusOK},
+		{name: "code with untrusted suffix", body: "invalid_token: " + secret, want: "unexpected response", status: http.StatusOK},
+		{name: "HTTP rejection", body: secret, want: "HTTP 401 Unauthorized", status: http.StatusUnauthorized},
+		{name: "archived channel", body: "channel_is_archived", want: "HTTP 410 Gone: channel_is_archived", status: http.StatusGone},
+		{name: "invalid HTTP payload", body: "invalid_payload", want: "HTTP 400 Bad Request: invalid_payload", status: http.StatusBadRequest},
+		{name: "prohibited action", body: "action_prohibited", want: "HTTP 403 Forbidden: action_prohibited", status: http.StatusForbidden},
+		{name: "non-2xx with ok body still fails", body: "ok", want: "HTTP 400 Bad Request", status: http.StatusBadRequest},
+		{name: "non-2xx with empty body still fails", want: "HTTP 500 Internal Server Error", status: http.StatusInternalServerError},
+		{name: "empty success unchanged", status: http.StatusOK},
+		{name: "ok success unchanged", body: "ok\n", status: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			t.Cleanup(server.Close)
+			d, err := createOutput(map[string]any{
+				"webhook_url": server.URL + "/services/PATH_SECRET?token=QUERY_SECRET",
+			}, output.Deps{})
+			require.NoError(t, err)
+
+			err = d.Send(context.Background(), testutil.CreateValidEvent())
+			if tc.want == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+			assert.NotContains(t, err.Error(), secret)
+			assert.NotContains(t, err.Error(), "PATH_SECRET")
+			assert.NotContains(t, err.Error(), "QUERY_SECRET")
+			var diagnostic *shared.DeliveryError
+			assert.ErrorAs(t, err, &diagnostic)
 		})
 	}
 }
@@ -284,6 +350,41 @@ func TestBuildPayloadMessageTemplateBadField(t *testing.T) {
 	evt := testutil.CreateValidEvent()
 	payload := o.buildPayload(evt)
 	assert.Empty(t, payload.Text, "failed template must produce empty text")
+}
+
+func TestSlackTemplateSafeDiagnostic(t *testing.T) {
+	for _, format := range []string{"text", "json"} {
+		t.Run(format, func(t *testing.T) {
+			var logs bytes.Buffer
+			var handler slog.Handler = slog.NewTextHandler(&logs, nil)
+			if format == "json" {
+				handler = slog.NewJSONHandler(&logs, nil)
+			}
+			requests := make(chan []byte, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				assert.NoError(t, err)
+				requests <- body
+				_, err = io.WriteString(w, "ok")
+				assert.NoError(t, err)
+			}))
+			defer server.Close()
+			driver, err := createOutput(map[string]any{
+				"webhook_url":    server.URL,
+				"message_format": `{{index "private-template-token" -1}}`,
+			}, output.Deps{Logger: slog.New(handler)})
+			require.NoError(t, err)
+			evt := testutil.CreateValidEvent()
+			require.NoError(t, driver.Send(t.Context(), evt))
+			var payload slackPayload
+			require.NoError(t, json.Unmarshal(<-requests, &payload))
+			assert.Empty(t, payload.Text)
+			require.Len(t, payload.Attachments, 1)
+			assert.Equal(t, evt.Output, payload.Attachments[0].Text)
+			assert.Contains(t, logs.String(), "cannot render message template")
+			assert.NotContains(t, logs.String(), "private-template-token")
+		})
+	}
 }
 
 func TestBuildPayloadChannel(t *testing.T) {

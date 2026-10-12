@@ -17,6 +17,7 @@
 package elasticsearch
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -31,8 +32,88 @@ import (
 
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
+
+func TestSendBatchSafeErrorLogs(t *testing.T) {
+	for _, format := range []string{"text", "json"} {
+		t.Run(format, func(t *testing.T) {
+			var logs bytes.Buffer
+			var handler slog.Handler = slog.NewTextHandler(&logs, nil)
+			if format == "json" {
+				handler = slog.NewJSONHandler(&logs, nil)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"errors":true,"items":[
+					{"create":{"status":201}},
+					{"create":{"status":400,"error":{"type":"document_parsing_exception","reason":"REASON_SECRET"}}},
+					{"create":{"status":429,"error":{"type":"TYPE_SECRET","reason":"REASON_SECRET"}}}
+				]}`))
+			}))
+			t.Cleanup(server.Close)
+			d, err := createOutput(map[string]any{"url": server.URL + "/PATH_SECRET"}, output.Deps{Logger: slog.New(handler)})
+			require.NoError(t, err)
+			events := []*event.Event{testutil.CreateValidEvent(), testutil.CreateValidEvent(), testutil.CreateValidEvent()}
+			err = d.(output.BatchSender).SendBatch(context.Background(), events)
+			require.EqualError(t, err, "elasticsearch: bulk indexed 1/3, 2 failed")
+			for _, secret := range []string{"TYPE_SECRET", "REASON_SECRET", "PATH_SECRET"} {
+				assert.NotContains(t, logs.String(), secret)
+				assert.NotContains(t, err.Error(), secret)
+			}
+			assert.Contains(t, logs.String(), "document_parsing_exception")
+			assert.Contains(t, logs.String(), "unknown error")
+			assert.Contains(t, logs.String(), "400")
+			assert.Contains(t, logs.String(), "429")
+			assert.Contains(t, logs.String(), "bulk request partial failure")
+		})
+	}
+}
+
+func TestClassifyBulkError(t *testing.T) {
+	for _, tc := range []struct{ code, want string }{
+		{"document_parsing_exception", "document_parsing_exception"},
+		{"mapper_parsing_exception", "mapper_parsing_exception"},
+		{"es_rejected_execution_exception", "es_rejected_execution_exception"},
+		{"version_conflict_engine_exception", "version_conflict_engine_exception"},
+		{"index_not_found_exception", "index_not_found_exception"},
+		{"", "unknown error"},
+		{"es_rejected_execution_exception: SECRET", "unknown error"},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			assert.Equal(t, tc.want, classifyBulkError(tc.code))
+		})
+	}
+}
+
+func TestSendBatchSafeParseErrors(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"syntax", `{"errors":true,"items":SECRET}`, "invalid JSON"},
+		{"type", `{"errors":true,"items":[{"create":{"status":"SECRET"}}]}`, "unexpected JSON type"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			t.Cleanup(server.Close)
+			d, err := createOutput(map[string]any{"url": server.URL}, output.Deps{})
+			require.NoError(t, err)
+			err = d.(output.BatchSender).SendBatch(context.Background(), []*event.Event{testutil.CreateValidEvent()})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+			assert.NotContains(t, err.Error(), "SECRET")
+			var diagnostic *shared.DeliveryError
+			assert.ErrorAs(t, err, &diagnostic)
+			if tc.name == "syntax" {
+				var syntax *json.SyntaxError
+				assert.ErrorAs(t, err, &syntax)
+			} else {
+				var mismatch *json.UnmarshalTypeError
+				assert.ErrorAs(t, err, &mismatch)
+			}
+		})
+	}
+}
 
 func TestSendBatchUsesCreateAction(t *testing.T) {
 	var capturedBody []byte

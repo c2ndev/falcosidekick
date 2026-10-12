@@ -17,15 +17,66 @@
 package elasticsearch
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
+
+type failingJSONValue struct {
+	err error
+}
+
+func (v failingJSONValue) MarshalJSON() ([]byte, error) { return nil, v.err }
+
+func TestElasticsearchMarshalSafeDiagnostics(t *testing.T) {
+	for _, batch := range []bool{false, true} {
+		name := "single"
+		if batch {
+			name = "batch"
+		}
+		t.Run(name, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				requests.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(server.Close)
+			d, err := createOutput(map[string]any{"url": server.URL}, output.Deps{})
+			require.NoError(t, err)
+			cause := errors.New("MARSHAL_SECRET")
+			evt := testutil.CreateValidEvent()
+			evt.OutputFields["private"] = failingJSONValue{err: cause}
+
+			if batch {
+				err = d.(output.BatchSender).SendBatch(context.Background(), []*event.Event{evt})
+			} else {
+				err = d.Send(context.Background(), evt)
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "marshal")
+			assert.Contains(t, err.Error(), "cannot encode payload")
+			assert.NotContains(t, err.Error(), cause.Error())
+			assert.ErrorIs(t, err, cause)
+			var marshalErr *json.MarshalerError
+			assert.ErrorAs(t, err, &marshalErr)
+			var diagnostic *shared.DeliveryError
+			assert.ErrorAs(t, err, &diagnostic)
+			assert.Zero(t, requests.Load(), "encoding failure must precede network delivery")
+		})
+	}
+}
 
 func TestElasticsearchCommonCases(t *testing.T) {
 	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{

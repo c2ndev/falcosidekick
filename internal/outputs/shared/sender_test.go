@@ -141,7 +141,8 @@ func TestSenderDoReturnsErrorOnBadStatus(t *testing.T) {
 
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "myoutput")
-			assert.Contains(t, err.Error(), "error body")
+			assert.Contains(t, err.Error(), fmt.Sprintf("HTTP %d", tt.status))
+			assert.NotContains(t, err.Error(), "error body")
 		})
 	}
 }
