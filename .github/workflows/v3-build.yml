@@ -9,17 +9,25 @@ on:
 permissions: {}
 
 jobs:
+  checks:
+    uses: ./.github/workflows/v3-test.yml
+    permissions:
+      contents: read
+
   v3-build-snapshot:
     name: v3 goreleaser snapshot
+    needs: [checks]
+    if: github.repository == 'c2ndev/falcosidekick' && github.ref == 'refs/heads/development'
+    concurrency: v3-publish
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-      id-token: write
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
           fetch-depth: 0
 
@@ -39,8 +47,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
-
       - uses: anchore/sbom-action/download-syft@17ae1740179002c89186b61233e0f892c3118b11 # v0.23.0
 
       - name: Log in to GHCR
@@ -50,20 +56,42 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set LDFLAGS
-        id: ldflags
-        run: |
-          source ./release/ldflags.sh
-          goflags=$(ldflags)
-          echo "GO_FLAGS=\"${goflags}\"" >> "$GITHUB_ENV"
-
       - uses: goreleaser/goreleaser-action@ec59f474b9834571250b370d4735c50f8e2d1e29 # v7.0.0
         with:
-          version: latest
+          version: v2.18.2
           args: release --config .goreleaser.v3.yml --snapshot --clean --skip=sign
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LDFLAGS: ${{ env.GO_FLAGS }}
 
-      - name: List images
-        run: docker images ghcr.io/c2ndev/falcosidekick --format "{{.Repository}}:{{.Tag}} {{.Size}}"
+      - name: Verify and publish development images
+        id: publish-snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          image=ghcr.io/c2ndev/falcosidekick
+          for variant in ui slim; do
+            suffix=""
+            [[ "$variant" != slim ]] || suffix=-slim
+            for arch in amd64 arm64; do
+              local_image="${image}:v3-latest${suffix}-${arch}"
+              [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$local_image")" == "$GITHUB_SHA" ]]
+              [[ "$(docker image inspect --format '{{ index .Config.Labels "io.falcosecurity.falcosidekick.variant" }}' "$local_image")" == "$variant" ]]
+              [[ "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$local_image")" == "linux/$arch" ]]
+              version="$(docker run --rm --network=none --platform "linux/$arch" "$local_image" --version)"
+              [[ "$version" == "falcosidekick v3-latest (commit: $GITHUB_SHA, built: "* ]]
+              [[ "$version" != *"built: unknown"* ]]
+            done
+          done
+          # Snapshot mode loads platform images locally; it does not publish them.
+          for suffix in "" -slim; do
+            for arch in amd64 arm64; do
+              remote_image="${image}:v3-${GITHUB_SHA}${suffix}-${arch}"
+              docker tag "${image}:v3-latest${suffix}-${arch}" "$remote_image"
+              docker push "$remote_image"
+            done
+          done
+          for suffix in "" -slim; do
+            docker buildx imagetools create --tag "${image}:v3-latest${suffix}" \
+              "${image}:v3-${GITHUB_SHA}${suffix}-amd64" \
+              "${image}:v3-${GITHUB_SHA}${suffix}-arm64"
+          done
