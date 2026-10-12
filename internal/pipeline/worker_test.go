@@ -22,6 +22,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -440,4 +441,148 @@ func TestWorkerForceStopOnContextCancel(t *testing.T) {
 
 	cancel()
 	out.waitDone()
+}
+
+func TestWorkerRetriesRequireCircuitAdmission(t *testing.T) {
+	for _, batchSize := range []int{1, 3} {
+		for _, threshold := range []int{1, 2} {
+			t.Run(fmt.Sprintf("batch_%d_threshold_%d", batchSize, threshold), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					cfg := batchRuntimeDefaults(batchSize, time.Second)
+					cfg.Batching.Enabled = batchSize > 1
+					cfg.Retry.MaxAttempts = 3
+					cfg.CircuitBreaker.FailureThreshold = threshold
+					var attempts atomic.Int64
+					send := func() error {
+						attempts.Add(1)
+						return fmt.Errorf("delivery failed")
+					}
+					out := NewOutput(&testutil.MockBatchDriver{
+						MockDriver: testutil.MockDriver{
+							DriverName: "retry-admission",
+							SendFunc: func(context.Context, *event.Event) error {
+								return send()
+							},
+						},
+						SendBatchFunc: func(_ context.Context, events []*event.Event) error {
+							assert.Len(t, events, batchSize)
+							return send()
+						},
+					}, cfg, nil)
+					out.Start(context.Background())
+					for range batchSize {
+						out.Enqueue(newTestEvent())
+					}
+					require.NoError(t, out.Retire(context.Background()))
+					assert.Equal(t, int64(threshold), attempts.Load())
+					status := out.GetStatus()
+					assert.Equal(t, batchSize, status.FailedTotal, "events are counted once, not once per attempt")
+					assert.Zero(t, status.SentTotal)
+					assert.Equal(t, circuitStateOpenName, status.CircuitState)
+					assert.Equal(t, "delivery failed", status.LastError)
+				})
+			})
+		}
+	}
+}
+
+func TestWorkerOldCompletionCannotReleaseHalfOpenProbe(t *testing.T) {
+	for _, oldFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("old_fails_%t", oldFails), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				cfg := defaultRuntimeDefaults()
+				cfg.Workers = 2
+				cfg.CircuitBreaker.FailureThreshold = 1
+				oldStarted, oldRelease := make(chan struct{}), make(chan struct{})
+				probeStarted, probeRelease := make(chan struct{}), make(chan struct{})
+				var unexpected atomic.Int64
+				out := NewOutput(&testutil.MockDriver{
+					DriverName: "generation",
+					SendFunc: func(_ context.Context, evt *event.Event) error {
+						switch evt.Rule {
+						case "old":
+							close(oldStarted)
+							<-oldRelease
+							if oldFails {
+								return fmt.Errorf("old request failed")
+							}
+							return nil
+						case "trip":
+							return fmt.Errorf("trip circuit")
+						case "probe":
+							close(probeStarted)
+							<-probeRelease
+							return nil
+						default:
+							unexpected.Add(1)
+							return nil
+						}
+					},
+				}, cfg, nil)
+				enqueue := func(rule string) {
+					evt := newTestEvent()
+					evt.Rule = rule
+					out.Enqueue(evt)
+				}
+				out.Start(context.Background())
+				enqueue("old")
+				<-oldStarted
+				enqueue("trip")
+				synctest.Wait()
+				assert.Equal(t, CircuitOpen, out.circuitBreaker.GetState())
+				time.Sleep(cfg.CircuitBreaker.ResetTimeout)
+				enqueue("probe")
+				<-probeStarted
+				close(oldRelease)
+				synctest.Wait()
+				enqueue("blocked")
+				synctest.Wait()
+				assert.Zero(t, unexpected.Load())
+				assert.Equal(t, CircuitHalfOpen, out.circuitBreaker.GetState())
+				close(probeRelease)
+				require.NoError(t, out.Retire(context.Background()))
+				status := out.GetStatus()
+				if oldFails {
+					assert.Equal(t, 1, status.SentTotal)
+					assert.Equal(t, 3, status.FailedTotal)
+				} else {
+					assert.Equal(t, 2, status.SentTotal)
+					assert.Equal(t, 2, status.FailedTotal)
+				}
+				assert.Empty(t, status.LastError)
+				assert.Equal(t, circuitStateHalfOpenName, status.CircuitState)
+			})
+		})
+	}
+}
+
+func TestWorkerRetryCanProbeAfterResetTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cfg := defaultRuntimeDefaults()
+		cfg.CircuitBreaker.FailureThreshold = 1
+		cfg.CircuitBreaker.SuccessThreshold = 1
+		cfg.CircuitBreaker.ResetTimeout = time.Second
+		cfg.Retry.MaxAttempts = 2
+		cfg.Retry.InitialInterval = time.Second
+		cfg.Retry.MaxInterval = time.Second
+		var attempts atomic.Int64
+		out := NewOutput(&testutil.MockDriver{
+			DriverName: "reset-retry",
+			SendFunc: func(context.Context, *event.Event) error {
+				if attempts.Add(1) == 1 {
+					return fmt.Errorf("temporary failure")
+				}
+				return nil
+			},
+		}, cfg, nil)
+		out.Start(context.Background())
+		out.Enqueue(newTestEvent())
+		require.NoError(t, out.Retire(context.Background()))
+		assert.Equal(t, int64(2), attempts.Load())
+		status := out.GetStatus()
+		assert.Equal(t, 1, status.SentTotal)
+		assert.Zero(t, status.FailedTotal)
+		assert.Empty(t, status.LastError)
+		assert.Equal(t, circuitStateClosedName, status.CircuitState)
+	})
 }

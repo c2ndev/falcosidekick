@@ -200,6 +200,9 @@ func (o *Output) Close() error {
 // is deferred until workers actually exit. driver.Close is never invoked
 // while a worker may still be in Send.
 func (o *Output) Retire(ctx context.Context) error {
+	if o.cancel != nil {
+		defer o.cancel()
+	}
 	close(o.queue)
 
 	done := make(chan struct{})
@@ -215,9 +218,6 @@ func (o *Output) Retire(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 
-	if o.cancel != nil {
-		o.cancel()
-	}
 	go func() {
 		<-done
 		_ = o.driver.Close()
@@ -255,14 +255,6 @@ func (o *Output) GetStatus() OutputStatus {
 // executeWithRetry runs fn with circuit breaker and retry. On success it adds
 // count to sentTotal; on final failure it adds count to failedTotal.
 func (o *Output) executeWithRetry(ctx context.Context, count int64, sendFunc func(ctx context.Context) error) {
-	if !o.circuitBreaker.AllowRequest() {
-		o.failedTotal.Add(count)
-		if o.metrics != nil {
-			o.metrics.RecordOutput(ctx, o.driver.Name(), "circuit_open", 0)
-		}
-		return
-	}
-
 	var lastErr error
 	for attempt := 0; attempt < o.config.Retry.MaxAttempts; attempt++ {
 		if attempt > 0 {
@@ -274,12 +266,24 @@ func (o *Output) executeWithRetry(ctx context.Context, count int64, sendFunc fun
 			}
 		}
 
+		complete, allowed := o.circuitBreaker.AllowRequest()
+		if !allowed {
+			if lastErr != nil {
+				break
+			}
+			o.failedTotal.Add(count)
+			if o.metrics != nil {
+				o.metrics.RecordOutput(ctx, o.driver.Name(), "circuit_open", 0)
+			}
+			return
+		}
+
 		start := time.Now()
 		err := sendFunc(ctx)
 		duration := time.Since(start)
+		complete(err == nil)
 
 		if err == nil {
-			o.circuitBreaker.RecordSuccess()
 			o.sentTotal.Add(count)
 			now := time.Now()
 			o.lastSuccess.Store(now)
@@ -292,7 +296,6 @@ func (o *Output) executeWithRetry(ctx context.Context, count int64, sendFunc fun
 		}
 
 		lastErr = err
-		o.circuitBreaker.RecordFailure()
 	}
 
 	o.failedTotal.Add(count)

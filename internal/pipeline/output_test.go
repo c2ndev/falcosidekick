@@ -22,6 +22,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -121,40 +122,65 @@ func TestRetireGraceful(t *testing.T) {
 	assert.True(t, closeCalled.Load(), "driver Close must be called")
 }
 
-func TestRetireDeadlineExceeded(t *testing.T) {
-	var closeCalled atomic.Bool
-
+func TestRetireCancelsWorkerContextAfterDrain(t *testing.T) {
+	contexts := make(chan context.Context, 1)
 	out := NewOutput(&testutil.MockDriver{
-		DriverName: "stuck",
-		SendFunc: func(_ context.Context, _ *event.Event) error {
-			// Ignore context cancellation: block forever.
-			select {}
-		},
-		CloseFunc: func() error {
-			closeCalled.Store(true)
+		DriverName: "retiring",
+		SendFunc: func(ctx context.Context, _ *event.Event) error {
+			contexts <- ctx
 			return nil
 		},
 	}, defaultRuntimeDefaults(), nil)
-
-	out.Start(context.Background())
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out.Start(parent)
 	out.Enqueue(newTestEvent())
-
-	// Let the worker pick up the event and enter the blocking Send.
-	time.Sleep(20 * time.Millisecond)
-
-	retireCtx, retireCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	retireCtx, retireCancel := context.WithTimeout(context.Background(), time.Second)
 	defer retireCancel()
+	require.NoError(t, out.Retire(retireCtx))
+	workerCtx := <-contexts
+	assert.ErrorIs(t, workerCtx.Err(), context.Canceled)
+	assert.NoError(t, parent.Err(), "retiring one output must not cancel its parent")
+}
 
-	start := time.Now()
-	err := out.Retire(retireCtx)
-	elapsed := time.Since(start)
-
-	require.Error(t, err, "Retire must return error when deadline exceeded")
-	assert.Contains(t, err.Error(), "deadline exceeded")
-	assert.Less(t, elapsed, 2*time.Second, "Retire must be bounded, not hang forever")
-
-	// Driver Close is deferred until the worker eventually exits. It may or
-	// may not have been called yet depending on goroutine scheduling.
+func TestRetireDeadlineExceeded(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		contexts := make(chan context.Context, 1)
+		release := make(chan struct{})
+		closed := make(chan struct{})
+		out := NewOutput(&testutil.MockDriver{
+			DriverName: "stuck",
+			SendFunc: func(ctx context.Context, _ *event.Event) error {
+				contexts <- ctx
+				<-release
+				return nil
+			},
+			CloseFunc: func() error {
+				close(closed)
+				return nil
+			},
+		}, defaultRuntimeDefaults(), nil)
+		parent, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		out.Start(parent)
+		out.Enqueue(newTestEvent())
+		workerCtx := <-contexts
+		retireCtx, retireCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer retireCancel()
+		start := time.Now()
+		err := out.Retire(retireCtx)
+		assert.ErrorContains(t, err, "deadline exceeded")
+		assert.Equal(t, 50*time.Millisecond, time.Since(start))
+		assert.ErrorIs(t, workerCtx.Err(), context.Canceled)
+		assert.NoError(t, parent.Err())
+		select {
+		case <-closed:
+			t.Error("driver closed before its send returned")
+		default:
+		}
+		close(release)
+		<-closed
+	})
 }
 
 func TestRetireDoesNotCloseDriverBeforeWorkerExit(t *testing.T) {
@@ -199,9 +225,6 @@ func TestRetireDoesNotCloseDriverBeforeWorkerExit(t *testing.T) {
 
 	err := <-retireDone
 	require.NoError(t, err)
-
-	// Allow goroutines to settle.
-	time.Sleep(20 * time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()

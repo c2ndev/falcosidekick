@@ -35,17 +35,24 @@ const (
 	CircuitHalfOpen
 )
 
+const (
+	circuitStateClosedName   = "closed"
+	circuitStateOpenName     = "open"
+	circuitStateHalfOpenName = "half-open"
+	circuitStateUnknownName  = "unknown"
+)
+
 // String returns the state name.
 func (s CircuitState) String() string {
 	switch s {
 	case CircuitClosed:
-		return "closed"
+		return circuitStateClosedName
 	case CircuitOpen:
-		return "open"
+		return circuitStateOpenName
 	case CircuitHalfOpen:
-		return "half-open"
+		return circuitStateHalfOpenName
 	default:
-		return "unknown"
+		return circuitStateUnknownName
 	}
 }
 
@@ -53,6 +60,7 @@ func (s CircuitState) String() string {
 type CircuitBreaker struct {
 	lastFailure  time.Time
 	cfg          output.CircuitBreakerConfig
+	generation   uint64
 	failureCount int
 	successCount int
 	state        CircuitState
@@ -71,67 +79,78 @@ func (cb *CircuitBreaker) GetState() CircuitState {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	if cb.state == CircuitOpen && time.Since(cb.lastFailure) > cb.cfg.ResetTimeout {
-		cb.state = CircuitHalfOpen
-		cb.successCount = 0
-		cb.probing = false
-	}
+	cb.advanceState()
 	return cb.state
 }
 
-// AllowRequest checks if a request should be allowed through.
-// In closed state, always allows. In open state, always blocks.
-// In half-open state, allows exactly one probe request at a time.
-func (cb *CircuitBreaker) AllowRequest() bool {
+// AllowRequest admits one attempt and returns its completion callback.
+// A denied attempt returns nil, false. An admitted attempt must be completed;
+// only its first completion counts, and results from older states are ignored.
+// Half-open allows exactly one outstanding attempt.
+func (cb *CircuitBreaker) AllowRequest() (complete func(success bool), allowed bool) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	if cb.state == CircuitOpen && time.Since(cb.lastFailure) > cb.cfg.ResetTimeout {
-		cb.state = CircuitHalfOpen
-		cb.successCount = 0
-		cb.probing = false
-	}
+	cb.advanceState()
 
 	switch cb.state {
 	case CircuitClosed:
-		return true
 	case CircuitOpen:
-		return false
+		return nil, false
 	case CircuitHalfOpen:
 		if cb.probing {
-			return false
+			return nil, false
 		}
 		cb.probing = true
-		return true
 	default:
-		return false
+		return nil, false
 	}
+
+	generation := cb.generation
+	var once sync.Once
+	return func(success bool) {
+		once.Do(func() { cb.recordResult(generation, success) })
+	}, true
 }
 
-// RecordSuccess registers a successful request.
-func (cb *CircuitBreaker) RecordSuccess() {
+func (cb *CircuitBreaker) recordResult(generation uint64, success bool) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	cb.failureCount = 0
+	if generation != cb.generation {
+		return
+	}
+
 	cb.probing = false
-	if cb.state == CircuitHalfOpen {
-		cb.successCount++
-		if cb.successCount >= cb.cfg.SuccessThreshold {
-			cb.state = CircuitClosed
+	if success {
+		cb.failureCount = 0
+		if cb.state == CircuitHalfOpen {
+			cb.successCount++
+			if cb.successCount >= cb.cfg.SuccessThreshold {
+				cb.transition(CircuitClosed)
+			}
 		}
+		return
 	}
-}
 
-// RecordFailure registers a failed request.
-func (cb *CircuitBreaker) RecordFailure() {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-
-	cb.probing = false
+	cb.successCount = 0
 	cb.failureCount++
 	cb.lastFailure = time.Now()
-	if cb.failureCount >= cb.cfg.FailureThreshold {
-		cb.state = CircuitOpen
+	if cb.state == CircuitHalfOpen || cb.failureCount >= cb.cfg.FailureThreshold {
+		cb.transition(CircuitOpen)
 	}
+}
+
+func (cb *CircuitBreaker) advanceState() {
+	if cb.state == CircuitOpen && time.Since(cb.lastFailure) >= cb.cfg.ResetTimeout {
+		cb.transition(CircuitHalfOpen)
+	}
+}
+
+func (cb *CircuitBreaker) transition(state CircuitState) {
+	cb.state = state
+	cb.generation++
+	cb.failureCount = 0
+	cb.successCount = 0
+	cb.probing = false
 }

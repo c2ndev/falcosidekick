@@ -17,10 +17,13 @@
 package pipeline
 
 import (
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 )
@@ -60,115 +63,110 @@ func TestCircuitBreakerOpensAfterThreshold(t *testing.T) {
 		},
 	)
 
-	cb.RecordFailure()
+	completeRequest(t, cb, false)
 	assert.Equal(t, CircuitClosed, cb.GetState())
-	cb.RecordFailure()
+	completeRequest(t, cb, false)
 	assert.Equal(t, CircuitClosed, cb.GetState())
-	cb.RecordFailure()
+	completeRequest(t, cb, false)
 	assert.Equal(t, CircuitOpen, cb.GetState())
 }
 
 func TestCircuitBreakerTransitionsToHalfOpen(t *testing.T) {
-	cb := NewCircuitBreaker(&output.CircuitBreakerConfig{
-		FailureThreshold: 1,
-		ResetTimeout:     50 * time.Millisecond,
+	synctest.Test(t, func(t *testing.T) {
+		cfg := defaultRuntimeDefaults().CircuitBreaker
+		cfg.FailureThreshold = 1
+		cb := NewCircuitBreaker(cfg)
+		completeRequest(t, cb, false)
+		require.Equal(t, CircuitOpen, cb.GetState())
+		time.Sleep(cfg.ResetTimeout - time.Nanosecond)
+		require.Equal(t, CircuitOpen, cb.GetState())
+		time.Sleep(time.Nanosecond)
+		assert.Equal(t, CircuitHalfOpen, cb.GetState())
 	})
-
-	cb.RecordFailure()
-	assert.Equal(t, CircuitOpen, cb.GetState())
-
-	time.Sleep(100 * time.Millisecond)
-	assert.Equal(t, CircuitHalfOpen, cb.GetState())
 }
 
 func TestCircuitBreakerClosesAfterSuccessInHalfOpen(t *testing.T) {
-	cb := NewCircuitBreaker(&output.CircuitBreakerConfig{
-		FailureThreshold: 1,
-		SuccessThreshold: 2,
-		ResetTimeout:     50 * time.Millisecond,
+	synctest.Test(t, func(t *testing.T) {
+		cfg := defaultRuntimeDefaults().CircuitBreaker
+		cfg.FailureThreshold = 1
+		cb := NewCircuitBreaker(cfg)
+		completeRequest(t, cb, false)
+		time.Sleep(cfg.ResetTimeout)
+		require.Equal(t, CircuitHalfOpen, cb.GetState())
+		completeRequest(t, cb, true)
+		assert.Equal(t, CircuitHalfOpen, cb.GetState())
+		completeRequest(t, cb, true)
+		assert.Equal(t, CircuitClosed, cb.GetState())
 	})
-
-	cb.RecordFailure()
-	time.Sleep(100 * time.Millisecond)
-	assert.Equal(t, CircuitHalfOpen, cb.GetState())
-
-	cb.RecordSuccess()
-	assert.Equal(t, CircuitHalfOpen, cb.GetState())
-	cb.RecordSuccess()
-	assert.Equal(t, CircuitClosed, cb.GetState())
 }
 
 func TestCircuitBreakerSuccessResetFailureCount(t *testing.T) {
 	cb := NewCircuitBreaker(&output.CircuitBreakerConfig{FailureThreshold: 3})
 
-	cb.RecordFailure()
-	cb.RecordFailure()
-	cb.RecordSuccess()
-	cb.RecordFailure()
-	cb.RecordFailure()
+	completeRequest(t, cb, false)
+	completeRequest(t, cb, false)
+	completeRequest(t, cb, true)
+	completeRequest(t, cb, false)
+	completeRequest(t, cb, false)
 	assert.Equal(t, CircuitClosed, cb.GetState())
 }
 
 func TestCircuitBreakerReopensOnFailureInHalfOpen(t *testing.T) {
-	cb := NewCircuitBreaker(&output.CircuitBreakerConfig{
-		FailureThreshold: 1,
-		ResetTimeout:     50 * time.Millisecond,
+	synctest.Test(t, func(t *testing.T) {
+		cfg := defaultRuntimeDefaults().CircuitBreaker
+		cb := NewCircuitBreaker(cfg)
+		for range cfg.FailureThreshold {
+			completeRequest(t, cb, false)
+		}
+		time.Sleep(cfg.ResetTimeout)
+		require.Equal(t, CircuitHalfOpen, cb.GetState())
+		completeRequest(t, cb, false)
+		assert.Equal(t, CircuitOpen, cb.GetState())
 	})
-
-	cb.RecordFailure()
-	time.Sleep(100 * time.Millisecond)
-	assert.Equal(t, CircuitHalfOpen, cb.GetState())
-
-	cb.RecordFailure()
-	assert.Equal(t, CircuitOpen, cb.GetState())
 }
 
 func TestAllowRequestClosedAlwaysAllows(t *testing.T) {
 	cb := NewCircuitBreaker(&output.CircuitBreakerConfig{FailureThreshold: 5, SuccessThreshold: 2, ResetTimeout: 30 * time.Second})
-	assert.True(t, cb.AllowRequest())
-	assert.True(t, cb.AllowRequest())
-	assert.True(t, cb.AllowRequest())
+	for range 3 {
+		completeRequest(t, cb, true)
+	}
 }
 
 func TestAllowRequestOpenAlwaysBlocks(t *testing.T) {
 	cb := NewCircuitBreaker(&output.CircuitBreakerConfig{FailureThreshold: 1, ResetTimeout: 5 * time.Second})
-	cb.RecordFailure()
-	assert.False(t, cb.AllowRequest())
-	assert.False(t, cb.AllowRequest())
+	completeRequest(t, cb, false)
+	assertRequestBlocked(t, cb)
+	assertRequestBlocked(t, cb)
 }
 
 func TestAllowRequestHalfOpenSingleProbe(t *testing.T) {
-	cb := NewCircuitBreaker(&output.CircuitBreakerConfig{
-		FailureThreshold: 1,
-		SuccessThreshold: 1,
-		ResetTimeout:     50 * time.Millisecond,
+	synctest.Test(t, func(t *testing.T) {
+		cfg := defaultRuntimeDefaults().CircuitBreaker
+		cfg.FailureThreshold = 1
+		cfg.SuccessThreshold = 1
+		cb := NewCircuitBreaker(cfg)
+		completeRequest(t, cb, false)
+		assertRequestBlocked(t, cb)
+		time.Sleep(cfg.ResetTimeout)
+		complete, allowed := cb.AllowRequest()
+		require.True(t, allowed)
+		assertRequestBlocked(t, cb)
+		assertRequestBlocked(t, cb)
+		complete(true)
+		completeRequest(t, cb, true)
 	})
-
-	cb.RecordFailure()
-	assert.False(t, cb.AllowRequest())
-
-	time.Sleep(100 * time.Millisecond)
-
-	assert.True(t, cb.AllowRequest(), "first probe should be allowed")
-	assert.False(t, cb.AllowRequest(), "second probe should be blocked while first is active")
-	assert.False(t, cb.AllowRequest(), "third probe should also be blocked")
-
-	cb.RecordSuccess()
-	assert.True(t, cb.AllowRequest(), "after success, requests should be allowed again")
 }
 
 func TestAllowRequestHalfOpenProbeFailureReopens(t *testing.T) {
-	cb := NewCircuitBreaker(&output.CircuitBreakerConfig{
-		FailureThreshold: 1,
-		ResetTimeout:     50 * time.Millisecond,
+	synctest.Test(t, func(t *testing.T) {
+		cfg := defaultRuntimeDefaults().CircuitBreaker
+		cfg.FailureThreshold = 1
+		cb := NewCircuitBreaker(cfg)
+		completeRequest(t, cb, false)
+		time.Sleep(cfg.ResetTimeout)
+		completeRequest(t, cb, false)
+		assertRequestBlocked(t, cb)
 	})
-
-	cb.RecordFailure()
-	time.Sleep(100 * time.Millisecond)
-
-	assert.True(t, cb.AllowRequest())
-	cb.RecordFailure()
-	assert.False(t, cb.AllowRequest(), "should be open again after probe failure")
 }
 
 func TestCircuitStateString(t *testing.T) {
@@ -187,4 +185,137 @@ func TestCircuitStateString(t *testing.T) {
 			assert.Equal(t, tt.want, tt.state.String())
 		})
 	}
+}
+
+func TestCircuitBreakerFailureAfterRecoverySuccessReopens(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cfg := defaultRuntimeDefaults().CircuitBreaker
+		cb := NewCircuitBreaker(cfg)
+		for range cfg.FailureThreshold {
+			completeRequest(t, cb, false)
+		}
+		require.Equal(t, CircuitOpen, cb.GetState())
+		time.Sleep(cfg.ResetTimeout + time.Nanosecond)
+		completeRequest(t, cb, true)
+		require.Equal(t, CircuitHalfOpen, cb.GetState())
+		completeRequest(t, cb, false)
+		assert.Equal(t, CircuitOpen, cb.GetState())
+		assertRequestBlocked(t, cb)
+		time.Sleep(cfg.ResetTimeout)
+		completeRequest(t, cb, true)
+		assert.Equal(t, CircuitHalfOpen, cb.GetState(), "successes before the failed probe must not carry over")
+		completeRequest(t, cb, true)
+		assert.Equal(t, CircuitClosed, cb.GetState())
+	})
+}
+
+func TestCircuitBreakerOldCompletionCannotReleaseProbe(t *testing.T) {
+	for _, success := range []bool{true, false} {
+		name := "failure"
+		if success {
+			name = "success"
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				cfg := defaultRuntimeDefaults().CircuitBreaker
+				cfg.FailureThreshold = 1
+				cb := NewCircuitBreaker(cfg)
+				oldComplete, allowed := cb.AllowRequest()
+				require.True(t, allowed)
+				laterComplete, allowed := cb.AllowRequest()
+				require.True(t, allowed)
+				completeRequest(t, cb, false)
+				time.Sleep(cfg.ResetTimeout)
+				probeComplete, allowed := cb.AllowRequest()
+				require.True(t, allowed)
+				oldComplete(success)
+				assert.Equal(t, CircuitHalfOpen, cb.GetState())
+				assertRequestBlocked(t, cb)
+				probeComplete(true)
+				assert.Equal(t, CircuitHalfOpen, cb.GetState())
+				completeRequest(t, cb, true)
+				require.Equal(t, CircuitClosed, cb.GetState())
+				laterComplete(false)
+				assert.Equal(t, CircuitClosed, cb.GetState(), "old failures must not reopen the recovered generation")
+			})
+		})
+	}
+}
+
+func TestCircuitBreakerCompletionCountsOnce(t *testing.T) {
+	cb := NewCircuitBreaker(&output.CircuitBreakerConfig{
+		FailureThreshold: 2,
+		SuccessThreshold: 2,
+		ResetTimeout:     time.Minute,
+	})
+	complete, allowed := cb.AllowRequest()
+	require.True(t, allowed)
+	var callers sync.WaitGroup
+	for range 32 {
+		callers.Go(func() { complete(false) })
+	}
+	callers.Wait()
+	assert.Equal(t, CircuitClosed, cb.GetState())
+	complete(true)
+	completeRequest(t, cb, false)
+	assert.Equal(t, CircuitOpen, cb.GetState(), "a repeated completion must not reset the first failure")
+}
+
+func TestCircuitBreakerDuplicateSuccessCannotReleaseNextProbe(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cfg := defaultRuntimeDefaults().CircuitBreaker
+		cfg.FailureThreshold = 1
+		cb := NewCircuitBreaker(cfg)
+		completeRequest(t, cb, false)
+		time.Sleep(cfg.ResetTimeout)
+		first, allowed := cb.AllowRequest()
+		require.True(t, allowed)
+		first(true)
+		second, allowed := cb.AllowRequest()
+		require.True(t, allowed)
+		first(true)
+		assert.Equal(t, CircuitHalfOpen, cb.GetState())
+		assertRequestBlocked(t, cb)
+		second(true)
+		assert.Equal(t, CircuitClosed, cb.GetState())
+	})
+}
+
+func TestCircuitBreakerConcurrentProbeAdmission(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cfg := defaultRuntimeDefaults().CircuitBreaker
+		cfg.FailureThreshold = 1
+		cb := NewCircuitBreaker(cfg)
+		completeRequest(t, cb, false)
+		time.Sleep(cfg.ResetTimeout)
+		admitted := make(chan func(bool), 32)
+		var callers sync.WaitGroup
+		for range cap(admitted) {
+			callers.Go(func() {
+				if complete, allowed := cb.AllowRequest(); allowed {
+					admitted <- complete
+				}
+			})
+		}
+		callers.Wait()
+		require.Len(t, admitted, 1)
+		complete := <-admitted
+		complete(true)
+		assert.Equal(t, CircuitHalfOpen, cb.GetState())
+	})
+}
+
+func completeRequest(t *testing.T, cb *CircuitBreaker, success bool) {
+	t.Helper()
+	complete, allowed := cb.AllowRequest()
+	require.True(t, allowed)
+	require.NotNil(t, complete)
+	complete(success)
+}
+
+func assertRequestBlocked(t *testing.T, cb *CircuitBreaker) {
+	t.Helper()
+	complete, allowed := cb.AllowRequest()
+	assert.False(t, allowed)
+	assert.Nil(t, complete)
 }
