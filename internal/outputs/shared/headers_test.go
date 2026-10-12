@@ -271,7 +271,7 @@ func TestHeaderRelativeFileStartupValidation(t *testing.T) {
 	assert.Equal(t, []string{"key"}, cfg.Headers["X-Key"].Files)
 }
 
-func TestHeaderRedirectForwardingLimitation(t *testing.T) {
+func TestHeaderRedirectForwardingBlocked(t *testing.T) {
 	s, err := NewSender("test", &HTTPConfig{
 		BearerToken: "builtin-token",
 		Headers:     map[string]Header{"X-Api-Key": {Secrets: []string{"custom-token"}}},
@@ -286,13 +286,13 @@ func TestHeaderRedirectForwardingLimitation(t *testing.T) {
 			}, nil
 		}
 		redirected = true
-		assert.Equal(t, "destination.example.net", req.URL.Host)
-		assert.Empty(t, req.Header.Get("Authorization"))
-		assert.Equal(t, "custom-token", req.Header.Get("X-Api-Key"))
 		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
 	})
-	require.NoError(t, s.HealthCheck(context.Background(), "https://origin.example.com"))
-	assert.True(t, redirected)
+	err = s.HealthCheck(context.Background(), "https://origin.example.com")
+	var denied *redirectError
+	require.ErrorAs(t, err, &denied)
+	assert.Equal(t, "cross-origin redirect denied", denied.Error())
+	assert.False(t, redirected, "the destination must not receive any request")
 }
 
 type headerRoundTripper func(*http.Request) (*http.Response, error)

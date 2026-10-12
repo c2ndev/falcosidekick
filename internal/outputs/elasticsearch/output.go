@@ -151,7 +151,7 @@ func (d *driver) Init(ctx context.Context) error {
 func (d *driver) Send(ctx context.Context, evt *event.Event) error {
 	body, err := d.marshalEvent(evt)
 	if err != nil {
-		return fmt.Errorf("elasticsearch marshal: %w", err)
+		return shared.WrapDeliveryError("elasticsearch", "marshal", err)
 	}
 
 	url := fmt.Sprintf("%s/%s/_doc", d.cfg.URL, d.resolveIndex())

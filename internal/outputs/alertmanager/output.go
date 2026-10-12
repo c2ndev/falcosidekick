@@ -129,7 +129,7 @@ func (d *driver) Send(ctx context.Context, evt *event.Event) error {
 
 	body, err := json.Marshal(alerts)
 	if err != nil {
-		return fmt.Errorf("alertmanager marshal: %w", err)
+		return shared.WrapDeliveryError("alertmanager", "marshal", err)
 	}
 
 	if len(d.hostURLs) == 1 {
@@ -148,12 +148,12 @@ func (d *driver) fanOut(ctx context.Context, body []byte) error {
 		success int
 	)
 
-	for _, url := range d.hostURLs {
+	for hostIndex, url := range d.hostURLs {
 		wg.Add(1)
-		go func(url string) {
+		go func(hostIndex int, url string) {
 			defer wg.Done()
 			if err := d.sender.SendRaw(ctx, http.MethodPost, url, body, "application/json"); err != nil {
-				d.logger.Warn("host failed", "host", url, "error", err)
+				d.logger.Warn("host failed", "host_index", hostIndex, "error", err)
 				mu.Lock()
 				lastErr = err
 				mu.Unlock()
@@ -162,7 +162,7 @@ func (d *driver) fanOut(ctx context.Context, body []byte) error {
 			mu.Lock()
 			success++
 			mu.Unlock()
-		}(url)
+		}(hostIndex, url)
 	}
 
 	wg.Wait()

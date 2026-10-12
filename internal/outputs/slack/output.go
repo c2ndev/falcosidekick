@@ -159,5 +159,13 @@ func checkSlackResponse(body []byte) error {
 	if len(body) == 0 || bytes.Equal(body, []byte("ok")) {
 		return nil
 	}
-	return fmt.Errorf("slack: %s", string(body))
+	code := string(body)
+	switch code {
+	case "action_prohibited", "channel_is_archived", "channel_not_found", "invalid_payload", "invalid_token",
+		"no_active_hooks", "no_service", "no_service_id", "no_team", "no_text", "posting_to_general_channel_denied",
+		"rollup_error", "team_disabled", "too_many_attachments", "user_not_found":
+		return shared.NewProtocolError("slack", code)
+	default:
+		return shared.NewProtocolError("slack", "unexpected response")
+	}
 }

@@ -22,6 +22,7 @@ import (
 	"fmt"
 
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
 )
 
 // bulkFilterPath minimizes the ES bulk response payload by requesting only
@@ -59,7 +60,7 @@ func (d *driver) buildBulkBody(events []*event.Event) ([]byte, error) {
 		action := fmt.Sprintf(`{"create":{"_index":%q}}`, index)
 		data, err := d.marshalEvent(evt)
 		if err != nil {
-			return nil, fmt.Errorf("elasticsearch marshal: %w", err)
+			return nil, shared.WrapDeliveryError("elasticsearch", "marshal", err)
 		}
 		buf.WriteString(action)
 		buf.WriteByte('\n')
@@ -85,7 +86,7 @@ func (d *driver) parseBulkResponse(body []byte, expectedItems int) error {
 
 	var resp bulkResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return fmt.Errorf("elasticsearch: parse bulk response: %w", err)
+		return shared.WrapDeliveryError("elasticsearch", "response", err)
 	}
 
 	var failed int
@@ -95,8 +96,7 @@ func (d *driver) parseBulkResponse(body []byte, expectedItems int) error {
 			failed++
 			d.logger.Warn("bulk item failed",
 				"status", r.Status,
-				"error_type", r.Error.Type,
-				"reason", r.Error.Reason,
+				"error_type", classifyBulkError(r.Error.Type),
 			)
 		}
 	}
@@ -113,4 +113,14 @@ func (d *driver) parseBulkResponse(body []byte, expectedItems int) error {
 	)
 
 	return fmt.Errorf("elasticsearch: bulk indexed %d/%d, %d failed", succeeded, expectedItems, failed)
+}
+
+func classifyBulkError(code string) string {
+	switch code {
+	case "document_parsing_exception", "mapper_parsing_exception", "es_rejected_execution_exception",
+		"version_conflict_engine_exception", "index_not_found_exception":
+		return code
+	default:
+		return "unknown error"
+	}
 }

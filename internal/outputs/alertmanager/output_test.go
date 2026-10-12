@@ -17,11 +17,13 @@
 package alertmanager
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -29,8 +31,88 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
+
+func TestFanOutSafeDiagnostics(t *testing.T) {
+	for _, format := range []string{"text", "json"} {
+		for _, allFail := range []bool{false, true} {
+			name := format + "/partial"
+			if allFail {
+				name = format + "/all failed"
+			}
+			t.Run(name, func(t *testing.T) {
+				var logs bytes.Buffer
+				var handler slog.Handler = slog.NewTextHandler(&logs, nil)
+				if format == "json" {
+					handler = slog.NewJSONHandler(&logs, nil)
+				}
+				var requests atomic.Int32
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests.Add(1)
+					if !allFail && strings.HasPrefix(r.URL.Path, "/accepted") {
+						w.WriteHeader(http.StatusOK)
+						return
+					}
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = w.Write([]byte("RESPONSE_SECRET"))
+				}))
+				t.Cleanup(server.Close)
+				d, err := createOutput(map[string]any{
+					"hosts": []string{
+						server.URL + "/PATH_SECRET?token=QUERY_SECRET",
+						server.URL + "/accepted",
+					},
+				}, output.Deps{Logger: slog.New(handler)})
+				require.NoError(t, err)
+				err = d.Send(context.Background(), testutil.CreateValidEvent())
+				if allFail {
+					require.Error(t, err)
+					assert.Contains(t, err.Error(), "all 2 hosts failed")
+					assert.Contains(t, err.Error(), "HTTP 401 Unauthorized")
+					var diagnostic *shared.DeliveryError
+					assert.ErrorAs(t, err, &diagnostic)
+				} else {
+					require.NoError(t, err, "one successful host must still make delivery succeed")
+					assert.Contains(t, logs.String(), "partial fan-out")
+				}
+				assert.EqualValues(t, 2, requests.Load())
+				assert.Contains(t, logs.String(), "HTTP 401 Unauthorized")
+				assert.Contains(t, logs.String(), "host_index")
+				if format == "text" {
+					assert.Contains(t, logs.String(), "host_index=0")
+				} else {
+					assert.Contains(t, logs.String(), `"host_index":0`)
+				}
+				for _, secret := range []string{"PATH_SECRET", "QUERY_SECRET", "RESPONSE_SECRET", server.URL} {
+					assert.NotContains(t, logs.String(), secret)
+					if err != nil {
+						assert.NotContains(t, err.Error(), secret)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestFanOutCancellationPreservesCause(t *testing.T) {
+	var logs bytes.Buffer
+	d, err := createOutput(map[string]any{
+		"hosts": []string{"http://127.0.0.1/PATH_SECRET", "http://127.0.0.1/?token=QUERY_SECRET"},
+	}, output.Deps{Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = d.Send(ctx, testutil.CreateValidEvent())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Contains(t, err.Error(), "request canceled")
+	assert.NotContains(t, err.Error(), "PATH_SECRET")
+	assert.NotContains(t, err.Error(), "QUERY_SECRET")
+	assert.NotContains(t, logs.String(), "PATH_SECRET")
+	assert.NotContains(t, logs.String(), "QUERY_SECRET")
+}
 
 func TestAlertmanagerCommonCases(t *testing.T) {
 	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{

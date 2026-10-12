@@ -22,13 +22,55 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
 )
+
+func TestInitTemplateSafeRequestError(t *testing.T) {
+	d := &driver{cfg: config{URL: "https://es.invalid/PATH_SECRET\n?token=QUERY_SECRET", Index: "falco"}}
+	err := d.createIndexTemplate(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "build request")
+	assert.Contains(t, err.Error(), "invalid request")
+	assert.NotContains(t, err.Error(), "PATH_SECRET")
+	assert.NotContains(t, err.Error(), "QUERY_SECRET")
+	var urlErr *url.Error
+	assert.ErrorAs(t, err, &urlErr)
+	var diagnostic *shared.DeliveryError
+	assert.ErrorAs(t, err, &diagnostic)
+}
+
+func TestInitTemplateSafeHTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("TEMPLATE_RESPONSE_SECRET"))
+	}))
+	t.Cleanup(server.Close)
+	d, err := createOutput(map[string]any{
+		"url":                   server.URL + "/PATH_SECRET",
+		"create_index_template": true,
+		"number_of_shards":      1,
+	}, output.Deps{})
+	require.NoError(t, err)
+	err = d.Init(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "index template create")
+	assert.Contains(t, err.Error(), "HTTP 403 Forbidden")
+	assert.NotContains(t, err.Error(), "TEMPLATE_RESPONSE_SECRET")
+	assert.NotContains(t, err.Error(), "PATH_SECRET")
+	var diagnostic *shared.DeliveryError
+	assert.ErrorAs(t, err, &diagnostic)
+}
 
 func TestInitTemplateAlreadyExists(t *testing.T) {
 	var methods []string

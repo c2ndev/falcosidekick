@@ -82,7 +82,8 @@ func BuildHTTPClient(cfg *HTTPConfig) (*http.Client, error) {
 	}
 
 	return &http.Client{
-		Timeout: defaultTimeout,
+		Timeout:       defaultTimeout,
+		CheckRedirect: checkRedirect,
 		Transport: &http.Transport{
 			TLSClientConfig: tlsCfg,
 			MaxIdleConns:    defaultMaxIdleConns,

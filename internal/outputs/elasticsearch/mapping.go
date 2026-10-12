@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
 )
 
 // createIndexTemplate creates a composable index template using the
@@ -30,7 +32,7 @@ func (d *driver) createIndexTemplate(ctx context.Context) error {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, templateURL, http.NoBody)
 	if err != nil {
-		return fmt.Errorf("elasticsearch index template check: %w", err)
+		return shared.WrapDeliveryError("elasticsearch", "build request", err)
 	}
 	if checkErr := d.sender.Do(ctx, req); checkErr == nil {
 		d.logger.Info("index template already exists", "index", d.cfg.Index)
