@@ -28,11 +28,14 @@ data:
         success_threshold: 2
         reset_timeout: 30s
     reload:
-      poll_interval: 0s
+      # Content-hash poll interval. fsnotify alone misses K8s ConfigMap
+      # symlink-swap updates (kubelet's atomic ..data/..timestamp swap), so
+      # enabling polling is required for hot-reload in-cluster.
+      poll_interval: 15s
   outputs.yaml: |
     outputs:
       inmemory:
-        capacity: 10000
+        capacity: 200000
         ttl: "0"
       webhook:
         url: "http://webhook-receiver.falco.svc.cluster.local:8080/"
