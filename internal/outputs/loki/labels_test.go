@@ -29,3 +29,21 @@ func TestSerializeLabelsIsDeterministic(t *testing.T) {
 	assert.Equal(t, s1, s2)
 	assert.Equal(t, `{a="2",m="3",z="1"}`, s1)
 }
+
+func TestSerializeLabelsFormat(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels map[string]string
+		want   string
+	}{
+		{name: "empty", labels: map[string]string{}, want: `{}`},
+		{name: "single", labels: map[string]string{"rule": "r"}, want: `{rule="r"}`},
+		{name: "empty value", labels: map[string]string{"rule": ""}, want: `{rule=""}`},
+		{name: "value kept verbatim", labels: map[string]string{"rule": `a"b,c`}, want: `{rule="a"b,c"}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, serializeLabels(tc.labels))
+		})
+	}
+}

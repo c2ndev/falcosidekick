@@ -53,7 +53,7 @@ type bulkItemResult struct {
 // buildBulkBody encodes events as NDJSON for the _bulk API.
 // Uses "create" action (append-only, required for data streams).
 func (d *driver) buildBulkBody(events []*event.Event) ([]byte, error) {
-	var buf bytes.Buffer
+	var body []byte
 	index := d.resolveIndex()
 
 	for _, evt := range events {
@@ -62,13 +62,13 @@ func (d *driver) buildBulkBody(events []*event.Event) ([]byte, error) {
 		if err != nil {
 			return nil, shared.WrapDeliveryError("elasticsearch", "marshal", err)
 		}
-		buf.WriteString(action)
-		buf.WriteByte('\n')
-		buf.Write(data)
-		buf.WriteByte('\n')
+		body = append(body, action...)
+		body = append(body, '\n')
+		body = append(body, data...)
+		body = append(body, '\n')
 	}
 
-	return buf.Bytes(), nil
+	return body, nil
 }
 
 // parseBulkResponse inspects the per-item results from a bulk response.

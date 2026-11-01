@@ -302,7 +302,7 @@ v3-test-ui-tag: ui-v3-build ## Run v3 Go tests with -tags=builtinui (includes ./
 
 .PHONY: v3-lint-full
 v3-lint-full: ## Run golangci-lint across v3 Go packages including ./ui
-	golangci-lint run $(V3_PACKAGES) ./ui
+	golangci-lint run $(V3_PACKAGES) ./ui ./hack
 
 .PHONY: v3-verify-full
 v3-verify-full: v3-lint-full v3-test-default v3-test-ui-tag ui-v3-build ui-v3-lint ui-v3-typecheck ui-v3-test ## Full v3 verification: Go default + tagged, golangci, Bun install/build/lint/typecheck/test

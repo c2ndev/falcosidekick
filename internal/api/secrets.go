@@ -142,12 +142,11 @@ func visitSecretPath(cfg map[string]any, parts []string, field *output.SchemaFie
 }
 
 func configPointer(path []string) string {
-	var result strings.Builder
-	for _, part := range path {
-		result.WriteByte('/')
-		result.WriteString(strings.ReplaceAll(strings.ReplaceAll(part, "~", "~0"), "/", "~1"))
+	segments := make([]string, len(path)+1)
+	for i, part := range path {
+		segments[i+1] = strings.ReplaceAll(strings.ReplaceAll(part, "~", "~0"), "/", "~1")
 	}
-	return result.String()
+	return strings.Join(segments, "/")
 }
 
 func appendPath(path []string, key string) []string {

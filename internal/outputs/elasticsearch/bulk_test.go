@@ -144,6 +144,34 @@ func TestSendBatchUsesCreateAction(t *testing.T) {
 	assert.Contains(t, action, "create", "bulk action must be 'create' (not 'index')")
 }
 
+func TestBuildBulkBodyIsExactNDJSON(t *testing.T) {
+	created, err := createOutput(map[string]any{
+		"url":          "http://127.0.0.1:9200",
+		"index":        "test",
+		"index_suffix": "none",
+	}, output.Deps{})
+	require.NoError(t, err)
+	d, ok := created.(*driver)
+	require.True(t, ok)
+
+	first, second := testutil.CreateValidEvent(), testutil.CreateValidEvent()
+	firstData, err := d.marshalEvent(first)
+	require.NoError(t, err)
+	secondData, err := d.marshalEvent(second)
+	require.NoError(t, err)
+
+	const action = `{"create":{"_index":"test"}}`
+	want := action + "\n" + string(firstData) + "\n" + action + "\n" + string(secondData) + "\n"
+
+	got, err := d.buildBulkBody([]*event.Event{first, second})
+	require.NoError(t, err)
+	assert.Equal(t, want, string(got))
+
+	empty, err := d.buildBulkBody(nil)
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+}
+
 func TestSendBatchIncludesFilterPath(t *testing.T) {
 	var capturedURL string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

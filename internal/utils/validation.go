@@ -35,14 +35,11 @@ func (ve ValidationError) Error() string {
 type ValidationErrors []ValidationError
 
 func (ve ValidationErrors) Error() string {
-	var sb strings.Builder
+	messages := make([]string, len(ve))
 	for i, err := range ve {
-		if i > 0 {
-			sb.WriteString("; ")
-		}
-		sb.WriteString(err.Error())
+		messages[i] = err.Error()
 	}
-	return sb.String()
+	return strings.Join(messages, "; ")
 }
 
 // Add appends a validation error for the given field.

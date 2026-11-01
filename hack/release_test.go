@@ -44,11 +44,11 @@ type releaseWorkflow struct {
 }
 
 type releaseStep struct {
+	With             map[string]string `yaml:"with"`
 	ID               string            `yaml:"id"`
 	Uses             string            `yaml:"uses"`
 	Run              string            `yaml:"run"`
 	WorkingDirectory string            `yaml:"working-directory"`
-	With             map[string]string `yaml:"with"`
 }
 
 func readReleaseYAML(t *testing.T, path string, target any) {
@@ -193,9 +193,9 @@ func TestReleaseLegacyExcludesV3Tags(t *testing.T) {
 	require.Equal(t, []string{"*", "!v3.*"}, workflow.On["push"].Tags)
 }
 
-func runReleaseScript(t *testing.T, script, tool, shim string, env ...string) (string, string, error) {
+func runReleaseScript(t *testing.T, script, tool, shim string, env ...string) (output, dir string, err error) {
 	t.Helper()
-	dir := t.TempDir()
+	dir = t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, tool), []byte("#!/bin/bash\nset -euo pipefail\n"+shim), 0o700))
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -203,8 +203,8 @@ func runReleaseScript(t *testing.T, script, tool, shim string, env ...string) (s
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "CALLS="+filepath.Join(dir, "calls"))
 	cmd.Env = append(cmd.Env, env...)
-	output, err := cmd.CombinedOutput()
-	return string(output), dir, err
+	combined, err := cmd.CombinedOutput()
+	return string(combined), dir, err
 }
 
 func TestReleaseCoverageThreshold(t *testing.T) {

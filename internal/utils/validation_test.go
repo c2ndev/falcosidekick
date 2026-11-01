@@ -36,6 +36,11 @@ func TestValidationErrorsFormat(t *testing.T) {
 	assert.Equal(t, "port: must be > 0; host: required", got)
 }
 
+func TestValidationErrorsFormatEdgeCases(t *testing.T) {
+	assert.Empty(t, ValidationErrors(nil).Error())
+	assert.Equal(t, "port: bad", ValidationErrors{{Field: "port", Message: "bad"}}.Error())
+}
+
 func TestValidationErrorsAdd(t *testing.T) {
 	var errs ValidationErrors
 	assert.Empty(t, errs)

@@ -30,6 +30,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"testing/fstest"
@@ -48,6 +49,7 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/metrics"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
+	"github.com/falcosecurity/falcosidekick/internal/version"
 	"github.com/falcosecurity/falcosidekick/ui"
 )
 
@@ -126,6 +128,70 @@ func TestMainVersionFlag(t *testing.T) {
 
 	require.NoError(t, cmd.Run(), "stderr: %s", stderr.String())
 	assert.Contains(t, stdout.String(), "falcosidekick ")
+}
+
+type failingWriter struct{ err error }
+
+func (w failingWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func TestWriteVersion(t *testing.T) {
+	info := version.Info{Version: "v3", Commit: "abc", BuildDate: "today", GoVersion: "go1.26.10"}
+
+	var out bytes.Buffer
+	require.NoError(t, writeVersion(&out, info))
+	assert.Equal(t, "falcosidekick v3 (commit: abc, built: today, go: go1.26.10)\n", out.String())
+
+	writeErr := errors.New("broken pipe")
+	require.ErrorIs(t, writeVersion(failingWriter{err: writeErr}, info), writeErr)
+}
+
+func TestMainFailurePaths(t *testing.T) {
+	const scenarioEnv = "FALCOSIDEKICK_TEST_MAIN_FAILURE"
+	scenarios := map[string]func(t *testing.T){
+		"version with closed stdout": func(t *testing.T) {
+			require.NoError(t, os.Stdout.Close())
+			os.Args = []string{"falcosidekick", "-version"}
+			main()
+		},
+		"invalid config path": func(*testing.T) {
+			os.Args = []string{"falcosidekick", "-c", "/nonexistent/config.yaml"}
+			main()
+		},
+		"fatal after slog default replaced": func(*testing.T) {
+			slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, nil)))
+			fatal(errors.New("boom"))
+		},
+	}
+
+	if name := os.Getenv(scenarioEnv); name != "" {
+		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+		flag.CommandLine.SetOutput(io.Discard)
+		scenarios[name](t)
+		return
+	}
+
+	tests := []struct {
+		name       string
+		wantPrefix string
+	}{
+		{name: "version with closed stdout", wantPrefix: "fatal: write version: "},
+		{name: "invalid config path", wantPrefix: "fatal: config load"},
+		{name: "fatal after slog default replaced", wantPrefix: "fatal: boom\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestMainFailurePaths$")
+			cmd.Env = append(os.Environ(), scenarioEnv+"="+tc.name)
+
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+
+			var exitErr *exec.ExitError
+			require.ErrorAs(t, cmd.Run(), &exitErr)
+			assert.Equal(t, 1, exitErr.ExitCode())
+			assert.True(t, strings.HasPrefix(stderr.String(), tc.wantPrefix), "stderr: %q", stderr.String())
+		})
+	}
 }
 
 func TestRunInvalidConfigPath(t *testing.T) {

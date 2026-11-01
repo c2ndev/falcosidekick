@@ -59,17 +59,9 @@ func extractLabels(extraLabels []string, evt *event.Event) map[string]string {
 // serializeLabels creates a deterministic string key for stream grouping.
 func serializeLabels(labels map[string]string) string {
 	keys := shared.SortMapKeys(labels)
-	var b strings.Builder
-	b.WriteByte('{')
+	pairs := make([]string, len(keys))
 	for i, k := range keys {
-		if i > 0 {
-			b.WriteByte(',')
-		}
-		b.WriteString(k)
-		b.WriteString(`="`)
-		b.WriteString(labels[k])
-		b.WriteByte('"')
+		pairs[i] = k + `="` + labels[k] + `"`
 	}
-	b.WriteByte('}')
-	return b.String()
+	return "{" + strings.Join(pairs, ",") + "}"
 }

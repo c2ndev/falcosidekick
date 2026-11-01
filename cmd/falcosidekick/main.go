@@ -20,6 +20,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
+	"log"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -51,16 +53,28 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		v := version.GetInfo()
-		fmt.Printf("falcosidekick %s (commit: %s, built: %s, go: %s)\n",
-			v.Version, v.Commit, v.BuildDate, v.GoVersion)
+		if err := writeVersion(os.Stdout, version.GetInfo()); err != nil {
+			fatal(err)
+		}
 		return
 	}
 
 	if err := run(context.Background(), *configPath, outputPaths); err != nil {
-		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
-		os.Exit(1)
+		fatal(err)
 	}
+}
+
+func writeVersion(w io.Writer, v version.Info) error {
+	if _, err := fmt.Fprintf(w, "falcosidekick %s (commit: %s, built: %s, go: %s)\n",
+		v.Version, v.Commit, v.BuildDate, v.GoVersion); err != nil {
+		return fmt.Errorf("write version: %w", err)
+	}
+	return nil
+}
+
+// fatal uses its own logger because slog.SetDefault redirects the log package default.
+func fatal(err error) {
+	log.New(os.Stderr, "", 0).Fatalf("fatal: %v", err)
 }
 
 func run(parentCtx context.Context, configPath string, outputPaths []string) error {

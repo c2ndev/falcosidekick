@@ -322,3 +322,22 @@ func TestContainsSecretPlaceholder_NestedPathAbsentIsSafe(t *testing.T) {
 	assert.Empty(t, containsSecretPlaceholder(cfg, nestedSecretType()),
 		"absent nested secret is a valid keep-existing PUT; must not be rejected")
 }
+
+func TestConfigPointer(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+		path []string
+	}{
+		{name: "document root", path: nil, want: ""},
+		{name: "single segment", path: []string{"password"}, want: "/password"},
+		{name: "nested", path: []string{"headers", "secrets"}, want: "/headers/secrets"},
+		{name: "empty segment", path: []string{""}, want: "/"},
+		{name: "tilde and slash escaped", path: []string{"a~b/c"}, want: "/a~0b~1c"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, configPointer(tc.path))
+		})
+	}
+}
