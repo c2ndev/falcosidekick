@@ -210,7 +210,7 @@ func TestMainStartupFailureNeverEchoesOutputValues(t *testing.T) {
 	outputs := writeTestOutputs(t, `
 outputs:
   webhook:
-    url: "https://u:`+sentinel+`@ho st/x"
+    host: "https://u:`+sentinel+`@ho st/x"
 `)
 	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestMainStartupFailureNeverEchoesOutputValues$")
 	cmd.Env = append(os.Environ(), outputsEnv+"="+outputs)
@@ -222,8 +222,16 @@ outputs:
 	require.ErrorAs(t, cmd.Run(), &exitErr, "stderr: %s", stderr.String())
 	assert.Equal(t, 1, exitErr.ExitCode())
 	assert.Contains(t, stderr.String(), "fatal: ")
-	assert.Contains(t, stderr.String(), "url: invalid URL")
+	assert.Contains(t, stderr.String(), "host: invalid URL")
 	assert.NotContains(t, stderr.String()+stdout.String(), sentinel)
+}
+
+func TestRunRejectsRemovedTargetFields(t *testing.T) {
+	const sentinel = "s3cret-sentinel"
+	outputs := writeTestOutputs(t, "outputs:\n  webhook:\n    url: https://h/"+sentinel+"\n")
+	err := run(context.Background(), "", []string{outputs})
+	require.ErrorContains(t, err, "unknown keys: url")
+	assert.NotContains(t, err.Error(), sentinel)
 }
 
 func TestRunInvalidConfigPath(t *testing.T) {
@@ -251,7 +259,7 @@ func TestRunUnknownOutputType(t *testing.T) {
 	outs := writeTestOutputs(t, `
 outputs:
   nonexistent_output:
-    url: "http://example.com"
+    host: "http://example.com"
 `)
 	err := run(context.Background(), cfg, []string{outs})
 	require.Error(t, err)
@@ -263,7 +271,7 @@ func TestRunSecretResolutionFailure(t *testing.T) {
 	outs := writeTestOutputs(t, `
 outputs:
   webhook:
-    url: "http://example.com"
+    host: "http://example.com"
     password_file: /nonexistent/secret
 `)
 	err := run(context.Background(), cfg, []string{outs})
@@ -466,7 +474,7 @@ func TestRunNegativePollInterval(t *testing.T) {
 
 func TestRunUIEnabledMissingEventSource(t *testing.T) {
 	cfg := writeTestConfig(t, "ui:\n  enabled: true\n  event_source: nonexistent")
-	outs := writeTestOutputs(t, "outputs:\n  webhook:\n    url: http://localhost:9999\n")
+	outs := writeTestOutputs(t, "outputs:\n  webhook:\n    host: http://localhost:9999\n")
 	err := run(context.Background(), cfg, []string{outs})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ui.event_source")
@@ -475,7 +483,7 @@ func TestRunUIEnabledMissingEventSource(t *testing.T) {
 func TestRunLifecycleCleanShutdown(t *testing.T) {
 	port := findFreePort(t)
 	cfg := writeTestConfig(t, fmt.Sprintf("listen_port: %d\nlisten_address: 127.0.0.1", port))
-	outs := writeTestOutputs(t, "outputs:\n  webhook:\n    url: http://127.0.0.1:19999\n")
+	outs := writeTestOutputs(t, "outputs:\n  webhook:\n    host: http://127.0.0.1:19999\n")
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -505,7 +513,7 @@ func TestRunServerStartFailure(t *testing.T) {
 	defer func() { _ = ln.Close() }()
 
 	cfg := writeTestConfig(t, fmt.Sprintf("listen_port: %d\nlisten_address: 127.0.0.1", port))
-	outs := writeTestOutputs(t, "outputs:\n  webhook:\n    url: http://127.0.0.1:19999\n")
+	outs := writeTestOutputs(t, "outputs:\n  webhook:\n    host: http://127.0.0.1:19999\n")
 
 	done := make(chan error, 1)
 	go func() {
@@ -524,7 +532,7 @@ func TestRunServerStartFailure(t *testing.T) {
 func TestRunSIGHUPReload(t *testing.T) {
 	port := findFreePort(t)
 	cfg := writeTestConfig(t, fmt.Sprintf("listen_port: %d\nlisten_address: 127.0.0.1", port))
-	outs := writeTestOutputs(t, "outputs:\n  webhook:\n    url: http://127.0.0.1:19999\n")
+	outs := writeTestOutputs(t, "outputs:\n  webhook:\n    host: http://127.0.0.1:19999\n")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -566,7 +574,7 @@ func TestRunPollerDetectsChange(t *testing.T) {
 
 	dir := t.TempDir()
 	outsPath := filepath.Join(dir, "outputs.yaml")
-	writeTestOutputsAt(t, outsPath, "outputs:\n  webhook:\n    url: http://127.0.0.1:19999\n")
+	writeTestOutputsAt(t, outsPath, "outputs:\n  webhook:\n    host: http://127.0.0.1:19999\n")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -579,7 +587,7 @@ func TestRunPollerDetectsChange(t *testing.T) {
 	waitForServer(t, port)
 
 	// Overwrite output config so the poller detects a content-hash change.
-	writeTestOutputsAt(t, outsPath, "outputs:\n  webhook:\n    url: http://127.0.0.1:29999\n")
+	writeTestOutputsAt(t, outsPath, "outputs:\n  webhook:\n    host: http://127.0.0.1:29999\n")
 
 	// Wait for the poller tick (100ms interval) plus processing time.
 	time.Sleep(400 * time.Millisecond)
@@ -600,7 +608,7 @@ func TestRunPollDisabledCleanShutdown(t *testing.T) {
 		"listen_port: %d\nlisten_address: 127.0.0.1\nreload:\n  poll_interval: 0s",
 		port,
 	))
-	outs := writeTestOutputs(t, "outputs:\n  webhook:\n    url: http://127.0.0.1:19999\n")
+	outs := writeTestOutputs(t, "outputs:\n  webhook:\n    host: http://127.0.0.1:19999\n")
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -762,7 +770,7 @@ func TestRunUIEnabledBinaryRoutingMatchesTag(t *testing.T) {
 func TestRunUIDisabledDoesNotServeStaticAssets(t *testing.T) {
 	port := findFreePort(t)
 	cfg := writeTestConfig(t, fmt.Sprintf("listen_port: %d\nlisten_address: 127.0.0.1", port))
-	outs := writeTestOutputs(t, "outputs:\n  webhook:\n    url: http://127.0.0.1:19999\n")
+	outs := writeTestOutputs(t, "outputs:\n  webhook:\n    host: http://127.0.0.1:19999\n")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

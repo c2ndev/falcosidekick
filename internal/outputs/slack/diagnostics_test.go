@@ -32,13 +32,13 @@ func TestConstructorErrorsNeverExposeWebhookURL(t *testing.T) {
 		value string
 		want  string
 	}{
-		{name: "malformed", value: "https://hooks.slack.com:bad/services/" + sentinel, want: "webhook_url: invalid URL"},
-		{name: "missing scheme", value: "hooks.slack.com/services/" + sentinel, want: "webhook_url: must include scheme and host"},
-		{name: "unsupported scheme", value: "ftp://hooks.slack.com/services/" + sentinel, want: "webhook_url: scheme must be http or https"},
+		{name: "malformed", value: "https://hooks.slack.com:bad/services/" + sentinel, want: "host: invalid URL"},
+		{name: "missing scheme", value: "hooks.slack.com/services/" + sentinel, want: "host: must include scheme and host"},
+		{name: "unsupported scheme", value: "ftp://hooks.slack.com/services/" + sentinel, want: "host: scheme must be http or https"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := OutputType.New(map[string]any{"webhook_url": tc.value}, output.Deps{})
+			_, err := OutputType.New(map[string]any{"host": tc.value, "secret_endpoint": "/services/x"}, output.Deps{})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.want)
 			assert.NotContains(t, err.Error(), sentinel)

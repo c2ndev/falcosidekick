@@ -34,17 +34,17 @@ func TestConstructorErrorsNameFieldWithoutValue(t *testing.T) {
 	}{
 		{
 			name:   "malformed url",
-			config: map[string]any{"url": "https://u:" + sentinel + "@ho st/x"},
-			want:   "url: invalid URL",
+			config: map[string]any{"host": "https://u:" + sentinel + "@ho st/x"},
+			want:   "host: invalid URL",
 		},
 		{
 			name:   "unsupported scheme",
-			config: map[string]any{"url": "ftp://u:" + sentinel + "@host/x"},
-			want:   "url: scheme must be http or https",
+			config: map[string]any{"host": "ftp://u:" + sentinel + "@host/x"},
+			want:   "host: scheme must be http or https",
 		},
 		{
 			name:   "wrong password type",
-			config: map[string]any{"url": "https://h/x", "password": map[string]any{"a": sentinel}},
+			config: map[string]any{"host": "https://h/x", "password": map[string]any{"a": sentinel}},
 			want:   "password: invalid type, expected string",
 		},
 	}

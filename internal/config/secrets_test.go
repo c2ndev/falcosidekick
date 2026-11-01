@@ -40,7 +40,7 @@ func TestResolveSecrets(t *testing.T) {
 	schema := output.Schema{
 		Fields: []output.SchemaField{
 			{Name: "password", Secret: true},
-			{Name: "url", Secret: false},
+			{Name: "host", Secret: false},
 		},
 	}
 
@@ -125,6 +125,13 @@ func TestResolveSecrets(t *testing.T) {
 			assert.Equal(t, tt.want, tt.cfg)
 		})
 	}
+}
+
+func TestResolveSecretsTargetEndpointFile(t *testing.T) {
+	schema := output.Schema{Fields: []output.SchemaField{{Name: "secret_endpoint", Secret: true}}}
+	cfg := map[string]any{"secret_endpoint_file": writeSecret(t, "/services/T/B/X\n")}
+	require.NoError(t, ResolveSecrets("slack", cfg, schema))
+	assert.Equal(t, map[string]any{"secret_endpoint": "/services/T/B/X"}, cfg)
 }
 
 func TestResolveSecretsNestedField(t *testing.T) {

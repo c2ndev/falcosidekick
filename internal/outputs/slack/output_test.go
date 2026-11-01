@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -36,18 +37,30 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
 
+const testEndpoint = "/services/T000/B000/XXXX"
+
+func runSlackCases(t *testing.T, cases []testutil.OutputTestCase) {
+	t.Helper()
+	for i := range cases {
+		config := map[string]any{"secret_endpoint": testEndpoint}
+		maps.Copy(config, cases[i].Config)
+		cases[i].Config = config
+	}
+	testutil.RunOutputTests(t, OutputType, cases)
+}
+
 func TestSlackCommonCases(t *testing.T) {
-	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
-		{Name: "sends valid event", AddressField: "webhook_url"},
-		{Name: "returns error on server 500", AddressField: "webhook_url", MockStatus: http.StatusInternalServerError, ExpectError: true},
+	runSlackCases(t, []testutil.OutputTestCase{
+		{Name: "sends valid event", AddressField: "host"},
+		{Name: "returns error on server 500", AddressField: "host", MockStatus: http.StatusInternalServerError, ExpectError: true},
 	})
 }
 
 func TestSlackPayloadFormat(t *testing.T) {
-	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
+	runSlackCases(t, []testutil.OutputTestCase{
 		{
 			Name:         "sends attachment with priority color",
-			AddressField: "webhook_url",
+			AddressField: "host",
 			ValidateReq: func(t *testing.T, req *http.Request, body []byte) {
 				var payload slackPayload
 				require.NoError(t, json.Unmarshal(body, &payload))
@@ -58,7 +71,7 @@ func TestSlackPayloadFormat(t *testing.T) {
 		},
 		{
 			Name:         "includes channel when configured",
-			AddressField: "webhook_url",
+			AddressField: "host",
 			Config:       map[string]any{"channel": "#alerts"},
 			ValidateReq: func(t *testing.T, _ *http.Request, body []byte) {
 				var payload slackPayload
@@ -68,8 +81,8 @@ func TestSlackPayloadFormat(t *testing.T) {
 		},
 		{
 			Name:         "includes username and icon",
-			AddressField: "webhook_url",
-			Config:       map[string]any{"username": "FalcoBot", "icon_url": "https://example.com/icon.png"},
+			AddressField: "host",
+			Config:       map[string]any{"bot_username": "FalcoBot", "icon_url": "https://example.com/icon.png"},
 			ValidateReq: func(t *testing.T, _ *http.Request, body []byte) {
 				var payload slackPayload
 				require.NoError(t, json.Unmarshal(body, &payload))
@@ -79,7 +92,7 @@ func TestSlackPayloadFormat(t *testing.T) {
 		},
 		{
 			Name:         "text-only format omits fields",
-			AddressField: "webhook_url",
+			AddressField: "host",
 			Config:       map[string]any{"output_format": "text"},
 			ValidateReq: func(t *testing.T, _ *http.Request, body []byte) {
 				var payload slackPayload
@@ -94,14 +107,14 @@ func TestSlackPayloadFormat(t *testing.T) {
 
 func TestSlackCreateValidation(t *testing.T) {
 	_, err := createOutput(map[string]any{}, output.Deps{})
-	assert.Error(t, err, "missing webhook_url must fail")
+	assert.Error(t, err, "missing secret_endpoint must fail")
 }
 
 func TestSlackMessageTemplate(t *testing.T) {
-	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
+	runSlackCases(t, []testutil.OutputTestCase{
 		{
 			Name:         "renders message template",
-			AddressField: "webhook_url",
+			AddressField: "host",
 			Config:       map[string]any{"message_format": "Alert: {{ .Rule }}"},
 			ValidateReq: func(t *testing.T, _ *http.Request, body []byte) {
 				var payload slackPayload
@@ -182,7 +195,9 @@ func TestSlackSendSafeDiagnostics(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 			d, err := createOutput(map[string]any{
-				"webhook_url": server.URL + "/services/PATH_SECRET?token=QUERY_SECRET",
+				"host":            server.URL,
+				"secret_endpoint": "/services/PATH_SECRET",
+				"query_params":    map[string]any{"token": map[string]any{"secrets": []string{"QUERY_SECRET"}}},
 			}, output.Deps{})
 			require.NoError(t, err)
 
@@ -370,8 +385,9 @@ func TestSlackTemplateSafeDiagnostic(t *testing.T) {
 			}))
 			defer server.Close()
 			driver, err := createOutput(map[string]any{
-				"webhook_url":    server.URL,
-				"message_format": `{{index "private-template-token" -1}}`,
+				"host":            server.URL,
+				"secret_endpoint": testEndpoint,
+				"message_format":  `{{index "private-template-token" -1}}`,
 			}, output.Deps{Logger: slog.New(handler)})
 			require.NoError(t, err)
 			evt := testutil.CreateValidEvent()
@@ -403,8 +419,8 @@ func TestBuildPayloadNoChannel(t *testing.T) {
 
 func TestCreateOutputInvalidTemplate(t *testing.T) {
 	_, err := createOutput(map[string]any{
-		"webhook_url":    "https://hooks.slack.com/test",
-		"message_format": "{{ .Broken",
+		"secret_endpoint": testEndpoint,
+		"message_format":  "{{ .Broken",
 	}, output.Deps{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid Go template")
@@ -412,7 +428,7 @@ func TestCreateOutputInvalidTemplate(t *testing.T) {
 
 func TestCreateRuntimeDefaults(t *testing.T) {
 	d, err := createOutput(map[string]any{
-		"webhook_url": "https://hooks.slack.com/test",
+		"secret_endpoint": testEndpoint,
 	}, output.Deps{})
 	require.NoError(t, err)
 
@@ -423,10 +439,10 @@ func TestCreateRuntimeDefaults(t *testing.T) {
 }
 
 func TestSlackHealthCheck(t *testing.T) {
-	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
+	runSlackCases(t, []testutil.OutputTestCase{
 		{
 			Name:         "health check sends GET",
-			AddressField: "webhook_url",
+			AddressField: "host",
 			ValidateReq: func(t *testing.T, req *http.Request, _ []byte) {
 				// Harness validates Send works; this just ensures the output is valid
 			},
@@ -464,10 +480,10 @@ func TestBuildPayloadFieldShortDetection(t *testing.T) {
 }
 
 func TestSlackFieldsFormat(t *testing.T) {
-	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
+	runSlackCases(t, []testutil.OutputTestCase{
 		{
 			Name:         "fields format sends fields without text",
-			AddressField: "webhook_url",
+			AddressField: "host",
 			Config:       map[string]any{"output_format": "fields"},
 			ValidateReq: func(t *testing.T, _ *http.Request, body []byte) {
 				var payload slackPayload
@@ -478,4 +494,27 @@ func TestSlackFieldsFormat(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestSlackBotUsernameIsNotBasicAuth(t *testing.T) {
+	var authorization []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Values("Authorization")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(server.Close)
+	d, err := createOutput(map[string]any{
+		"host": server.URL, "secret_endpoint": testEndpoint, "bot_username": "FalcoBot",
+	}, output.Deps{})
+	require.NoError(t, err)
+	require.NoError(t, d.Send(context.Background(), testutil.CreateValidEvent()))
+	assert.Empty(t, authorization)
+
+	names := map[string]int{}
+	for _, field := range OutputType.Schema.Fields {
+		names[field.Name]++
+	}
+	for name, count := range names {
+		assert.Equal(t, 1, count, name)
+	}
 }

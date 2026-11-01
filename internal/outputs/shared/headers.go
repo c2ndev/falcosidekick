@@ -20,8 +20,6 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
-	"os"
-	"reflect"
 	"slices"
 	"strings"
 
@@ -30,85 +28,7 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
-// Header holds public, secret, and file-backed values for one HTTP header.
-// Files are validated at construction and reread on every request with surrounding
-// whitespace removed. Relative paths resolve from the process working directory.
-type Header struct {
-	Values  []string `mapstructure:"values"`
-	Secrets []string `mapstructure:"secrets"`
-	Files   []string `mapstructure:"files"`
-}
-
-func decodeHeaderHook(_, to reflect.Type, data any) (any, error) {
-	if to != reflect.TypeFor[Header]() {
-		return data, nil
-	}
-	if h, ok := data.(Header); ok {
-		return h, nil
-	}
-	raw := reflect.ValueOf(data)
-	if raw.Kind() != reflect.Map {
-		return nil, fmt.Errorf("header entry must be a map")
-	}
-	var h Header
-	fields := []struct {
-		values *[]string
-		name   string
-		seen   bool
-	}{{&h.Values, "values", false}, {&h.Secrets, "secrets", false}, {&h.Files, "files", false}}
-	iter := raw.MapRange()
-	for iter.Next() {
-		key, ok := iter.Key().Interface().(string)
-		if !ok {
-			return nil, fmt.Errorf("header property names must be strings")
-		}
-		matched := false
-		for i := range fields {
-			field := &fields[i]
-			if !strings.EqualFold(key, field.name) {
-				continue
-			}
-			if field.seen {
-				return nil, fmt.Errorf("duplicate header property %s", field.name)
-			}
-			values, err := decodeHeaderList(iter.Value().Interface())
-			if err != nil {
-				return nil, fmt.Errorf("header %s: %w", field.name, err)
-			}
-			*field.values = values
-			field.seen = true
-			matched = true
-			break
-		}
-		if !matched {
-			return nil, fmt.Errorf("unknown header property")
-		}
-	}
-	return h, nil
-}
-
-func decodeHeaderList(data any) ([]string, error) {
-	switch values := data.(type) {
-	case nil:
-		return nil, nil
-	case []string:
-		return values, nil
-	case []any:
-		result := make([]string, len(values))
-		for i, value := range values {
-			text, ok := value.(string)
-			if !ok {
-				return nil, fmt.Errorf("must be a list of strings")
-			}
-			result[i] = text
-		}
-		return result, nil
-	default:
-		return nil, fmt.Errorf("must be a list of strings")
-	}
-}
-
-func validateHeaderNames(headers map[string]Header) error {
+func validateHeaderNames(headers map[string]ValueSources) error {
 	seen := make(map[string]bool, len(headers))
 	for _, name := range slices.Sorted(maps.Keys(headers)) {
 		if !httpguts.ValidHeaderFieldName(name) {
@@ -153,36 +73,13 @@ func (c *HTTPConfig) validateHeaders() utils.ValidationErrors {
 	return errs
 }
 
-func (h Header) resolve() ([]string, error) {
-	values := make([]string, 0, len(h.Values)+len(h.Secrets)+len(h.Files))
-	for _, group := range []struct {
-		name   string
-		values []string
-	}{{"values", h.Values}, {"secrets", h.Secrets}} {
-		for i, value := range group.values {
-			if !httpguts.ValidHeaderFieldValue(value) {
-				return nil, fmt.Errorf("%s[%d]: invalid header value", group.name, i)
-			}
-			values = append(values, value)
-		}
-	}
-	for i, path := range h.Files {
-		b, err := os.ReadFile(path) //nolint:gosec // header secret paths are operator-configured
-		if err != nil {
-			return nil, fmt.Errorf("files[%d]: cannot read header file", i)
-		}
-		value := strings.TrimSpace(string(b))
-		if !httpguts.ValidHeaderFieldValue(value) {
-			return nil, fmt.Errorf("files[%d]: invalid header value", i)
-		}
-		values = append(values, value)
-	}
-	return values, nil
+func (h ValueSources) resolve() ([]string, error) {
+	return h.resolveSources("header", httpguts.ValidHeaderFieldValue)
 }
 
 // ApplyHeaders replaces configured request headers in values, secrets, files order.
 // It leaves the request unchanged if any header cannot be resolved or validated.
-func ApplyHeaders(req *http.Request, headers map[string]Header) error {
+func ApplyHeaders(req *http.Request, headers map[string]ValueSources) error {
 	if err := validateHeaderNames(headers); err != nil {
 		return err
 	}

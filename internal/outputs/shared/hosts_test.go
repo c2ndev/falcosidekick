@@ -22,28 +22,31 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestValidateURL(t *testing.T) {
+func TestValidateOrigin(t *testing.T) {
 	tests := []struct {
 		name    string
-		url     string
+		value   string
 		wantErr bool
 	}{
-		{"valid https", "https://example.com", false},
-		{"valid http with port", "http://localhost:9200", false},
-		{"valid with path", "http://host:9200/api", false},
+		{"https", "https://example.com", false},
+		{"http with port", "http://localhost:9200", false},
+		{"ipv6", "http://[::1]:9200", false},
 		{"empty", "", true},
 		{"no scheme", "example.com", true},
 		{"no host", "http://", true},
 		{"relative path", "/api/v1", true},
+		{"other scheme", "ftp://example.com", true},
+		{"credentials", "https://u:p@example.com", true},
+		{"path", "http://host:9200/api", true},
+		{"trailing slash", "http://host:9200/", true},
+		{"query", "http://host:9200?token=x", true},
+		{"empty query", "http://host:9200?", true},
+		{"fragment", "http://host:9200#x", true},
+		{"bad port", "http://host:port", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			errs := ValidateURL(tt.url)
-			if tt.wantErr {
-				assert.NotEmpty(t, errs)
-			} else {
-				assert.Empty(t, errs)
-			}
+			assert.Equal(t, tt.wantErr, len(ValidateOrigin(tt.value)) > 0)
 		})
 	}
 }
@@ -61,6 +64,10 @@ func TestValidateEndpoint(t *testing.T) {
 		{"no leading slash", "api/v1", true},
 		{"spaces", "/api v1", true},
 		{"backslash", "/api\\v1", true},
+		{"query", "/api?x=1", true},
+		{"fragment", "/api#x", true},
+		{"bad escape", "/api%zz", true},
+		{"valid escape", "/api%20v1", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -74,29 +81,32 @@ func TestValidateEndpoint(t *testing.T) {
 	}
 }
 
-func TestValidateHosts(t *testing.T) {
+func TestValidateBrokers(t *testing.T) {
 	tests := []struct {
 		name    string
-		hosts   []string
+		brokers []string
 		wantErr bool
 	}{
-		{"single valid", []string{"http://host:9093"}, false},
-		{"multiple valid", []string{"http://a:9093", "http://b:9093"}, false},
+		{"single", []string{"kafka:9092"}, false},
+		{"multiple", []string{"a:9092", "b:9093"}, false},
+		{"ip", []string{"10.0.0.1:9092"}, false},
+		{"ipv6", []string{"[::1]:9092"}, false},
 		{"nil", nil, true},
 		{"empty slice", []string{}, true},
-		{"empty string entry", []string{""}, true},
-		{"missing scheme", []string{"no-scheme"}, true},
-		{"missing host", []string{"http://"}, true},
-		{"mixed valid and empty", []string{"http://valid:9093", ""}, true},
+		{"empty entry", []string{""}, true},
+		{"no port", []string{"kafka"}, true},
+		{"no host", []string{":9092"}, true},
+		{"scheme", []string{"http://kafka:9092"}, true},
+		{"path", []string{"kafka:9092/x"}, true},
+		{"credentials", []string{"u:p@kafka:9092"}, true},
+		{"named port", []string{"kafka:plain"}, true},
+		{"port zero", []string{"kafka:0"}, true},
+		{"port too high", []string{"kafka:65536"}, true},
+		{"mixed", []string{"kafka:9092", ""}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			errs := ValidateHosts(tt.hosts)
-			if tt.wantErr {
-				assert.NotEmpty(t, errs)
-			} else {
-				assert.Empty(t, errs)
-			}
+			assert.Equal(t, tt.wantErr, len(ValidateBrokers(tt.brokers)) > 0)
 		})
 	}
 }

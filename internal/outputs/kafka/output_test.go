@@ -18,6 +18,7 @@ package kafka
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
 
 func TestKafkaCreateValidation(t *testing.T) {
@@ -35,7 +37,7 @@ func TestKafkaCreateValidation(t *testing.T) {
 		name   string
 	}{
 		{config: map[string]any{"topic": "test"}, name: "missing brokers"},
-		{config: map[string]any{"brokers": []string{"http://localhost:9092"}}, name: "missing topic"},
+		{config: map[string]any{"brokers": []string{"localhost:9092"}}, name: "missing topic"},
 		{config: map[string]any{}, name: "both missing"},
 	}
 	for _, tt := range tests {
@@ -48,7 +50,7 @@ func TestKafkaCreateValidation(t *testing.T) {
 
 func TestKafkaCreateSuccess(t *testing.T) {
 	driver, err := createOutput(map[string]any{
-		"brokers": []string{"http://localhost:9092"},
+		"brokers": []string{"localhost:9092"},
 		"topic":   "falco-events",
 	}, output.Deps{})
 	require.NoError(t, err)
@@ -57,7 +59,7 @@ func TestKafkaCreateSuccess(t *testing.T) {
 
 func TestKafkaImplementsBatchSender(t *testing.T) {
 	driver, err := createOutput(map[string]any{
-		"brokers": []string{"http://localhost:9092"},
+		"brokers": []string{"localhost:9092"},
 		"topic":   "falco-events",
 	}, output.Deps{})
 	require.NoError(t, err)
@@ -159,7 +161,7 @@ func TestResolveBalancer(t *testing.T) {
 
 func TestCreateOutputAsync(t *testing.T) {
 	out, err := createOutput(map[string]any{
-		"brokers":  []string{"http://localhost:9092"},
+		"brokers":  []string{"localhost:9092"},
 		"topic":    "events",
 		"producer": map[string]any{"async": true},
 	}, output.Deps{})
@@ -181,7 +183,7 @@ func TestCreateOutputTopicCreation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			out, err := createOutput(map[string]any{
-				"brokers":  []string{"http://localhost:9092"},
+				"brokers":  []string{"localhost:9092"},
 				"topic":    "events",
 				"producer": map[string]any{"auto_create_topic": tt.topicCreation},
 			}, output.Deps{})
@@ -193,7 +195,7 @@ func TestCreateOutputTopicCreation(t *testing.T) {
 
 func TestCreateOutputClientID(t *testing.T) {
 	out, err := createOutput(map[string]any{
-		"brokers":  []string{"http://localhost:9092"},
+		"brokers":  []string{"localhost:9092"},
 		"topic":    "events",
 		"producer": map[string]any{"client_id": "my-producer"},
 	}, output.Deps{})
@@ -209,7 +211,7 @@ func TestCreateOutputTLS(t *testing.T) {
 		{
 			name: "tls with default insecure_skip_verify",
 			config: map[string]any{
-				"brokers":     []string{"http://localhost:9092"},
+				"brokers":     []string{"localhost:9092"},
 				"topic":       "events",
 				"tls_enabled": true,
 			},
@@ -217,7 +219,7 @@ func TestCreateOutputTLS(t *testing.T) {
 		{
 			name: "tls with insecure_skip_verify false",
 			config: map[string]any{
-				"brokers":     []string{"http://localhost:9092"},
+				"brokers":     []string{"localhost:9092"},
 				"topic":       "events",
 				"tls_enabled": true,
 				"tls": map[string]any{
@@ -247,7 +249,7 @@ func TestCreateOutputSASLVariants(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			driver, err := createOutput(map[string]any{
-				"brokers": []string{"http://localhost:9092"},
+				"brokers": []string{"localhost:9092"},
 				"topic":   "events",
 				"auth":    map[string]any{"sasl": tt.sasl, "username": "user", "password": "pass"},
 			}, output.Deps{})
@@ -259,7 +261,7 @@ func TestCreateOutputSASLVariants(t *testing.T) {
 
 func TestCreateOutputAcceptsRuntimeOverrides(t *testing.T) {
 	d, err := createOutput(map[string]any{
-		"brokers": []string{"http://localhost:9092"},
+		"brokers": []string{"localhost:9092"},
 		"topic":   "events",
 		"runtime": map[string]any{
 			"minimum_priority": "error",
@@ -283,7 +285,7 @@ func TestCreateOutputAcceptsRuntimeOverrides(t *testing.T) {
 
 func TestCreateOutputRejectsUnknownKeys(t *testing.T) {
 	_, err := createOutput(map[string]any{
-		"brokers":     []string{"http://localhost:9092"},
+		"brokers":     []string{"localhost:9092"},
 		"topic":       "events",
 		"unknown_key": "value",
 	}, output.Deps{})
@@ -293,7 +295,7 @@ func TestCreateOutputRejectsUnknownKeys(t *testing.T) {
 
 func TestCreateOutputSASLInvalid(t *testing.T) {
 	_, err := createOutput(map[string]any{
-		"brokers": []string{"http://localhost:9092"},
+		"brokers": []string{"localhost:9092"},
 		"topic":   "events",
 		"auth":    map[string]any{"sasl": "kerberos"},
 	}, output.Deps{})
@@ -303,7 +305,7 @@ func TestCreateOutputSASLInvalid(t *testing.T) {
 
 func TestCreateOutputAllOptions(t *testing.T) {
 	d, err := createOutput(map[string]any{
-		"brokers":     []string{"http://broker1:9092", "http://broker2:9092"},
+		"brokers":     []string{"broker1:9092", "broker2:9092"},
 		"topic":       "falco",
 		"auth":        map[string]any{"sasl": "plain", "username": "u", "password": "p"},
 		"tls_enabled": true,
@@ -325,7 +327,7 @@ func TestCloseNilClient(t *testing.T) {
 
 func TestCreateOutputMultiBroker(t *testing.T) {
 	driver, err := createOutput(map[string]any{
-		"brokers": []string{"http://b1:9092", "http://b2:9092", "http://b3:9092"},
+		"brokers": []string{"b1:9092", "b2:9092", "b3:9092"},
 		"topic":   "t",
 	}, output.Deps{})
 	require.NoError(t, err)
@@ -334,7 +336,7 @@ func TestCreateOutputMultiBroker(t *testing.T) {
 
 func TestInitCreateClient(t *testing.T) {
 	d, err := createOutput(map[string]any{
-		"brokers": []string{"http://localhost:19092"},
+		"brokers": []string{"localhost:19092"},
 		"topic":   "events",
 	}, output.Deps{})
 	require.NoError(t, err)
@@ -351,7 +353,7 @@ func TestInitCreateClient(t *testing.T) {
 
 func TestCloseWithClient(t *testing.T) {
 	d, err := createOutput(map[string]any{
-		"brokers": []string{"http://localhost:19092"},
+		"brokers": []string{"localhost:19092"},
 		"topic":   "events",
 	}, output.Deps{})
 	require.NoError(t, err)
@@ -366,7 +368,7 @@ func TestCloseWithClient(t *testing.T) {
 
 func TestSendSyncWithClient(t *testing.T) {
 	d, err := createOutput(map[string]any{
-		"brokers": []string{"http://localhost:19092"},
+		"brokers": []string{"localhost:19092"},
 		"topic":   "events",
 	}, output.Deps{})
 	require.NoError(t, err)
@@ -391,7 +393,7 @@ func TestSendSyncWithClient(t *testing.T) {
 
 func TestSendAsyncWithClient(t *testing.T) {
 	d, err := createOutput(map[string]any{
-		"brokers":  []string{"http://localhost:19092"},
+		"brokers":  []string{"localhost:19092"},
 		"topic":    "events",
 		"producer": map[string]any{"async": true},
 	}, output.Deps{})
@@ -414,7 +416,7 @@ func TestSendAsyncWithClient(t *testing.T) {
 
 func TestSendBatchSyncWithClient(t *testing.T) {
 	d, err := createOutput(map[string]any{
-		"brokers": []string{"http://localhost:19092"},
+		"brokers": []string{"localhost:19092"},
 		"topic":   "events",
 	}, output.Deps{})
 	require.NoError(t, err)
@@ -437,7 +439,7 @@ func TestSendBatchSyncWithClient(t *testing.T) {
 
 func TestSendBatchAsyncWithClient(t *testing.T) {
 	d, err := createOutput(map[string]any{
-		"brokers":  []string{"http://localhost:19092"},
+		"brokers":  []string{"localhost:19092"},
 		"topic":    "events",
 		"producer": map[string]any{"async": true},
 	}, output.Deps{})
@@ -456,7 +458,7 @@ func TestSendBatchAsyncWithClient(t *testing.T) {
 
 func TestHealthCheckWithClient(t *testing.T) {
 	d, err := createOutput(map[string]any{
-		"brokers": []string{"http://localhost:19092"},
+		"brokers": []string{"localhost:19092"},
 		"topic":   "events",
 	}, output.Deps{})
 	require.NoError(t, err)
@@ -471,4 +473,36 @@ func TestHealthCheckWithClient(t *testing.T) {
 	err = o.HealthCheck(ctx)
 	// error expected - no broker, but exercises the ping path
 	assert.Error(t, err)
+}
+
+func TestValidBrokerReachesTheClientAddress(t *testing.T) {
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	accepted := make(chan struct{}, 1)
+	go func() {
+		if conn, acceptErr := listener.Accept(); acceptErr == nil {
+			accepted <- struct{}{}
+			_ = conn.Close()
+		}
+	}()
+
+	d, err := createOutput(map[string]any{"brokers": []string{listener.Addr().String()}, "topic": "falco"}, output.Deps{})
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	require.NoError(t, d.Init(ctx))
+	t.Cleanup(func() { _ = d.Close() })
+	require.Error(t, d.Send(ctx, testutil.CreateValidEvent()), "the listener speaks no Kafka protocol")
+
+	select {
+	case <-accepted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("client never connected to the configured broker")
+	}
+}
+
+func TestSchemeBrokerRejected(t *testing.T) {
+	_, err := createOutput(map[string]any{"brokers": []string{"http://localhost:9092"}, "topic": "falco"}, output.Deps{})
+	require.ErrorContains(t, err, "must be host:port without a scheme")
 }

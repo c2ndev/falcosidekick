@@ -128,7 +128,7 @@ func (p *kafkaProducer) validate() utils.ValidationErrors {
 func (c *config) validate() utils.ValidationErrors {
 	var errs utils.ValidationErrors
 	errs.Merge("tls", c.TLS.Validate())
-	errs.Merge("brokers", shared.ValidateHosts(c.Brokers))
+	errs.Merge("brokers", shared.ValidateBrokers(c.Brokers))
 	if c.Topic == "" {
 		errs.Add("topic", "is required")
 	}

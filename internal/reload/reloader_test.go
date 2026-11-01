@@ -107,7 +107,7 @@ func (e *reloaderTestEnv) shutdown(t *testing.T) {
 func TestReloaderSuccessAddOutput(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "outputs.yaml")
-	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: https://hooks.slack.com/new\n")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    secret_endpoint: https://hooks.slack.com/new\n")
 
 	var slackCalls atomic.Int64
 	cat, err := catalog.New([]output.Type{
@@ -170,7 +170,7 @@ func TestReloaderSuccessRemoveOutput(t *testing.T) {
 		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
 		Deps:            output.Deps{Logger: slog.Default()},
 		Logger:          slog.Default(),
-		InitialOutputs:  map[string]map[string]any{"slack": {"webhook_url": "old"}},
+		InitialOutputs:  map[string]map[string]any{"slack": {"secret_endpoint": "old"}},
 	})
 
 	reloadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -184,7 +184,7 @@ func TestReloaderSuccessRemoveOutput(t *testing.T) {
 func TestReloaderNoChangeIsNoop(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "outputs.yaml")
-	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: same\n")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    secret_endpoint: same\n")
 
 	cat, err := catalog.New([]output.Type{stubOutputType("slack", nil)})
 	require.NoError(t, err)
@@ -192,7 +192,7 @@ func TestReloaderNoChangeIsNoop(t *testing.T) {
 	env := newReloaderTestEnv(t, nil)
 	defer env.shutdown(t)
 
-	initial := map[string]map[string]any{"slack": {"webhook_url": "same"}}
+	initial := map[string]map[string]any{"slack": {"secret_endpoint": "same"}}
 	r := NewReloader(&ReloaderConfig{
 		OutputPaths:     []string{path},
 		Catalog:         cat,
@@ -226,7 +226,7 @@ func TestReloaderParseErrorKeepsOldConfig(t *testing.T) {
 		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
 		Deps:            output.Deps{Logger: slog.Default()},
 		Logger:          slog.Default(),
-		InitialOutputs:  map[string]map[string]any{"slack": {"webhook_url": "old"}},
+		InitialOutputs:  map[string]map[string]any{"slack": {"secret_endpoint": "old"}},
 	})
 
 	reloadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -239,7 +239,7 @@ func TestReloaderParseErrorKeepsOldConfig(t *testing.T) {
 func TestReloaderUnknownOutputKeepsOldConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "outputs.yaml")
-	writeOutputsYAML(t, path, "outputs:\n  unknown_output:\n    url: http://x\n")
+	writeOutputsYAML(t, path, "outputs:\n  unknown_output:\n    host: http://x\n")
 
 	cat, err := catalog.New([]output.Type{stubOutputType("slack", nil)})
 	require.NoError(t, err)
@@ -267,7 +267,7 @@ func TestReloaderUnknownOutputKeepsOldConfig(t *testing.T) {
 func TestReloaderConcurrentReloadsSerialized(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "outputs.yaml")
-	writeOutputsYAML(t, path, "outputs:\n  loki:\n    url: http://loki:3100\n")
+	writeOutputsYAML(t, path, "outputs:\n  loki:\n    host: http://loki:3100\n")
 
 	cat, err := catalog.New([]output.Type{stubOutputType("loki", nil)})
 	require.NoError(t, err)
@@ -319,8 +319,8 @@ func TestReloaderChangedOutputTriggersReplace(t *testing.T) {
 	env := newReloaderTestEnv(t, nil)
 	defer env.shutdown(t)
 
-	initial := map[string]map[string]any{"slack": {"webhook_url": "old"}}
-	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: old\n")
+	initial := map[string]map[string]any{"slack": {"secret_endpoint": "old"}}
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    secret_endpoint: old\n")
 
 	r := NewReloader(&ReloaderConfig{
 		OutputPaths:     []string{path},
@@ -336,7 +336,7 @@ func TestReloaderChangedOutputTriggersReplace(t *testing.T) {
 	defer cancel()
 	require.NoError(t, r.Reload(reloadCtx, env.workerRunCtx, 10*time.Second))
 
-	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: new\n")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    secret_endpoint: new\n")
 	require.NoError(t, r.Reload(reloadCtx, env.workerRunCtx, 10*time.Second))
 
 	env.d.DispatchEvent(&event.Event{
@@ -353,7 +353,7 @@ func TestReloaderChangedOutputTriggersReplace(t *testing.T) {
 func TestReloaderInitFailureClosesPartialOutputs(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "outputs.yaml")
-	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: x\n  broken:\n    url: y\n")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    secret_endpoint: x\n  broken:\n    host: y\n")
 
 	var closeCalled atomic.Bool
 	slackType := output.Type{
@@ -467,7 +467,7 @@ func TestReloaderReplaceRetireTimeoutKeepsLiveReplacement(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 
 	// Changed config triggers a replace.
-	writeOutputsYAML(t, path, "outputs:\n  myout:\n    url: http://changed\n")
+	writeOutputsYAML(t, path, "outputs:\n  myout:\n    host: http://changed\n")
 
 	reg := prometheus.NewRegistry()
 	r := NewReloader(&ReloaderConfig{
@@ -478,7 +478,7 @@ func TestReloaderReplaceRetireTimeoutKeepsLiveReplacement(t *testing.T) {
 		Deps:            output.Deps{Logger: slog.Default()},
 		Registry:        reg,
 		Logger:          slog.Default(),
-		InitialOutputs:  map[string]map[string]any{"myout": {"url": "http://old"}},
+		InitialOutputs:  map[string]map[string]any{"myout": {"host": "http://old"}},
 	})
 
 	// Broad reloadCtx (for Init/Provision), short retireTimeout so old output retire times out.
@@ -492,7 +492,7 @@ func TestReloaderReplaceRetireTimeoutKeepsLiveReplacement(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	assert.GreaterOrEqual(t, newSendCalls.Load(), int64(1), "live replacement must receive events")
 
-	assert.Equal(t, "http://changed", r.fileState["myout"]["url"], "file state must reflect new config")
+	assert.Equal(t, "http://changed", r.fileState["myout"]["host"], "file state must reflect new config")
 
 	gathered, gatherErr := reg.Gather()
 	require.NoError(t, gatherErr)
@@ -537,7 +537,7 @@ func TestReloaderRemoveRetireTimeoutIsWarning(t *testing.T) {
 		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
 		Deps:            output.Deps{Logger: slog.Default()},
 		Logger:          slog.Default(),
-		InitialOutputs:  map[string]map[string]any{"myout": {"url": "http://old"}},
+		InitialOutputs:  map[string]map[string]any{"myout": {"host": "http://old"}},
 	})
 
 	reloadCtx, reloadCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -551,7 +551,7 @@ func TestReloaderRemoveRetireTimeoutIsWarning(t *testing.T) {
 func TestReloaderRejectsDuringShutdown(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "outputs.yaml")
-	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: x\n")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    secret_endpoint: x\n")
 
 	var closeCalled atomic.Bool
 	slackType := output.Type{
@@ -616,7 +616,7 @@ func TestReloadRetireTimeoutConfigValidation(t *testing.T) {
 func TestReloadNoOpCountsAsAttempt(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "outputs.yaml")
-	writeOutputsYAML(t, path, "outputs:\n  slack:\n    url: same\n")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    host: same\n")
 
 	cat, err := catalog.New([]output.Type{stubOutputType("slack", nil)})
 	require.NoError(t, err)
@@ -633,7 +633,7 @@ func TestReloadNoOpCountsAsAttempt(t *testing.T) {
 		Deps:            output.Deps{Logger: slog.Default()},
 		Registry:        reg,
 		Logger:          slog.Default(),
-		InitialOutputs:  map[string]map[string]any{"slack": {"url": "same"}},
+		InitialOutputs:  map[string]map[string]any{"slack": {"host": "same"}},
 	})
 
 	reloadCtx := context.Background()
@@ -650,7 +650,7 @@ func TestReloadNoOpCountsAsAttempt(t *testing.T) {
 func TestReloaderSuccessWithDBSync(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "outputs.yaml")
-	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: https://hooks.slack.com/new\n")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    secret_endpoint: https://hooks.slack.com/new\n")
 
 	cat, err := catalog.New([]output.Type{stubOutputType("slack", nil)})
 	require.NoError(t, err)
@@ -689,7 +689,7 @@ func TestReloaderSuccessWithDBSync(t *testing.T) {
 func TestReloaderPartialSuccessDBSyncFailure(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "outputs.yaml")
-	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: https://hooks.slack.com/new\n")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    secret_endpoint: https://hooks.slack.com/new\n")
 
 	cat, err := catalog.New([]output.Type{stubOutputType("slack", nil)})
 	require.NoError(t, err)
@@ -761,7 +761,7 @@ func TestReloaderApplyOutput_RequiresBind(t *testing.T) {
 		InitialOutputs:  map[string]map[string]any{},
 	})
 
-	err = r.ApplyOutput(context.Background(), "slack", map[string]any{"webhook_url": "x"})
+	err = r.ApplyOutput(context.Background(), "slack", map[string]any{"secret_endpoint": "x"})
 	require.ErrorIs(t, err, ErrReloaderNotBound)
 
 	err = r.RemoveOutput(context.Background(), "slack")
@@ -803,7 +803,7 @@ func TestReloaderApplyOutput_AddsNewOutput(t *testing.T) {
 
 	r := newApplyReloader(t, cat, env, map[string]map[string]any{})
 
-	require.NoError(t, r.ApplyOutput(context.Background(), "slack", map[string]any{"webhook_url": "https://hooks.slack.com/ui"}))
+	require.NoError(t, r.ApplyOutput(context.Background(), "slack", map[string]any{"secret_endpoint": "https://hooks.slack.com/ui"}))
 
 	assert.Contains(t, env.d.OutputNames(), "slack", "ApplyOutput must add the output to the dispatcher")
 
@@ -824,9 +824,9 @@ func TestReloaderApplyOutput_ReplacesExistingOutput(t *testing.T) {
 	env := newReloaderTestEnv(t, []*pipeline.Output{initialOut})
 	defer env.shutdown(t)
 
-	r := newApplyReloader(t, cat, env, map[string]map[string]any{"slack": {"webhook_url": "old"}})
+	r := newApplyReloader(t, cat, env, map[string]map[string]any{"slack": {"secret_endpoint": "old"}})
 
-	require.NoError(t, r.ApplyOutput(context.Background(), "slack", map[string]any{"webhook_url": "new"}))
+	require.NoError(t, r.ApplyOutput(context.Background(), "slack", map[string]any{"secret_endpoint": "new"}))
 
 	assert.Contains(t, env.d.OutputNames(), "slack")
 }
@@ -870,9 +870,9 @@ func TestReloaderApplyOutput_RejectedConfigNeverEchoesValues(t *testing.T) {
 
 	r := newApplyReloader(t, cat, env, map[string]map[string]any{})
 
-	err = r.ApplyOutput(context.Background(), "webhook", map[string]any{"url": "https://u:" + sentinel + "@ho st/x"})
+	err = r.ApplyOutput(context.Background(), "webhook", map[string]any{"host": "https://u:" + sentinel + "@ho st/x"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "url: invalid URL")
+	assert.Contains(t, err.Error(), "host: invalid URL")
 	assert.NotContains(t, err.Error(), sentinel)
 	assert.Empty(t, env.d.OutputNames(), "dispatcher must be untouched on rejected config")
 }
@@ -886,12 +886,17 @@ func TestReloaderFileReloadNeverEchoesValues(t *testing.T) {
 	}{
 		{
 			name:    "rejected url",
-			content: "outputs:\n  webhook:\n    url: \"https://u:" + sentinel + "@ho st/x\"\n",
-			want:    "url: invalid URL",
+			content: "outputs:\n  webhook:\n    host: \"https://u:" + sentinel + "@ho st/x\"\n",
+			want:    "host: invalid URL",
+		},
+		{
+			name:    "removed url field",
+			content: "outputs:\n  webhook:\n    url: https://h/" + sentinel + "\n",
+			want:    "unknown keys: url",
 		},
 		{
 			name:    "rejected secret type",
-			content: "outputs:\n  webhook:\n    url: https://h/x\n    password:\n      a: " + sentinel + "\n",
+			content: "outputs:\n  webhook:\n    host: https://h\n    password:\n      a: " + sentinel + "\n",
 			want:    "password: invalid type",
 		},
 		{
@@ -947,7 +952,7 @@ func TestReloaderRemoveOutput_RemovesFromDispatcher(t *testing.T) {
 	env := newReloaderTestEnv(t, []*pipeline.Output{initialOut})
 	defer env.shutdown(t)
 
-	r := newApplyReloader(t, cat, env, map[string]map[string]any{"slack": {"webhook_url": "x"}})
+	r := newApplyReloader(t, cat, env, map[string]map[string]any{"slack": {"secret_endpoint": "x"}})
 
 	require.NoError(t, r.RemoveOutput(context.Background(), "slack"))
 	assert.NotContains(t, env.d.OutputNames(), "slack", "RemoveOutput must drop the output from the dispatcher")
@@ -972,7 +977,7 @@ func TestReloaderRemoveOutput_MissIsNoop(t *testing.T) {
 func TestReloaderApplyThenReload_FileWinsOverUIEdit(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "outputs.yaml")
-	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: file-value\n")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    secret_endpoint: file-value\n")
 
 	cat, err := catalog.New([]output.Type{stubOutputType("slack", nil)})
 	require.NoError(t, err)
@@ -981,7 +986,7 @@ func TestReloaderApplyThenReload_FileWinsOverUIEdit(t *testing.T) {
 	defer env.shutdown(t)
 
 	db := &databasetestutil.Mock{Outputs: map[string]*core.OutputConfigEntry{
-		"slack": {Name: "slack", Config: map[string]any{"webhook_url": "file-value"}, Provisioned: true},
+		"slack": {Name: "slack", Config: map[string]any{"secret_endpoint": "file-value"}, Provisioned: true},
 	}}
 
 	r := NewReloader(&ReloaderConfig{
@@ -992,15 +997,15 @@ func TestReloaderApplyThenReload_FileWinsOverUIEdit(t *testing.T) {
 		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
 		Deps:            output.Deps{Logger: slog.Default()},
 		Logger:          slog.Default(),
-		InitialOutputs:  map[string]map[string]any{"slack": {"webhook_url": "file-value"}},
+		InitialOutputs:  map[string]map[string]any{"slack": {"secret_endpoint": "file-value"}},
 	})
 	r.BindWorkerContext(env.workerRunCtx, time.Second)
 
 	applyCtx, applyCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer applyCancel()
-	require.NoError(t, r.ApplyOutput(applyCtx, "slack", map[string]any{"webhook_url": "ui-value"}))
+	require.NoError(t, r.ApplyOutput(applyCtx, "slack", map[string]any{"secret_endpoint": "ui-value"}))
 	require.Contains(t, env.d.OutputNames(), "slack")
-	require.Equal(t, map[string]any{"webhook_url": "ui-value"}, r.fileState["slack"],
+	require.Equal(t, map[string]any{"secret_endpoint": "ui-value"}, r.fileState["slack"],
 		"r.fileState must track the UI edit so the next file reload sees a Changed diff")
 
 	reloadCtx, reloadCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -1008,7 +1013,7 @@ func TestReloaderApplyThenReload_FileWinsOverUIEdit(t *testing.T) {
 	require.NoError(t, r.Reload(reloadCtx, env.workerRunCtx, time.Second))
 
 	assert.Contains(t, env.d.OutputNames(), "slack")
-	assert.Equal(t, map[string]any{"webhook_url": "file-value"}, r.fileState["slack"],
+	assert.Equal(t, map[string]any{"secret_endpoint": "file-value"}, r.fileState["slack"],
 		"file reload must overwrite the UI edit with the file version")
 }
 
@@ -1019,7 +1024,7 @@ func TestReloaderApplyThenReload_FileWinsOverUIEdit(t *testing.T) {
 func TestReloaderReload_DisableDeletionKeepsOrphanedOutputRunning(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "outputs.yaml")
-	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: slack-cfg\n  webhook:\n    url: webhook-cfg\n")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    secret_endpoint: slack-cfg\n  webhook:\n    host: webhook-cfg\n")
 
 	cat, err := catalog.New([]output.Type{
 		stubOutputType("slack", nil),
@@ -1049,7 +1054,7 @@ func TestReloaderReload_DisableDeletionKeepsOrphanedOutputRunning(t *testing.T) 
 	require.ElementsMatch(t, []string{"slack", "webhook"}, env.d.OutputNames())
 
 	// File drops webhook; DisableDeletion=true must preserve it.
-	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: slack-cfg\n")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    secret_endpoint: slack-cfg\n")
 	require.NoError(t, r.Reload(context.Background(), env.workerRunCtx, time.Second))
 
 	assert.ElementsMatch(t, []string{"slack", "webhook"}, env.d.OutputNames(),
@@ -1063,7 +1068,7 @@ func TestReloaderReload_DisableDeletionKeepsOrphanedOutputRunning(t *testing.T) 
 func TestReloaderReload_DisableDeletionFalseRetiresOrphan(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "outputs.yaml")
-	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: slack-cfg\n  webhook:\n    url: webhook-cfg\n")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    secret_endpoint: slack-cfg\n  webhook:\n    host: webhook-cfg\n")
 
 	cat, err := catalog.New([]output.Type{
 		stubOutputType("slack", nil),
@@ -1091,7 +1096,7 @@ func TestReloaderReload_DisableDeletionFalseRetiresOrphan(t *testing.T) {
 	require.NoError(t, r.Reload(context.Background(), env.workerRunCtx, time.Second))
 	require.ElementsMatch(t, []string{"slack", "webhook"}, env.d.OutputNames())
 
-	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: slack-cfg\n")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    secret_endpoint: slack-cfg\n")
 	require.NoError(t, r.Reload(context.Background(), env.workerRunCtx, time.Second))
 
 	assert.ElementsMatch(t, []string{"slack"}, env.d.OutputNames(),
@@ -1112,7 +1117,7 @@ func TestReloaderReload_DisableDeletionFalseRetiresOrphan(t *testing.T) {
 func TestReloaderApplyThenReload_PartialFailureNextReloadRestoresFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "outputs.yaml")
-	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: file-value\n")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    secret_endpoint: file-value\n")
 
 	var builds atomic.Int32
 	cat, err := catalog.New([]output.Type{{
@@ -1130,7 +1135,7 @@ func TestReloaderApplyThenReload_PartialFailureNextReloadRestoresFile(t *testing
 
 	db := &databasetestutil.Mock{
 		Outputs: map[string]*core.OutputConfigEntry{
-			"slack": {Name: "slack", Config: map[string]any{"webhook_url": "file-value"}, Provisioned: true},
+			"slack": {Name: "slack", Config: map[string]any{"secret_endpoint": "file-value"}, Provisioned: true},
 		},
 	}
 
@@ -1142,12 +1147,12 @@ func TestReloaderApplyThenReload_PartialFailureNextReloadRestoresFile(t *testing
 		RuntimeDefaults: testutil.DefaultRuntimeConfig(),
 		Deps:            output.Deps{Logger: slog.Default()},
 		Logger:          slog.Default(),
-		InitialOutputs:  map[string]map[string]any{"slack": {"webhook_url": "file-value"}},
+		InitialOutputs:  map[string]map[string]any{"slack": {"secret_endpoint": "file-value"}},
 	})
 	r.BindWorkerContext(env.workerRunCtx, time.Second)
 
 	db.SaveOutputConfigErr = errors.New("db save boom")
-	err = r.ApplyOutput(context.Background(), "slack", map[string]any{"webhook_url": "ui-value"})
+	err = r.ApplyOutput(context.Background(), "slack", map[string]any{"secret_endpoint": "ui-value"})
 	require.ErrorIs(t, err, ErrDBSyncFailed,
 		"runtime apply succeeded but DB save failed; ApplyOutput must report ErrDBSyncFailed")
 	require.Contains(t, env.d.OutputNames(), "slack")
@@ -1159,7 +1164,7 @@ func TestReloaderApplyThenReload_PartialFailureNextReloadRestoresFile(t *testing
 
 	assert.Equal(t, int32(2), builds.Load(),
 		"the reload must detect dispatcher/file divergence and rebuild slack from the file version")
-	assert.Equal(t, map[string]any{"webhook_url": "file-value"}, r.fileState["slack"],
+	assert.Equal(t, map[string]any{"secret_endpoint": "file-value"}, r.fileState["slack"],
 		"post-reload r.fileState must reflect the file version")
 }
 
@@ -1172,7 +1177,7 @@ func TestReloaderApplyThenReload_PartialFailureNextReloadRestoresFile(t *testing
 func TestReloaderReload_ReAddsNameAlreadyLiveAsReplace(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "outputs.yaml")
-	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: file-version\n")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    secret_endpoint: file-version\n")
 
 	cat, err := catalog.New([]output.Type{stubOutputType("slack", nil)})
 	require.NoError(t, err)
@@ -1194,7 +1199,7 @@ func TestReloaderReload_ReAddsNameAlreadyLiveAsReplace(t *testing.T) {
 	})
 	r.BindWorkerContext(env.workerRunCtx, time.Second)
 
-	require.NoError(t, r.ApplyOutput(context.Background(), "slack", map[string]any{"webhook_url": "ui-version"}))
+	require.NoError(t, r.ApplyOutput(context.Background(), "slack", map[string]any{"secret_endpoint": "ui-version"}))
 	require.Contains(t, env.d.OutputNames(), "slack")
 	require.NotContains(t, r.fileState, "slack",
 		"UI-only apply must not write to the file-view")
@@ -1208,7 +1213,7 @@ func TestReloaderReload_ReAddsNameAlreadyLiveAsReplace(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, count, "dispatcher must have exactly one slack (Replace, not duplicate Add)")
-	assert.Equal(t, map[string]any{"webhook_url": "file-version"}, r.fileState["slack"],
+	assert.Equal(t, map[string]any{"secret_endpoint": "file-version"}, r.fileState["slack"],
 		"post-reload r.fileState reflects the file version")
 }
 
@@ -1238,7 +1243,7 @@ func TestReloaderApplyOutput_DBSaveFailureReturnsErrDBSyncFailed(t *testing.T) {
 	})
 	r.BindWorkerContext(env.workerRunCtx, time.Second)
 
-	err = r.ApplyOutput(context.Background(), "slack", map[string]any{"webhook_url": "x"})
+	err = r.ApplyOutput(context.Background(), "slack", map[string]any{"secret_endpoint": "x"})
 	require.ErrorIs(t, err, ErrDBSyncFailed)
 
 	assert.Contains(t, env.d.OutputNames(), "slack",
@@ -1299,7 +1304,7 @@ func TestReloaderRemoveOutput_FileReloadRestoresFileProvisioned(t *testing.T) {
 	// operator edits the file.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "outputs.yaml")
-	writeOutputsYAML(t, path, "outputs:\n  slack:\n    webhook_url: https://hooks.slack.com/file\n")
+	writeOutputsYAML(t, path, "outputs:\n  slack:\n    secret_endpoint: https://hooks.slack.com/file\n")
 
 	cat, err := catalog.New([]output.Type{stubOutputType("slack", nil)})
 	require.NoError(t, err)

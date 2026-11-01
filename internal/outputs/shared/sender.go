@@ -36,7 +36,7 @@ const (
 // Sender handles HTTP request execution and response checking for output drivers.
 type Sender struct {
 	client    *http.Client
-	headers   map[string]Header
+	headers   map[string]ValueSources
 	basicUser string
 	basicPass string
 	name      string
@@ -45,7 +45,7 @@ type Sender struct {
 // NewSender creates a Sender with a pre-configured HTTP client.
 // Auth from HTTPConfig (basic auth, bearer token) is auto-configured.
 // Returns an error if headers, authentication, or TLS configuration is invalid.
-// Header files are checked even if the driver has already validated its config.
+// Header value files are checked even if the driver has already validated its config.
 func NewSender(name string, cfg *HTTPConfig) (*Sender, error) {
 	if errs := cfg.Validate(); len(errs) > 0 {
 		return nil, fmt.Errorf("%s: %s", name, errs.Error())
@@ -55,9 +55,9 @@ func NewSender(name string, cfg *HTTPConfig) (*Sender, error) {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 
-	headers := make(map[string]Header, len(cfg.Headers))
+	headers := make(map[string]ValueSources, len(cfg.Headers))
 	for k, v := range cfg.Headers {
-		headers[http.CanonicalHeaderKey(k)] = Header{
+		headers[http.CanonicalHeaderKey(k)] = ValueSources{
 			Values: slices.Clone(v.Values), Secrets: slices.Clone(v.Secrets), Files: slices.Clone(v.Files),
 		}
 	}
@@ -87,7 +87,7 @@ func (s *Sender) SetBasicAuth(user, pass string) {
 
 // SetHeader replaces a configured header before the sender is used.
 func (s *Sender) SetHeader(key, value string) {
-	s.headers[http.CanonicalHeaderKey(key)] = Header{Secrets: []string{value}}
+	s.headers[http.CanonicalHeaderKey(key)] = ValueSources{Secrets: []string{value}}
 }
 
 // SendJSON marshals payload as JSON and sends with the given HTTP method.

@@ -45,11 +45,10 @@ func TestHTTPDeliveryStatus_SafeErrorsAndRecovery(t *testing.T) {
 		pathToken     = "synthetic-slack-path-secret"
 	)
 	for _, provider := range []struct {
-		urlKey     string
 		outputType output.Type
 	}{
-		{outputType: webhook.OutputType, urlKey: "url"},
-		{outputType: slack.OutputType, urlKey: "webhook_url"},
+		{outputType: webhook.OutputType},
+		{outputType: slack.OutputType},
 	} {
 		t.Run(provider.outputType.Name, func(t *testing.T) {
 			type failureCase struct {
@@ -98,17 +97,21 @@ func TestHTTPDeliveryStatus_SafeErrorsAndRecovery(t *testing.T) {
 					cat, err := catalog.New([]output.Type{provider.outputType})
 					require.NoError(t, err)
 					rig := buildMutationRig(t, database.NewMemory(), cat, true)
-					endpoint := source.URL + "/events"
+					route := map[string]string{"endpoint": "/events"}
 					if provider.outputType.Name == slack.OutputType.Name {
-						endpoint = source.URL + "/services/" + pathToken
+						route = map[string]string{"secret_endpoint": "/services/" + pathToken}
 					}
-					require.NoError(t, rig.Reloader.ApplyOutput(t.Context(), provider.outputType.Name, map[string]any{
-						provider.urlKey: endpoint,
-						"bearer_token":  bearerToken,
+					config := map[string]any{
+						"host":         source.URL,
+						"bearer_token": bearerToken,
 						"headers": map[string]any{
 							"X-Api-Key": map[string]any{"secrets": []string{headerToken}},
 						},
-					}))
+					}
+					for key, value := range route {
+						config[key] = value
+					}
+					require.NoError(t, rig.Reloader.ApplyOutput(t.Context(), provider.outputType.Name, config))
 
 					rig.Server.pipeline.ProcessEvent(t.Context(), testutil.CreateValidEvent())
 					waitForHTTPDeliveryStatus(t, rig, 0, 1)

@@ -61,7 +61,7 @@ func TestFanOutSafeDiagnostics(t *testing.T) {
 				var requests atomic.Int32
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					requests.Add(1)
-					if !allFail && strings.HasPrefix(r.URL.Path, "/accepted") {
+					if !allFail && strings.HasPrefix(r.Host, "localhost") {
 						w.WriteHeader(http.StatusOK)
 						return
 					}
@@ -71,9 +71,11 @@ func TestFanOutSafeDiagnostics(t *testing.T) {
 				t.Cleanup(server.Close)
 				d, err := createOutput(map[string]any{
 					"hosts": []string{
-						server.URL + "/PATH_SECRET?token=QUERY_SECRET",
-						server.URL + "/accepted",
+						server.URL,
+						strings.Replace(server.URL, "127.0.0.1", "localhost", 1),
 					},
+					"secret_endpoint": "/PATH_SECRET",
+					"query_params":    map[string]any{"token": map[string]any{"secrets": []string{"QUERY_SECRET"}}},
 				}, output.Deps{Logger: slog.New(handler)})
 				require.NoError(t, err)
 				err = d.Send(context.Background(), testutil.CreateValidEvent())
@@ -109,7 +111,9 @@ func TestFanOutSafeDiagnostics(t *testing.T) {
 func TestFanOutCancellationPreservesCause(t *testing.T) {
 	var logs bytes.Buffer
 	d, err := createOutput(map[string]any{
-		"hosts": []string{"http://127.0.0.1/PATH_SECRET", "http://127.0.0.1/?token=QUERY_SECRET"},
+		"hosts":           []string{"http://127.0.0.1", "http://localhost"},
+		"secret_endpoint": "/PATH_SECRET",
+		"query_params":    map[string]any{"token": map[string]any{"secrets": []string{"QUERY_SECRET"}}},
 	}, output.Deps{Logger: slog.New(slog.NewTextHandler(&logs, nil))})
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -213,10 +217,12 @@ func TestFanOutSendsToAllHosts(t *testing.T) {
 	defer server2.Close()
 
 	o := &driver{
-		cfg:      config{Endpoint: defaultEndpoint},
-		sender:   testutil.MustNewSender(t, "alertmanager"),
-		logger:   slog.Default().With("output", "alertmanager"),
-		hostURLs: []string{server1.URL + defaultEndpoint, server2.URL + defaultEndpoint},
+		cfg: config{
+			HTTPTargetConfig: shared.HTTPTargetConfig{Endpoint: defaultEndpoint},
+			Hosts:            []string{server1.URL, server2.URL},
+		},
+		sender: testutil.MustNewSender(t, "alertmanager"),
+		logger: slog.Default().With("output", "alertmanager"),
 	}
 
 	err := o.Send(context.Background(), testutil.CreateValidEvent())
@@ -238,10 +244,12 @@ func TestFanOutSucceedsIfOneHostWorks(t *testing.T) {
 	defer goodServer.Close()
 
 	o := &driver{
-		cfg:      config{Endpoint: defaultEndpoint},
-		sender:   testutil.MustNewSender(t, "alertmanager"),
-		logger:   slog.Default().With("output", "alertmanager"),
-		hostURLs: []string{badServer.URL + defaultEndpoint, goodServer.URL + defaultEndpoint},
+		cfg: config{
+			HTTPTargetConfig: shared.HTTPTargetConfig{Endpoint: defaultEndpoint},
+			Hosts:            []string{badServer.URL, goodServer.URL},
+		},
+		sender: testutil.MustNewSender(t, "alertmanager"),
+		logger: slog.Default().With("output", "alertmanager"),
 	}
 
 	err := o.Send(context.Background(), testutil.CreateValidEvent())
@@ -256,10 +264,12 @@ func TestFanOutFailsWhenAllHostsFail(t *testing.T) {
 	defer server.Close()
 
 	o := &driver{
-		cfg:      config{Endpoint: defaultEndpoint},
-		sender:   testutil.MustNewSender(t, "alertmanager"),
-		logger:   slog.Default().With("output", "alertmanager"),
-		hostURLs: []string{server.URL + defaultEndpoint, server.URL + defaultEndpoint},
+		cfg: config{
+			HTTPTargetConfig: shared.HTTPTargetConfig{Endpoint: defaultEndpoint},
+			Hosts:            []string{server.URL, server.URL},
+		},
+		sender: testutil.MustNewSender(t, "alertmanager"),
+		logger: slog.Default().With("output", "alertmanager"),
 	}
 
 	err := o.Send(context.Background(), testutil.CreateValidEvent())
@@ -276,10 +286,12 @@ func TestSingleHostSkipsFanOut(t *testing.T) {
 	defer server.Close()
 
 	o := &driver{
-		cfg:      config{Endpoint: defaultEndpoint},
-		sender:   testutil.MustNewSender(t, "alertmanager"),
-		logger:   slog.Default().With("output", "alertmanager"),
-		hostURLs: []string{server.URL + defaultEndpoint},
+		cfg: config{
+			HTTPTargetConfig: shared.HTTPTargetConfig{Endpoint: defaultEndpoint},
+			Hosts:            []string{server.URL},
+		},
+		sender: testutil.MustNewSender(t, "alertmanager"),
+		logger: slog.Default().With("output", "alertmanager"),
 	}
 
 	require.NoError(t, o.Send(context.Background(), testutil.CreateValidEvent()))
@@ -294,10 +306,12 @@ func TestAlertmanagerHealthCheck(t *testing.T) {
 	defer server.Close()
 
 	o := &driver{
-		cfg:      config{Endpoint: defaultEndpoint},
-		sender:   testutil.MustNewSender(t, "alertmanager"),
-		logger:   slog.Default().With("output", "alertmanager"),
-		hostURLs: []string{server.URL + defaultEndpoint},
+		cfg: config{
+			HTTPTargetConfig: shared.HTTPTargetConfig{Endpoint: defaultEndpoint},
+			Hosts:            []string{server.URL},
+		},
+		sender: testutil.MustNewSender(t, "alertmanager"),
+		logger: slog.Default().With("output", "alertmanager"),
 	}
 
 	assert.NoError(t, o.HealthCheck(context.Background()))
@@ -316,7 +330,7 @@ func TestAlertmanagerCustomEndpoint(t *testing.T) {
 	require.NoError(t, err)
 
 	o := d.(*driver)
-	assert.Equal(t, "http://am:9093/api/v2/alerts", o.hostURLs[0])
+	assert.Equal(t, "/api/v2/alerts", o.cfg.DeliveryRoute())
 }
 
 func TestAlertmanagerInit(t *testing.T) {

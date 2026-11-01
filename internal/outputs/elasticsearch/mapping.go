@@ -28,7 +28,10 @@ import (
 // _index_template API (ES 7.8+, composable templates).
 // since ES 7.8 and will be removed in ES 9.x.
 func (d *driver) createIndexTemplate(ctx context.Context) error {
-	templateURL := fmt.Sprintf("%s/_index_template/%s", d.cfg.URL, d.cfg.Index)
+	templateURL, err := d.cfg.URL(d.cfg.Host, "/_index_template/"+d.cfg.Index, nil)
+	if err != nil {
+		return shared.WrapDeliveryError("elasticsearch", "target", err)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, templateURL, http.NoBody)
 	if err != nil {

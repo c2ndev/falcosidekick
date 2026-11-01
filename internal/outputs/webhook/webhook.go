@@ -28,11 +28,13 @@ import (
 
 const defaultMethod = "POST"
 
+var targetOptions = shared.HTTPTargetOptions{DefaultEndpoint: "/"}
+
 type config struct {
-	URL               string `mapstructure:"url"`
-	Method            string `mapstructure:"method"`
-	shared.HTTPConfig `mapstructure:",squash"`
-	Runtime           output.RuntimeConfig `mapstructure:"runtime"`
+	Method                  string `mapstructure:"method"`
+	shared.HTTPTargetConfig `mapstructure:",squash"`
+	shared.HTTPConfig       `mapstructure:",squash"`
+	Runtime                 output.RuntimeConfig `mapstructure:"runtime"`
 }
 
 // OutputType describes the webhook output for the catalog.
@@ -41,10 +43,9 @@ var OutputType = output.Type{
 	Name:     "webhook",
 	Category: "webhook",
 	Schema: output.Schema{
-		Fields: append([]output.SchemaField{
-			{Name: "url", Type: "string", Required: true, Label: "URL"},
-			{Name: "method", Type: "enum", Values: []string{"POST", "PUT"}, Default: "POST", Label: "HTTP Method"},
-		}, append(shared.HTTPConfigSchemaFields(), shared.RuntimeConfigSchemaFields()...)...),
+		Fields: append(append(shared.HTTPTargetSchemaFields(&targetOptions), output.SchemaField{
+			Name: "method", Type: "enum", Values: []string{"POST", "PUT"}, Default: "POST", Label: "HTTP Method",
+		}), append(shared.HTTPConfigSchemaFields(), shared.RuntimeConfigSchemaFields()...)...),
 	},
 }
 
@@ -60,7 +61,7 @@ var validMethods = map[string]bool{"POST": true, "PUT": true}
 func (c *config) validate() utils.ValidationErrors {
 	var errs utils.ValidationErrors
 	errs.Merge("", c.HTTPConfig.Validate())
-	errs.Merge("url", shared.ValidateURL(c.URL))
+	errs.Merge("", c.HTTPTargetConfig.Validate(&targetOptions))
 	if c.Method == "" {
 		c.Method = defaultMethod
 	} else if !validMethods[c.Method] {
@@ -98,12 +99,20 @@ func (d *driver) Init(_ context.Context) error { return nil }
 
 // Send delivers an event as JSON to the webhook address.
 func (d *driver) Send(ctx context.Context, evt *event.Event) error {
-	return d.sender.SendJSON(ctx, d.cfg.Method, d.cfg.URL, evt)
+	target, err := d.cfg.DeliveryURL()
+	if err != nil {
+		return shared.WrapDeliveryError("webhook", "target", err)
+	}
+	return d.sender.SendJSON(ctx, d.cfg.Method, target, evt)
 }
 
 // HealthCheck verifies connectivity to the webhook address.
 func (d *driver) HealthCheck(ctx context.Context) error {
-	return d.sender.HealthCheck(ctx, d.cfg.URL)
+	target, err := d.cfg.DeliveryURL()
+	if err != nil {
+		return shared.WrapDeliveryError("webhook", "target", err)
+	}
+	return d.sender.HealthCheck(ctx, target)
 }
 
 func (d *driver) Close() error { return nil }

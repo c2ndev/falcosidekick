@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -36,20 +37,28 @@ const (
 	defaultIndex  = "falco"
 	defaultSuffix = "daily"
 	suffixNone    = "none"
+
+	queryFilterPath = "filter_path"
+	queryPipeline   = "pipeline"
 )
 
+var targetOptions = shared.HTTPTargetOptions{
+	DriverRoutes:        true,
+	ReservedQueryParams: []string{queryFilterPath, queryPipeline},
+}
+
 type config struct {
-	URL                 string `mapstructure:"url"`
-	Index               string `mapstructure:"index"`
-	Suffix              string `mapstructure:"index_suffix"`
-	Pipeline            string `mapstructure:"pipeline"`
-	APIKey              string `mapstructure:"api_key"`
-	shared.HTTPConfig   `mapstructure:",squash"`
-	Runtime             output.RuntimeConfig `mapstructure:"runtime"`
-	NumberOfShards      int                  `mapstructure:"number_of_shards"`
-	NumberOfReplicas    int                  `mapstructure:"number_of_replicas"`
-	FlattenFields       bool                 `mapstructure:"flatten_fields"`
-	CreateIndexTemplate bool                 `mapstructure:"create_index_template"`
+	Index                   string `mapstructure:"index"`
+	Suffix                  string `mapstructure:"index_suffix"`
+	Pipeline                string `mapstructure:"pipeline"`
+	APIKey                  string `mapstructure:"api_key"`
+	shared.HTTPTargetConfig `mapstructure:",squash"`
+	shared.HTTPConfig       `mapstructure:",squash"`
+	Runtime                 output.RuntimeConfig `mapstructure:"runtime"`
+	NumberOfShards          int                  `mapstructure:"number_of_shards"`
+	NumberOfReplicas        int                  `mapstructure:"number_of_replicas"`
+	FlattenFields           bool                 `mapstructure:"flatten_fields"`
+	CreateIndexTemplate     bool                 `mapstructure:"create_index_template"`
 }
 
 // OutputType describes the Elasticsearch output for the catalog.
@@ -58,8 +67,7 @@ var OutputType = output.Type{
 	Name:     "elasticsearch",
 	Category: "logs",
 	Schema: output.Schema{
-		Fields: append([]output.SchemaField{
-			{Name: "url", Type: "string", Required: true, Label: "URL"},
+		Fields: append(append(shared.HTTPTargetSchemaFields(&targetOptions), []output.SchemaField{
 			{Name: "index", Type: "string", Default: "falco", Label: "Index"},
 			{Name: "index_suffix", Type: "enum", Values: []string{"daily", "monthly", "annually", suffixNone}, Default: "daily", Label: "Index Suffix"},
 			{Name: "pipeline", Type: "string", Label: "Ingest Pipeline"},
@@ -68,7 +76,7 @@ var OutputType = output.Type{
 			{Name: "create_index_template", Type: "bool", Default: false, Label: "Create Index Template"},
 			{Name: "number_of_shards", Type: "int", Default: 3, Label: "Number of Shards"},
 			{Name: "number_of_replicas", Type: "int", Default: 3, Label: "Number of Replicas"},
-		}, append(shared.HTTPConfigSchemaFields(), shared.RuntimeConfigSchemaFields()...)...),
+		}...), append(shared.HTTPConfigSchemaFields(), shared.RuntimeConfigSchemaFields()...)...),
 	},
 }
 
@@ -88,7 +96,7 @@ var (
 func (c *config) validate() utils.ValidationErrors {
 	var errs utils.ValidationErrors
 	errs.Merge("", c.HTTPConfig.Validate())
-	errs.Merge("url", shared.ValidateURL(c.URL))
+	errs.Merge("", c.HTTPTargetConfig.Validate(&targetOptions))
 	if c.Index == "" {
 		c.Index = defaultIndex
 	} else if !indexRegex.MatchString(c.Index) {
@@ -154,12 +162,12 @@ func (d *driver) Send(ctx context.Context, evt *event.Event) error {
 		return shared.WrapDeliveryError("elasticsearch", "marshal", err)
 	}
 
-	url := fmt.Sprintf("%s/%s/_doc", d.cfg.URL, d.resolveIndex())
-	if d.cfg.Pipeline != "" {
-		url += "?pipeline=" + d.cfg.Pipeline
+	target, err := d.cfg.URL(d.cfg.Host, "/"+d.resolveIndex()+"/_doc", d.pipelineQuery())
+	if err != nil {
+		return shared.WrapDeliveryError("elasticsearch", "target", err)
 	}
 
-	return d.sender.SendRaw(ctx, http.MethodPost, url, body, "application/json")
+	return d.sender.SendRaw(ctx, http.MethodPost, target, body, "application/json")
 }
 
 // SendBatch delivers multiple events using the Elasticsearch bulk API.
@@ -171,12 +179,14 @@ func (d *driver) SendBatch(ctx context.Context, events []*event.Event) error {
 		return err
 	}
 
-	url := fmt.Sprintf("%s/_bulk?filter_path=%s", d.cfg.URL, bulkFilterPath)
-	if d.cfg.Pipeline != "" {
-		url += "&pipeline=" + d.cfg.Pipeline
+	query := d.pipelineQuery()
+	query.Set(queryFilterPath, bulkFilterPath)
+	target, err := d.cfg.URL(d.cfg.Host, "/_bulk", query)
+	if err != nil {
+		return shared.WrapDeliveryError("elasticsearch", "target", err)
 	}
 
-	respBody, err := d.sender.SendRawReadBody(ctx, http.MethodPost, url, body, "application/json")
+	respBody, err := d.sender.SendRawReadBody(ctx, http.MethodPost, target, body, "application/json")
 	if err != nil {
 		return err
 	}
@@ -186,10 +196,22 @@ func (d *driver) SendBatch(ctx context.Context, events []*event.Event) error {
 
 // HealthCheck verifies connectivity to Elasticsearch.
 func (d *driver) HealthCheck(ctx context.Context) error {
-	return d.sender.HealthCheck(ctx, d.cfg.URL)
+	target, err := d.cfg.URL(d.cfg.Host, "", nil)
+	if err != nil {
+		return shared.WrapDeliveryError("elasticsearch", "target", err)
+	}
+	return d.sender.HealthCheck(ctx, target)
 }
 
 func (d *driver) Close() error { return nil }
+
+func (d *driver) pipelineQuery() url.Values {
+	query := url.Values{}
+	if d.cfg.Pipeline != "" {
+		query.Set(queryPipeline, d.cfg.Pipeline)
+	}
+	return query
+}
 
 func (d *driver) marshalEvent(evt *event.Event) ([]byte, error) {
 	fields := evt.OutputFields

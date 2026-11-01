@@ -378,7 +378,7 @@ func TestRedirectReferer(t *testing.T) {
 func TestSenderRedirectHeaderSnapshot(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "token")
 	require.NoError(t, os.WriteFile(path, []byte("initial-file"), 0o600))
-	s, err := NewSender("test", &HTTPConfig{Headers: map[string]Header{
+	s, err := NewSender("test", &HTTPConfig{Headers: map[string]ValueSources{
 		"X-Mixed": {Values: []string{"same", "public"}, Secrets: []string{"same", "secret"}, Files: []string{path}},
 	}})
 	require.NoError(t, err)

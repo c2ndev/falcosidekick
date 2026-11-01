@@ -3,7 +3,7 @@ outputs:
     capacity: 10000
     ttl: "0"
   webhook:
-    url: "http://webhook-receiver.falco.svc.cluster.local:8080/"
+    host: "http://webhook-receiver.falco.svc.cluster.local:8080"
     method: POST
     runtime:
       minimum_priority: informational

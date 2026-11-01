@@ -60,16 +60,16 @@ func TestOutputConfigEntryDeepCopyIsolatesConfig(t *testing.T) {
 		Version:     3,
 		Provisioned: true,
 		UpdatedAt:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		Config:      map[string]any{"url": "https://a", "nested": map[string]any{"k": "v"}},
+		Config:      map[string]any{"host": "https://a", "nested": map[string]any{"k": "v"}},
 	}
 
 	cp := original.DeepCopy()
 	require.NotSame(t, &original, cp)
 
-	cp.Config["url"] = "https://mutated"
+	cp.Config["host"] = "https://mutated"
 	cp.Config["nested"].(map[string]any)["k"] = "mutated"
 
-	assert.Equal(t, "https://a", original.Config["url"], "original top-level map must not be mutated")
+	assert.Equal(t, "https://a", original.Config["host"], "original top-level map must not be mutated")
 	assert.Equal(t, "v", original.Config["nested"].(map[string]any)["k"], "original nested map must not be mutated")
 	assert.Equal(t, int64(3), cp.Version)
 	assert.True(t, cp.Provisioned)

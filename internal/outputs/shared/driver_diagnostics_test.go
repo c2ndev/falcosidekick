@@ -42,11 +42,11 @@ func TestHTTPDriversNeverEchoConfiguredURLs(t *testing.T) {
 		name   string
 		kind   output.Type
 	}{
-		{name: "webhook", kind: webhook.OutputType, config: func(v string) map[string]any { return map[string]any{"url": v} }},
-		{name: "slack", kind: slack.OutputType, config: func(v string) map[string]any { return map[string]any{"webhook_url": v} }},
-		{name: "loki", kind: loki.OutputType, config: func(v string) map[string]any { return map[string]any{"url": v} }},
+		{name: "webhook", kind: webhook.OutputType, config: func(v string) map[string]any { return map[string]any{"host": v} }},
+		{name: "slack", kind: slack.OutputType, config: func(v string) map[string]any { return map[string]any{"host": v, "secret_endpoint": "/services/x"} }},
+		{name: "loki", kind: loki.OutputType, config: func(v string) map[string]any { return map[string]any{"host": v} }},
 		{name: "elasticsearch", kind: elasticsearch.OutputType, config: func(v string) map[string]any {
-			return map[string]any{"url": v, "index": "falco"}
+			return map[string]any{"host": v, "index": "falco"}
 		}},
 		{name: "alertmanager", kind: alertmanager.OutputType, config: func(v string) map[string]any {
 			return map[string]any{"hosts": []string{v}}

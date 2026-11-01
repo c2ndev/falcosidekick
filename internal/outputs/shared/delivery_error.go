@@ -140,6 +140,8 @@ func classifyDeliveryError(err error, operation string) string {
 		return "unexpected response"
 	case "gzip":
 		return "cannot compress payload"
+	case "target":
+		return "cannot resolve target"
 	case "render message":
 		return "cannot render message template"
 	default:

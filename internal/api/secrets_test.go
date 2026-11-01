@@ -36,7 +36,7 @@ func secretType(name string) output.Type {
 		},
 		Schema: output.Schema{
 			Fields: []output.SchemaField{
-				{Name: "url", Type: "string"},
+				{Name: "host", Type: "string"},
 				{Name: "password", Type: "string", Secret: true},
 				{Name: "token", Type: "string", Secret: true},
 			},
@@ -52,7 +52,7 @@ func publicType(name string) output.Type {
 		},
 		Schema: output.Schema{
 			Fields: []output.SchemaField{
-				{Name: "url", Type: "string"},
+				{Name: "host", Type: "string"},
 				{Name: "channel", Type: "string"},
 			},
 		},
@@ -63,7 +63,7 @@ func TestMaskOutputConfig_NoSecretSchemaFields(t *testing.T) {
 	entry := &core.OutputConfigEntry{
 		Name: "slack",
 		Config: map[string]any{
-			"url":     "https://hooks.slack.com/x",
+			"host":    "https://hooks.slack.com/x",
 			"channel": "#alerts",
 		},
 		UpdatedAt: time.Now(),
@@ -71,7 +71,7 @@ func TestMaskOutputConfig_NoSecretSchemaFields(t *testing.T) {
 
 	masked := maskOutputConfig(entry, publicType("slack"))
 
-	assert.Equal(t, "https://hooks.slack.com/x", masked.Config["url"])
+	assert.Equal(t, "https://hooks.slack.com/x", masked.Config["host"])
 	assert.Equal(t, "#alerts", masked.Config["channel"])
 }
 
@@ -79,14 +79,14 @@ func TestMaskOutputConfig_SecretFieldPresent(t *testing.T) {
 	entry := &core.OutputConfigEntry{
 		Name: "elasticsearch",
 		Config: map[string]any{
-			"url":      "https://es:9200",
+			"host":     "https://es:9200",
 			"password": "hunter2",
 		},
 	}
 
 	masked := maskOutputConfig(entry, secretType("elasticsearch"))
 
-	assert.Equal(t, "https://es:9200", masked.Config["url"])
+	assert.Equal(t, "https://es:9200", masked.Config["host"])
 	assert.NotContains(t, masked.Config, "password")
 	assert.True(t, masked.SecretFields["/password"])
 }
@@ -95,7 +95,7 @@ func TestMaskOutputConfig_SecretFieldAbsent(t *testing.T) {
 	entry := &core.OutputConfigEntry{
 		Name: "elasticsearch",
 		Config: map[string]any{
-			"url": "https://es:9200",
+			"host": "https://es:9200",
 			// password intentionally omitted
 		},
 	}
@@ -104,14 +104,14 @@ func TestMaskOutputConfig_SecretFieldAbsent(t *testing.T) {
 
 	_, hasPassword := masked.Config["password"]
 	assert.False(t, hasPassword, "absent secret field must not be synthesized by the mask helper")
-	assert.Equal(t, "https://es:9200", masked.Config["url"])
+	assert.Equal(t, "https://es:9200", masked.Config["host"])
 }
 
 func TestMaskOutputConfig_MultipleSecretFields(t *testing.T) {
 	entry := &core.OutputConfigEntry{
 		Name: "elasticsearch",
 		Config: map[string]any{
-			"url":      "https://es:9200",
+			"host":     "https://es:9200",
 			"password": "p",
 			"token":    "t",
 		},
@@ -128,7 +128,7 @@ func TestMaskOutputConfig_UnknownType_ProtectsAllLeaves(t *testing.T) {
 	entry := &core.OutputConfigEntry{
 		Name: "legacy",
 		Config: map[string]any{
-			"url":    "https://x",
+			"host":   "https://x",
 			"port":   9200,
 			"enable": true,
 		},
@@ -137,7 +137,7 @@ func TestMaskOutputConfig_UnknownType_ProtectsAllLeaves(t *testing.T) {
 	masked := maskOutputConfig(entry, output.Type{})
 
 	assert.Empty(t, masked.Config)
-	assert.Equal(t, map[string]bool{"/url": true, "/port": true, "/enable": true}, masked.SecretFields)
+	assert.Equal(t, map[string]bool{"/host": true, "/port": true, "/enable": true}, masked.SecretFields)
 }
 
 func TestMaskOutputConfig_CaseInsensitiveMatch(t *testing.T) {
@@ -160,7 +160,7 @@ func TestMaskOutputConfig_DoesNotMutateInput(t *testing.T) {
 		Name: "elasticsearch",
 		Config: map[string]any{
 			"password": "original",
-			"url":      "https://es:9200",
+			"host":     "https://es:9200",
 		},
 	}
 
@@ -182,8 +182,8 @@ func TestMaskOutputConfigs_LooksUpPerType(t *testing.T) {
 	require.NoError(t, err)
 
 	entries := map[string]*core.OutputConfigEntry{
-		"elasticsearch": {Name: "elasticsearch", Config: map[string]any{"password": "x", "url": "u"}},
-		"slack":         {Name: "slack", Config: map[string]any{"url": "https://s", "channel": "#c"}},
+		"elasticsearch": {Name: "elasticsearch", Config: map[string]any{"password": "x", "host": "u"}},
+		"slack":         {Name: "slack", Config: map[string]any{"host": "https://s", "channel": "#c"}},
 		"unknown":       {Name: "unknown", Config: map[string]any{"token": "t", "port": 80}},
 	}
 
@@ -191,8 +191,8 @@ func TestMaskOutputConfigs_LooksUpPerType(t *testing.T) {
 
 	assert.NotContains(t, masked["elasticsearch"].Config, "password")
 	assert.True(t, masked["elasticsearch"].SecretFields["/password"])
-	assert.Equal(t, "u", masked["elasticsearch"].Config["url"])
-	assert.Equal(t, "https://s", masked["slack"].Config["url"])
+	assert.Equal(t, "u", masked["elasticsearch"].Config["host"])
+	assert.Equal(t, "https://s", masked["slack"].Config["host"])
 	assert.Equal(t, "#c", masked["slack"].Config["channel"])
 	assert.Empty(t, masked["unknown"].Config)
 	assert.Equal(t, map[string]bool{"/token": true, "/port": true}, masked["unknown"].SecretFields)

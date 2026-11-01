@@ -30,13 +30,14 @@ import (
 
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
 
 func TestLokiCommonCases(t *testing.T) {
 	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
-		{Name: "sends valid event", AddressField: "url"},
-		{Name: "returns error on server 500", AddressField: "url", MockStatus: http.StatusInternalServerError, ExpectError: true},
+		{Name: "sends valid event", AddressField: "host"},
+		{Name: "returns error on server 500", AddressField: "host", MockStatus: http.StatusInternalServerError, ExpectError: true},
 	})
 }
 
@@ -44,7 +45,7 @@ func TestLokiPayloadFormat(t *testing.T) {
 	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
 		{
 			Name:         "sets tenant header",
-			AddressField: "url",
+			AddressField: "host",
 			Config:       map[string]any{"tenant": "my-org"},
 			ValidateReq: func(t *testing.T, req *http.Request, _ []byte) {
 				assert.Equal(t, "my-org", req.Header.Get("X-Scope-OrgID"))
@@ -52,7 +53,7 @@ func TestLokiPayloadFormat(t *testing.T) {
 		},
 		{
 			Name:         "applies basic auth",
-			AddressField: "url",
+			AddressField: "host",
 			Config:       map[string]any{"username": "loki", "password": "secret"},
 			ValidateReq: func(t *testing.T, req *http.Request, _ []byte) {
 				user, pass, ok := req.BasicAuth()
@@ -63,7 +64,7 @@ func TestLokiPayloadFormat(t *testing.T) {
 		},
 		{
 			Name:         "posts to correct endpoint",
-			AddressField: "url",
+			AddressField: "host",
 			ValidateReq: func(t *testing.T, req *http.Request, _ []byte) {
 				assert.Equal(t, "/loki/api/v1/push", req.URL.Path)
 			},
@@ -91,7 +92,7 @@ func TestLokiSendUsesGzip(t *testing.T) {
 	defer server.Close()
 
 	o := &driver{
-		cfg:    config{URL: server.URL, Endpoint: defaultEndpoint, LogFormat: formatJSON},
+		cfg:    config{HTTPTargetConfig: shared.HTTPTargetConfig{Host: server.URL, Endpoint: defaultEndpoint}, LogFormat: formatJSON},
 		sender: testutil.MustNewSender(t, "loki"),
 	}
 
@@ -118,7 +119,7 @@ func TestLokiSendBatchGroupsStreams(t *testing.T) {
 	defer server.Close()
 
 	o := &driver{
-		cfg:    config{URL: server.URL, Endpoint: defaultEndpoint, LogFormat: formatJSON},
+		cfg:    config{HTTPTargetConfig: shared.HTTPTargetConfig{Host: server.URL, Endpoint: defaultEndpoint}, LogFormat: formatJSON},
 		sender: testutil.MustNewSender(t, "loki"),
 	}
 
@@ -157,7 +158,7 @@ func TestLokiCreateValidation(t *testing.T) {
 }
 
 func TestLokiCreateRuntimeDefaults(t *testing.T) {
-	d, err := createOutput(map[string]any{"url": "http://localhost:3100"}, output.Deps{})
+	d, err := createOutput(map[string]any{"host": "http://localhost:3100"}, output.Deps{})
 	require.NoError(t, err)
 
 	o := d.(*driver)
@@ -167,7 +168,7 @@ func TestLokiCreateRuntimeDefaults(t *testing.T) {
 
 func TestLokiCreateOutputExtraLabels(t *testing.T) {
 	d, err := createOutput(map[string]any{
-		"url":          "http://localhost:3100",
+		"host":         "http://localhost:3100",
 		"extra_labels": "fd.name, user.name, ,proc.cmdline",
 	}, output.Deps{})
 	require.NoError(t, err)
@@ -184,7 +185,7 @@ func TestLokiHealthCheck(t *testing.T) {
 	defer server.Close()
 
 	o := &driver{
-		cfg:    config{URL: server.URL},
+		cfg:    config{HTTPTargetConfig: shared.HTTPTargetConfig{Host: server.URL}},
 		sender: testutil.MustNewSender(t, "loki"),
 	}
 	assert.NoError(t, o.HealthCheck(context.Background()))

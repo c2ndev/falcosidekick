@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sync"
 
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
@@ -32,18 +31,23 @@ import (
 )
 
 // defaultEndpoint targets the Alertmanager v2 API.
-const defaultEndpoint = "/api/v2/alerts"
+const (
+	defaultEndpoint = "/api/v2/alerts"
+	healthRoute     = "/-/healthy"
+)
+
+var targetOptions = shared.HTTPTargetOptions{DefaultEndpoint: defaultEndpoint, ExternalHosts: true}
 
 type config struct {
-	ExtraLabels       map[string]string `mapstructure:"extra_labels"`
-	ExtraAnnotations  map[string]string `mapstructure:"extra_annotations"`
-	CustomSeverityMap map[string]string `mapstructure:"custom_severity_map"`
-	GeneratorURL      string            `mapstructure:"generator_url"`
-	Endpoint          string            `mapstructure:"endpoint"`
-	shared.HTTPConfig `mapstructure:",squash"`
-	Hosts             []string             `mapstructure:"hosts"`
-	Runtime           output.RuntimeConfig `mapstructure:"runtime"`
-	ExpiresAfter      int                  `mapstructure:"expires_after"`
+	ExtraLabels             map[string]string `mapstructure:"extra_labels"`
+	ExtraAnnotations        map[string]string `mapstructure:"extra_annotations"`
+	CustomSeverityMap       map[string]string `mapstructure:"custom_severity_map"`
+	GeneratorURL            string            `mapstructure:"generator_url"`
+	shared.HTTPTargetConfig `mapstructure:",squash"`
+	shared.HTTPConfig       `mapstructure:",squash"`
+	Hosts                   []string             `mapstructure:"hosts"`
+	Runtime                 output.RuntimeConfig `mapstructure:"runtime"`
+	ExpiresAfter            int                  `mapstructure:"expires_after"`
 }
 
 // OutputType describes the Alertmanager output for the catalog.
@@ -52,23 +56,21 @@ var OutputType = output.Type{
 	Name:     "alertmanager",
 	Category: "alerting",
 	Schema: output.Schema{
-		Fields: append([]output.SchemaField{
-			{Name: "hosts", Type: "string[]", Required: true, Label: "Hosts"},
-			{Name: "endpoint", Type: "string", Default: defaultEndpoint, Label: "API Endpoint"},
+		Fields: append(append(shared.HTTPTargetSchemaFields(&targetOptions), []output.SchemaField{
+			{Name: "hosts", Type: "string[]", Required: true, Label: "Hosts (scheme, host and port)"},
 			{Name: "generator_url", Type: "string", Label: "Generator URL (link back to source in AM UI)"},
 			{Name: "expires_after", Type: "int", Default: 0, Label: "Alert Expires After (seconds, 0=never)"},
 			{Name: "extra_labels", Type: "map", Label: "Extra Labels"},
 			{Name: "extra_annotations", Type: "map", Label: "Extra Annotations"},
 			{Name: "custom_severity_map", Type: "map", Label: "Custom Severity Map"},
-		}, append(shared.HTTPConfigSchemaFields(), shared.RuntimeConfigSchemaFields()...)...),
+		}...), append(shared.HTTPConfigSchemaFields(), shared.RuntimeConfigSchemaFields()...)...),
 	},
 }
 
 type driver struct {
-	sender   *shared.Sender
-	logger   *slog.Logger
-	hostURLs []string
-	cfg      config
+	sender *shared.Sender
+	logger *slog.Logger
+	cfg    config
 }
 
 func (d *driver) RuntimeConfig() output.RuntimeConfig { return d.cfg.Runtime }
@@ -76,11 +78,8 @@ func (d *driver) RuntimeConfig() output.RuntimeConfig { return d.cfg.Runtime }
 func (c *config) validate() utils.ValidationErrors {
 	var errs utils.ValidationErrors
 	errs.Merge("", c.HTTPConfig.Validate())
-	errs.Merge("hosts", shared.ValidateHTTPHosts(c.Hosts))
-	errs.Merge("endpoint", shared.ValidateEndpoint(c.Endpoint))
-	if c.Endpoint == "" {
-		c.Endpoint = defaultEndpoint
-	}
+	errs.Merge("hosts", shared.ValidateOrigins(c.Hosts))
+	errs.Merge("", c.HTTPTargetConfig.Validate(&targetOptions))
 	if c.ExpiresAfter < 0 {
 		errs.Add("expires_after", fmt.Sprintf("must be >= 0, got %d", c.ExpiresAfter))
 	}
@@ -99,21 +98,15 @@ func createOutput(raw map[string]any, deps output.Deps) (output.Driver, error) {
 		return nil, fmt.Errorf("alertmanager: %s", errs.Error())
 	}
 
-	hostURLs := make([]string, 0, len(cfg.Hosts))
-	for _, host := range cfg.Hosts {
-		hostURLs = append(hostURLs, host+cfg.Endpoint)
-	}
-
 	sender, err := shared.NewSender("alertmanager", &cfg.HTTPConfig)
 	if err != nil {
 		return nil, err
 	}
 
 	return &driver{
-		cfg:      cfg,
-		sender:   sender,
-		logger:   shared.ResolveLogger(deps.Logger, "alertmanager"),
-		hostURLs: hostURLs,
+		cfg:    cfg,
+		sender: sender,
+		logger: shared.ResolveLogger(deps.Logger, "alertmanager"),
 	}, nil
 }
 
@@ -132,15 +125,24 @@ func (d *driver) Send(ctx context.Context, evt *event.Event) error {
 		return shared.WrapDeliveryError("alertmanager", "marshal", err)
 	}
 
-	if len(d.hostURLs) == 1 {
-		return d.sender.SendRaw(ctx, http.MethodPost, d.hostURLs[0], body, "application/json")
+	targets := make([]string, 0, len(d.cfg.Hosts))
+	for _, host := range d.cfg.Hosts {
+		target, err := d.cfg.URL(host, d.cfg.DeliveryRoute(), nil)
+		if err != nil {
+			return shared.WrapDeliveryError("alertmanager", "target", err)
+		}
+		targets = append(targets, target)
 	}
 
-	return d.fanOut(ctx, body)
+	if len(targets) == 1 {
+		return d.sender.SendRaw(ctx, http.MethodPost, targets[0], body, "application/json")
+	}
+
+	return d.fanOut(ctx, targets, body)
 }
 
 // fanOut sends to all hosts in parallel, succeeds if at least one works.
-func (d *driver) fanOut(ctx context.Context, body []byte) error {
+func (d *driver) fanOut(ctx context.Context, targets []string, body []byte) error {
 	var (
 		wg      sync.WaitGroup
 		mu      sync.Mutex
@@ -148,7 +150,7 @@ func (d *driver) fanOut(ctx context.Context, body []byte) error {
 		success int
 	)
 
-	for hostIndex, url := range d.hostURLs {
+	for hostIndex, url := range targets {
 		wg.Add(1)
 		go func(hostIndex int, url string) {
 			defer wg.Done()
@@ -168,12 +170,12 @@ func (d *driver) fanOut(ctx context.Context, body []byte) error {
 	wg.Wait()
 
 	if success == 0 {
-		return fmt.Errorf("alertmanager: all %d hosts failed: %w", len(d.hostURLs), lastErr)
+		return fmt.Errorf("alertmanager: all %d hosts failed: %w", len(targets), lastErr)
 	}
 
-	failed := len(d.hostURLs) - success
+	failed := len(targets) - success
 	if failed > 0 {
-		d.logger.Warn("partial fan-out", "succeeded", success, "failed", failed, "total", len(d.hostURLs))
+		d.logger.Warn("partial fan-out", "succeeded", success, "failed", failed, "total", len(targets))
 	}
 
 	return nil
@@ -181,12 +183,15 @@ func (d *driver) fanOut(ctx context.Context, body []byte) error {
 
 // HealthCheck verifies connectivity to the first Alertmanager host.
 func (d *driver) HealthCheck(ctx context.Context) error {
-	if len(d.hostURLs) == 0 {
+	if len(d.cfg.Hosts) == 0 {
 		return fmt.Errorf("alertmanager: no hosts configured")
 	}
-	base := strings.TrimSuffix(d.hostURLs[0], d.cfg.Endpoint)
 	// TODO: consider checking all hosts.
-	return d.sender.HealthCheck(ctx, base+"/-/healthy")
+	target, err := d.cfg.URL(d.cfg.Hosts[0], healthRoute, nil)
+	if err != nil {
+		return shared.WrapDeliveryError("alertmanager", "target", err)
+	}
+	return d.sender.HealthCheck(ctx, target)
 }
 
 func (d *driver) Close() error { return nil }

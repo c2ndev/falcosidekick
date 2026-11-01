@@ -113,8 +113,8 @@ func TestHandlePipelineOutputs_Masked(t *testing.T) {
 	db := database.NewMemory()
 	require.NoError(t, db.Provision(t.Context(), &core.ProvisionRequest{
 		Outputs: map[string]map[string]any{
-			"elasticsearch": {"url": "https://es:9200", "password": "hunter2"},
-			"slack":         {"url": "https://hooks.slack.com/x", "channel": "#c"},
+			"elasticsearch": {"host": "https://es:9200", "password": "hunter2"},
+			"slack":         {"host": "https://hooks.slack.com/x", "channel": "#c"},
 		},
 	}))
 	cat, err := catalog.New([]output.Type{
@@ -124,7 +124,7 @@ func TestHandlePipelineOutputs_Masked(t *testing.T) {
 				return &testutil.MockDriver{DriverName: "elasticsearch"}, nil
 			},
 			Schema: output.Schema{Fields: []output.SchemaField{
-				{Name: "url", Type: "string"},
+				{Name: "host", Type: "string"},
 				{Name: "password", Type: "string", Secret: true},
 			}},
 		},
@@ -134,7 +134,7 @@ func TestHandlePipelineOutputs_Masked(t *testing.T) {
 				return &testutil.MockDriver{DriverName: "slack"}, nil
 			},
 			Schema: output.Schema{Fields: []output.SchemaField{
-				{Name: "url", Type: "string"},
+				{Name: "host", Type: "string"},
 				{Name: "channel", Type: "string"},
 			}},
 		},
@@ -155,8 +155,8 @@ func TestHandlePipelineOutputs_Masked(t *testing.T) {
 
 	assert.NotContains(t, got["elasticsearch"].Config, "password")
 	assert.True(t, got["elasticsearch"].SecretFields["/password"])
-	assert.Equal(t, "https://es:9200", got["elasticsearch"].Config["url"])
-	assert.Equal(t, "https://hooks.slack.com/x", got["slack"].Config["url"])
+	assert.Equal(t, "https://es:9200", got["elasticsearch"].Config["host"])
+	assert.Equal(t, "https://hooks.slack.com/x", got["slack"].Config["host"])
 }
 
 func TestHandlePipelineOutputs_NoDatabase(t *testing.T) {
@@ -189,7 +189,7 @@ func TestHandlePipelineOutputByName_Hit(t *testing.T) {
 	db := database.NewMemory()
 	require.NoError(t, db.Provision(t.Context(), &core.ProvisionRequest{
 		Outputs: map[string]map[string]any{
-			"elasticsearch": {"url": "https://es:9200", "password": "hunter2"},
+			"elasticsearch": {"host": "https://es:9200", "password": "hunter2"},
 		},
 	}))
 	cat, err := catalog.New([]output.Type{{
@@ -198,7 +198,7 @@ func TestHandlePipelineOutputByName_Hit(t *testing.T) {
 			return &testutil.MockDriver{DriverName: "elasticsearch"}, nil
 		},
 		Schema: output.Schema{Fields: []output.SchemaField{
-			{Name: "url", Type: "string"},
+			{Name: "host", Type: "string"},
 			{Name: "password", Type: "string", Secret: true},
 		}},
 	}})
@@ -217,7 +217,7 @@ func TestHandlePipelineOutputByName_Hit(t *testing.T) {
 	assert.Equal(t, "elasticsearch", got.Name)
 	assert.NotContains(t, got.Config, "password")
 	assert.True(t, got.SecretFields["/password"])
-	assert.Equal(t, "https://es:9200", got.Config["url"])
+	assert.Equal(t, "https://es:9200", got.Config["host"])
 }
 
 func TestHandlePipelineOutputByName_Miss(t *testing.T) {
@@ -267,7 +267,7 @@ func TestHandlePipelineOutputTypes(t *testing.T) {
 				return &testutil.MockDriver{DriverName: "slack"}, nil
 			},
 			Schema: output.Schema{Fields: []output.SchemaField{
-				{Name: "webhook_url", Type: "string", Secret: true},
+				{Name: "secret_endpoint", Type: "string", Secret: true},
 				{Name: "channel", Type: "string"},
 			}},
 		},
@@ -311,7 +311,7 @@ func TestHandlePipelineOutputTypeByName_Hit(t *testing.T) {
 		New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
 			return &testutil.MockDriver{DriverName: "slack"}, nil
 		},
-		Schema: output.Schema{Fields: []output.SchemaField{{Name: "webhook_url", Type: "string", Secret: true}}},
+		Schema: output.Schema{Fields: []output.SchemaField{{Name: "secret_endpoint", Type: "string", Secret: true}}},
 	}})
 	require.NoError(t, err)
 
@@ -410,7 +410,7 @@ func TestHandlePipelineComposite(t *testing.T) {
 	db := database.NewMemory()
 	require.NoError(t, db.Provision(t.Context(), &core.ProvisionRequest{
 		Outputs: map[string]map[string]any{
-			"slack": {"url": "https://hooks.slack.com/x"},
+			"slack": {"host": "https://hooks.slack.com/x"},
 		},
 	}))
 	require.NoError(t, db.SavePipelineLayout(t.Context(), &core.PipelineLayout{
@@ -423,7 +423,7 @@ func TestHandlePipelineComposite(t *testing.T) {
 			return &testutil.MockDriver{DriverName: "slack"}, nil
 		},
 		Schema: output.Schema{Fields: []output.SchemaField{
-			{Name: "url", Type: "string"},
+			{Name: "host", Type: "string"},
 		}},
 	}})
 	require.NoError(t, err)
@@ -460,7 +460,7 @@ func TestHandlePipelineComposite(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 
 	require.Contains(t, got.Outputs, "slack")
-	assert.Equal(t, "https://hooks.slack.com/x", got.Outputs["slack"].Config["url"])
+	assert.Equal(t, "https://hooks.slack.com/x", got.Outputs["slack"].Config["host"])
 
 	require.Len(t, got.Status, 1)
 	assert.Equal(t, "slack", got.Status[0].Name)
@@ -527,7 +527,7 @@ func TestHandlePipelineOutputPut_CreatesNewUIOwned(t *testing.T) {
 	db := database.NewMemory()
 	srv := buildMutationTestServer(t, db)
 
-	body := bytes.NewReader([]byte(`{"config":{"webhookurl":"https://hooks.slack.com/new"}}`))
+	body := bytes.NewReader([]byte(`{"config":{"secret_endpoint":"https://hooks.slack.com/new"}}`))
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/api/v1/pipeline/outputs/slack", body)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := srv.app.Test(req)
@@ -540,14 +540,14 @@ func TestHandlePipelineOutputPut_CreatesNewUIOwned(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	assert.False(t, stored.Provisioned)
-	assert.Equal(t, "https://hooks.slack.com/new", stored.Config["webhookurl"])
+	assert.Equal(t, "https://hooks.slack.com/new", stored.Config["secret_endpoint"])
 }
 
 func TestHandlePipelineOutputPut_MergesAbsentKeys(t *testing.T) {
 	db := database.NewMemory()
 	require.NoError(t, db.SaveOutputConfig(context.Background(), "slack", map[string]any{
-		"webhookurl": "https://hooks.slack.com/orig",
-		"channel":    "#alerts",
+		"secret_endpoint": "https://hooks.slack.com/orig",
+		"channel":         "#alerts",
 	}))
 	srv := buildMutationTestServer(t, db)
 
@@ -562,8 +562,8 @@ func TestHandlePipelineOutputPut_MergesAbsentKeys(t *testing.T) {
 	stored, err := db.GetOutputConfig(t.Context(), "slack")
 	require.NoError(t, err)
 	require.NotNil(t, stored)
-	assert.Equal(t, "https://hooks.slack.com/orig", stored.Config["webhookurl"],
-		"absent key must keep the existing webhookurl value")
+	assert.Equal(t, "https://hooks.slack.com/orig", stored.Config["secret_endpoint"],
+		"absent key must keep the existing secret_endpoint value")
 	assert.Equal(t, "#new", stored.Config["channel"],
 		"present key must overlay the existing value")
 }
@@ -687,7 +687,7 @@ func TestHandlePipelineOutputPut_RejectsSecretPlaceholder(t *testing.T) {
 	db := database.NewMemory()
 	srv := buildMutationTestServer(t, db)
 
-	body := bytes.NewReader([]byte(`{"config":{"webhookurl":"****"}}`))
+	body := bytes.NewReader([]byte(`{"config":{"secret_endpoint":"****"}}`))
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/api/v1/pipeline/outputs/slack", body)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := srv.app.Test(req)
@@ -733,9 +733,9 @@ func TestHandlePipelineOutputPut_RejectedConfigNeverEchoesValues(t *testing.T) {
 		body string
 		want string
 	}{
-		{name: "malformed url", body: `{"config":{"url":"https://u:` + sentinel + `@ho st/x"}}`, want: "url: invalid URL"},
-		{name: "unsupported scheme", body: `{"config":{"url":"ftp://u:` + sentinel + `@host/x"}}`, want: "url: scheme must be http or https"},
-		{name: "wrong secret type", body: `{"config":{"url":"https://h/x","password":{"a":"` + sentinel + `"}}}`, want: "password: invalid type"},
+		{name: "malformed url", body: `{"config":{"host":"https://u:` + sentinel + `@ho st/x"}}`, want: "host: invalid URL"},
+		{name: "unsupported scheme", body: `{"config":{"host":"ftp://u:` + sentinel + `@host/x"}}`, want: "host: scheme must be http or https"},
+		{name: "wrong secret type", body: `{"config":{"host":"https://h","password":{"a":"` + sentinel + `"}}}`, want: "password: invalid type"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -760,7 +760,7 @@ func TestHandlePipelineOutputPut_SecretFileFailureReturns500(t *testing.T) {
 	require.NoError(t, err)
 	rig := buildMutationRig(t, database.NewMemory(), cat, true)
 
-	body := bytes.NewReader([]byte(`{"config":{"url":"https://h/x","password_file":"/nonexistent/secret"}}`))
+	body := bytes.NewReader([]byte(`{"config":{"host":"https://h","password_file":"/nonexistent/secret"}}`))
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/api/v1/pipeline/outputs/webhook", body)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := rig.Server.app.Test(req)
@@ -821,7 +821,7 @@ func TestHandlePipelineOutputPut_NoReloaderReturns503(t *testing.T) {
 
 func TestHandlePipelineOutputDelete_Success(t *testing.T) {
 	db := database.NewMemory()
-	require.NoError(t, db.SaveOutputConfig(context.Background(), "slack", map[string]any{"webhookurl": "x"}))
+	require.NoError(t, db.SaveOutputConfig(context.Background(), "slack", map[string]any{"secret_endpoint": "x"}))
 	srv := buildMutationTestServer(t, db)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodDelete, "/api/v1/pipeline/outputs/slack", http.NoBody)
@@ -851,11 +851,11 @@ func TestHandlePipelineOutputDelete_NotFound(t *testing.T) {
 func TestHandlePipelineOutputPut_ProvisionedReturns409WhenUpdatesDisabled(t *testing.T) {
 	db := database.NewMemory()
 	require.NoError(t, db.Provision(context.Background(), &core.ProvisionRequest{
-		Outputs: map[string]map[string]any{"slack": {"webhookurl": "file"}},
+		Outputs: map[string]map[string]any{"slack": {"secret_endpoint": "file"}},
 	}))
 	srv := buildMutationTestServer(t, db)
 
-	body := bytes.NewReader([]byte(`{"config":{"webhookurl":"ui"}}`))
+	body := bytes.NewReader([]byte(`{"config":{"secret_endpoint":"ui"}}`))
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/api/v1/pipeline/outputs/slack", body)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := srv.app.Test(req)
@@ -869,18 +869,18 @@ func TestHandlePipelineOutputPut_ProvisionedReturns409WhenUpdatesDisabled(t *tes
 	stored, err := db.GetOutputConfig(t.Context(), "slack")
 	require.NoError(t, err)
 	require.NotNil(t, stored)
-	assert.Equal(t, "file", stored.Config["webhookurl"],
+	assert.Equal(t, "file", stored.Config["secret_endpoint"],
 		"rejected PUT must not mutate the stored entry")
 }
 
 func TestHandlePipelineOutputPut_ProvisionedSucceedsWhenUpdatesAllowed(t *testing.T) {
 	db := database.NewMemory()
 	require.NoError(t, db.Provision(context.Background(), &core.ProvisionRequest{
-		Outputs: map[string]map[string]any{"slack": {"webhookurl": "file"}},
+		Outputs: map[string]map[string]any{"slack": {"secret_endpoint": "file"}},
 	}))
 	rig := buildMutationRigWithProvisioning(t, db, newMutationTestCatalog(t), core.ProvisioningConfig{AllowUIUpdates: true})
 
-	body := bytes.NewReader([]byte(`{"config":{"webhookurl":"ui-edit"}}`))
+	body := bytes.NewReader([]byte(`{"config":{"secret_endpoint":"ui-edit"}}`))
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/api/v1/pipeline/outputs/slack", body)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := rig.Server.app.Test(req)
@@ -893,13 +893,13 @@ func TestHandlePipelineOutputPut_ProvisionedSucceedsWhenUpdatesAllowed(t *testin
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	assert.True(t, stored.Provisioned, "UI edit of a provisioned entry keeps Provisioned:true")
-	assert.Equal(t, "ui-edit", stored.Config["webhookurl"])
+	assert.Equal(t, "ui-edit", stored.Config["secret_endpoint"])
 }
 
 func TestHandlePipelineOutputDelete_ProvisionedReturns409WhenUpdatesDisabled(t *testing.T) {
 	db := database.NewMemory()
 	require.NoError(t, db.Provision(context.Background(), &core.ProvisionRequest{
-		Outputs: map[string]map[string]any{"slack": {"webhookurl": "file"}},
+		Outputs: map[string]map[string]any{"slack": {"secret_endpoint": "file"}},
 	}))
 	// Default provisioning flags: allow_ui_updates=false.
 	srv := buildMutationTestServer(t, db)
@@ -922,7 +922,7 @@ func TestHandlePipelineOutputDelete_ProvisionedReturns409WhenUpdatesDisabled(t *
 func TestHandlePipelineOutputDelete_ProvisionedSucceedsWhenUpdatesAllowed(t *testing.T) {
 	db := database.NewMemory()
 	require.NoError(t, db.Provision(context.Background(), &core.ProvisionRequest{
-		Outputs: map[string]map[string]any{"slack": {"webhookurl": "file"}},
+		Outputs: map[string]map[string]any{"slack": {"secret_endpoint": "file"}},
 	}))
 	rig := buildMutationRigWithProvisioning(t, db, newMutationTestCatalog(t), core.ProvisioningConfig{AllowUIUpdates: true})
 
@@ -1008,7 +1008,7 @@ func TestHandlePipelineOutputPut_DispatcherStoppedReturns503(t *testing.T) {
 	defer cancel()
 	require.NoError(t, rig.Dispatcher.Shutdown(shutdownCtx, func() {}))
 
-	body := bytes.NewReader([]byte(`{"config":{"webhookurl":"x"}}`))
+	body := bytes.NewReader([]byte(`{"config":{"secret_endpoint":"x"}}`))
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/api/v1/pipeline/outputs/slack", body)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := rig.Server.app.Test(req)
@@ -1022,7 +1022,7 @@ func TestHandlePipelineOutputPut_ReloaderNotBoundReturns503(t *testing.T) {
 	// bindReloader=false exercises the unbound-Reloader path.
 	rig := buildMutationRig(t, db, newMutationTestCatalog(t), false)
 
-	body := bytes.NewReader([]byte(`{"config":{"webhookurl":"x"}}`))
+	body := bytes.NewReader([]byte(`{"config":{"secret_endpoint":"x"}}`))
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/api/v1/pipeline/outputs/slack", body)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := rig.Server.app.Test(req)
@@ -1035,7 +1035,7 @@ func TestHandlePipelineOutputPut_DBSaveErrorReturns500(t *testing.T) {
 	db := &databasetestutil.Mock{SaveOutputConfigErr: errors.New("db save boom")}
 	srv := buildMutationTestServer(t, db)
 
-	body := bytes.NewReader([]byte(`{"config":{"webhookurl":"x"}}`))
+	body := bytes.NewReader([]byte(`{"config":{"secret_endpoint":"x"}}`))
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/api/v1/pipeline/outputs/slack", body)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := srv.app.Test(req)
@@ -1061,7 +1061,7 @@ func TestHandlePipelineOutputPut_EmptyName(t *testing.T) {
 
 func TestHandlePipelineOutputDelete_NoReloaderReturns503(t *testing.T) {
 	db := database.NewMemory()
-	require.NoError(t, db.SaveOutputConfig(context.Background(), "slack", map[string]any{"webhookurl": "x"}))
+	require.NoError(t, db.SaveOutputConfig(context.Background(), "slack", map[string]any{"secret_endpoint": "x"}))
 	srv := buildMutationTestServerNilReloader(t, db)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodDelete, "/api/v1/pipeline/outputs/slack", http.NoBody)
@@ -1084,7 +1084,7 @@ func TestHandlePipelineOutputDelete_DBReadErrorReturns500(t *testing.T) {
 
 func TestHandlePipelineOutputDelete_DispatcherStoppedReturns503(t *testing.T) {
 	db := database.NewMemory()
-	require.NoError(t, db.SaveOutputConfig(context.Background(), "slack", map[string]any{"webhookurl": "x"}))
+	require.NoError(t, db.SaveOutputConfig(context.Background(), "slack", map[string]any{"secret_endpoint": "x"}))
 	rig := buildMutationRig(t, db, newMutationTestCatalog(t), true)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -1100,7 +1100,7 @@ func TestHandlePipelineOutputDelete_DispatcherStoppedReturns503(t *testing.T) {
 func TestHandlePipelineOutputDelete_DBDeleteErrorReturns500(t *testing.T) {
 	db := &databasetestutil.Mock{
 		Outputs: map[string]*core.OutputConfigEntry{
-			"slack": {Name: "slack", Config: map[string]any{"webhookurl": "x"}},
+			"slack": {Name: "slack", Config: map[string]any{"secret_endpoint": "x"}},
 		},
 		DeleteOutputConfigErr: errors.New("db delete boom"),
 	}
@@ -1157,7 +1157,7 @@ func TestContainsSecretPlaceholder_NonSecretFieldWithSentinelValueAllowed(t *tes
 	t2 := output.Type{
 		Name: "slack",
 		Schema: output.Schema{Fields: []output.SchemaField{
-			{Name: "webhookurl", Secret: true},
+			{Name: "secret_endpoint", Secret: true},
 			{Name: "channel"},
 		}},
 	}
@@ -1196,7 +1196,7 @@ func TestHandlePipelineOutputPut_ApplyInitFailureReturns500(t *testing.T) {
 	// return a wrapped "apply init: ..." error without a fake.
 	cat, err := catalog.New([]output.Type{{
 		Name:   "slack",
-		Schema: output.Schema{Fields: []output.SchemaField{{Name: "webhookurl", Type: "string", Required: true, Secret: true}}},
+		Schema: output.Schema{Fields: []output.SchemaField{{Name: "secret_endpoint", Type: "string", Required: true, Secret: true}}},
 		New: func(_ map[string]any, _ output.Deps) (output.Driver, error) {
 			return &testutil.MockDriver{
 				DriverName: "slack",
@@ -1209,7 +1209,7 @@ func TestHandlePipelineOutputPut_ApplyInitFailureReturns500(t *testing.T) {
 	require.NoError(t, err)
 	rig := buildMutationRig(t, db, cat, true)
 
-	body := bytes.NewReader([]byte(`{"config":{"webhookurl":"x"}}`))
+	body := bytes.NewReader([]byte(`{"config":{"secret_endpoint":"x"}}`))
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/api/v1/pipeline/outputs/slack", body)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := rig.Server.app.Test(req)
@@ -1223,7 +1223,7 @@ func TestHandlePipelineOutputPut_ApplyInitFailureReturns500(t *testing.T) {
 
 func TestHandlePipelineOutputDelete_ReloaderNotBoundReturns503(t *testing.T) {
 	db := database.NewMemory()
-	require.NoError(t, db.SaveOutputConfig(context.Background(), "slack", map[string]any{"webhookurl": "x"}))
+	require.NoError(t, db.SaveOutputConfig(context.Background(), "slack", map[string]any{"secret_endpoint": "x"}))
 	rig := buildMutationRig(t, db, newMutationTestCatalog(t), false)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodDelete, "/api/v1/pipeline/outputs/slack", http.NoBody)

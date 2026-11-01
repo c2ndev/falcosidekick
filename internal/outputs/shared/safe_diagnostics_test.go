@@ -35,17 +35,17 @@ func TestValidatorsNeverEchoValues(t *testing.T) {
 	}{
 		{
 			name: "url parse failure",
-			run:  func() string { return ValidateURL("https://u:" + sentinel + "@ho st/x").Error() },
+			run:  func() string { return ValidateOrigin("https://u:" + sentinel + "@ho st/x").Error() },
 			want: ": invalid URL",
 		},
 		{
 			name: "url without host",
-			run:  func() string { return ValidateURL("nohost?token=" + sentinel).Error() },
+			run:  func() string { return ValidateOrigin("nohost?token=" + sentinel).Error() },
 			want: ": must include scheme and host (e.g. https://host:port)",
 		},
 		{
 			name: "url with unsupported scheme",
-			run:  func() string { return ValidateURL("ftp://u:" + sentinel + "@host/x").Error() },
+			run:  func() string { return ValidateOrigin("ftp://u:" + sentinel + "@host/x").Error() },
 			want: ": scheme must be http or https",
 		},
 		{
@@ -54,18 +54,18 @@ func TestValidatorsNeverEchoValues(t *testing.T) {
 			want: ": must be a valid path starting with / (e.g. /api/v1)",
 		},
 		{
-			name: "hosts parse failure keeps index",
-			run:  func() string { return ValidateHosts([]string{"http://ok", "http://[" + sentinel}).Error() },
+			name: "origins parse failure keeps index",
+			run:  func() string { return ValidateOrigins([]string{"http://ok", "http://[" + sentinel}).Error() },
 			want: ": entry [1] invalid URL",
 		},
 		{
-			name: "hosts missing host keeps index",
-			run:  func() string { return ValidateHosts([]string{sentinel}).Error() },
-			want: ": entry [0] must include scheme and host (e.g. https://host:port)",
+			name: "brokers without port keep index",
+			run:  func() string { return ValidateBrokers([]string{sentinel}).Error() },
+			want: ": entry [0] must be host:port without a scheme (e.g. kafka:9092)",
 		},
 		{
 			name: "http hosts unsupported scheme keeps index",
-			run:  func() string { return ValidateHTTPHosts([]string{"ftp://" + sentinel}).Error() },
+			run:  func() string { return ValidateOrigins([]string{"ftp://" + sentinel}).Error() },
 			want: ": entry [0] scheme must be http or https",
 		},
 	}
@@ -80,30 +80,31 @@ func TestValidatorsNeverEchoValues(t *testing.T) {
 
 func TestSchemeAcceptance(t *testing.T) {
 	tests := []struct {
-		name    string
-		value   string
-		httpOK  bool
-		hostsOK bool
+		name     string
+		value    string
+		httpOK   bool
+		brokerOK bool
 	}{
-		{name: "http", value: "http://host:9200", httpOK: true, hostsOK: true},
-		{name: "https", value: "https://host", httpOK: true, hostsOK: true},
-		{name: "uppercase", value: "HTTPS://host", httpOK: true, hostsOK: true},
-		{name: "ftp", value: "ftp://host", httpOK: false, hostsOK: true},
-		{name: "kafka", value: "kafka://broker:9092", httpOK: false, hostsOK: true},
-		{name: "no scheme", value: "host", httpOK: false, hostsOK: false},
+		{name: "http", value: "http://host:9200", httpOK: true},
+		{name: "https", value: "https://host", httpOK: true},
+		{name: "uppercase", value: "HTTPS://host", httpOK: true},
+		{name: "ftp", value: "ftp://host"},
+		{name: "kafka scheme", value: "kafka://broker:9092"},
+		{name: "no scheme", value: "host"},
+		{name: "host and port", value: "broker:9092", brokerOK: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.httpOK, len(ValidateURL(tc.value)) == 0, "ValidateURL")
-			assert.Equal(t, tc.httpOK, len(ValidateHTTPHosts([]string{tc.value})) == 0, "ValidateHTTPHosts")
-			assert.Equal(t, tc.hostsOK, len(ValidateHosts([]string{tc.value})) == 0, "ValidateHosts")
+			assert.Equal(t, tc.httpOK, len(ValidateOrigin(tc.value)) == 0, "ValidateOrigin")
+			assert.Equal(t, tc.httpOK, len(ValidateOrigins([]string{tc.value})) == 0, "ValidateOrigins")
+			assert.Equal(t, tc.brokerOK, len(ValidateBrokers([]string{tc.value})) == 0, "ValidateBrokers")
 		})
 	}
 }
 
 type decodeTarget struct {
-	Headers map[string]Header `mapstructure:"headers"`
-	Name    string            `mapstructure:"name"`
+	Headers map[string]ValueSources `mapstructure:"headers"`
+	Name    string                  `mapstructure:"name"`
 	Nested  struct {
 		Value string `mapstructure:"value"`
 	} `mapstructure:"nested"`
@@ -123,8 +124,8 @@ func TestDecodeDriverConfigErrorsNeverEchoValues(t *testing.T) {
 		{name: "invalid number", raw: map[string]any{"count": sentinel}, want: "count: invalid value"},
 		{name: "invalid bool", raw: map[string]any{"enabled": sentinel}, want: "enabled: invalid value"},
 		{name: "string into struct", raw: map[string]any{"nested": sentinel}, want: "nested: invalid type, expected map"},
-		{name: "unknown header property", raw: map[string]any{"headers": map[string]any{"X-A": map[string]any{"oops": sentinel}}}, want: "headers[X-A]: unknown header property"},
-		{name: "header values wrong shape", raw: map[string]any{"headers": map[string]any{"X-A": map[string]any{"secrets": sentinel}}}, want: "headers[X-A]: header secrets: must be a list of strings"},
+		{name: "unknown property", raw: map[string]any{"headers": map[string]any{"X-A": map[string]any{"oops": sentinel}}}, want: "headers[X-A]: unknown property"},
+		{name: "header values wrong shape", raw: map[string]any{"headers": map[string]any{"X-A": map[string]any{"secrets": sentinel}}}, want: "headers[X-A]: secrets: must be a list of strings"},
 		{name: "unknown key keeps its name", raw: map[string]any{"unknown_key": sentinel}, want: "unknown keys: unknown_key"},
 		{name: "nested unknown key", raw: map[string]any{"nested": map[string]any{"other": sentinel}}, want: "nested: unknown keys: other"},
 	}

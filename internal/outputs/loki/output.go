@@ -29,16 +29,20 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
-const defaultEndpoint = "/loki/api/v1/push"
+const (
+	defaultEndpoint = "/loki/api/v1/push"
+	readyRoute      = "/ready"
+)
+
+var targetOptions = shared.HTTPTargetOptions{DefaultEndpoint: defaultEndpoint}
 
 type config struct {
-	URL               string `mapstructure:"url"`
-	Tenant            string `mapstructure:"tenant"`
-	Endpoint          string `mapstructure:"endpoint"`
-	LogFormat         string `mapstructure:"log_format"`
-	ExtraLabels       string `mapstructure:"extra_labels"`
-	shared.HTTPConfig `mapstructure:",squash"`
-	Runtime           output.RuntimeConfig `mapstructure:"runtime"`
+	Tenant                  string `mapstructure:"tenant"`
+	LogFormat               string `mapstructure:"log_format"`
+	ExtraLabels             string `mapstructure:"extra_labels"`
+	shared.HTTPTargetConfig `mapstructure:",squash"`
+	shared.HTTPConfig       `mapstructure:",squash"`
+	Runtime                 output.RuntimeConfig `mapstructure:"runtime"`
 }
 
 // OutputType describes the Loki output for the catalog.
@@ -47,12 +51,11 @@ var OutputType = output.Type{
 	Name:     "loki",
 	Category: "logs",
 	Schema: output.Schema{
-		Fields: append([]output.SchemaField{
-			{Name: "url", Type: "string", Required: true, Label: "URL"},
+		Fields: append(append(shared.HTTPTargetSchemaFields(&targetOptions), []output.SchemaField{
 			{Name: "tenant", Type: "string", Label: "Tenant (X-Scope-OrgID)"},
 			{Name: "log_format", Type: "enum", Values: []string{"json", "text"}, Default: "json", Label: "Log Format"},
 			{Name: "extra_labels", Type: "string", Label: "Extra Labels (comma-separated field names)"},
-		}, append(shared.HTTPConfigSchemaFields(), shared.RuntimeConfigSchemaFields()...)...),
+		}...), append(shared.HTTPConfigSchemaFields(), shared.RuntimeConfigSchemaFields()...)...),
 	},
 }
 
@@ -70,11 +73,7 @@ var validLogFormats = map[string]bool{formatJSON: true, "text": true}
 func (c *config) validate() utils.ValidationErrors {
 	var errs utils.ValidationErrors
 	errs.Merge("", c.HTTPConfig.Validate())
-	errs.Merge("url", shared.ValidateURL(c.URL))
-	errs.Merge("endpoint", shared.ValidateEndpoint(c.Endpoint))
-	if c.Endpoint == "" {
-		c.Endpoint = defaultEndpoint
-	}
+	errs.Merge("", c.HTTPTargetConfig.Validate(&targetOptions))
 	if c.LogFormat == "" {
 		c.LogFormat = formatJSON
 	} else if !validLogFormats[c.LogFormat] {
@@ -127,25 +126,33 @@ func (d *driver) Init(_ context.Context) error { return nil }
 
 // Send delivers a single event to Loki with gzip compression.
 func (d *driver) Send(ctx context.Context, evt *event.Event) error {
+	target, err := d.cfg.DeliveryURL()
+	if err != nil {
+		return shared.WrapDeliveryError("loki", "target", err)
+	}
 	payload := buildPayload(d.cfg.LogFormat, d.extraLabels, evt)
-	return d.sender.SendGzipJSON(ctx, http.MethodPost, d.pushURL(), payload)
+	return d.sender.SendGzipJSON(ctx, http.MethodPost, target, payload)
 }
 
 // SendBatch delivers multiple events to Loki in a single push request.
 // Events with identical label sets are grouped into the same stream.
 // Entries within each stream are ordered by timestamp.
 func (d *driver) SendBatch(ctx context.Context, events []*event.Event) error {
+	target, err := d.cfg.DeliveryURL()
+	if err != nil {
+		return shared.WrapDeliveryError("loki", "target", err)
+	}
 	payload := buildBatchPayload(d.cfg.LogFormat, d.extraLabels, events)
-	return d.sender.SendGzipJSON(ctx, http.MethodPost, d.pushURL(), payload)
+	return d.sender.SendGzipJSON(ctx, http.MethodPost, target, payload)
 }
 
 // HealthCheck verifies connectivity to Loki.
 func (d *driver) HealthCheck(ctx context.Context) error {
-	return d.sender.HealthCheck(ctx, d.cfg.URL+"/ready")
+	target, err := d.cfg.URL(d.cfg.Host, readyRoute, nil)
+	if err != nil {
+		return shared.WrapDeliveryError("loki", "target", err)
+	}
+	return d.sender.HealthCheck(ctx, target)
 }
 
 func (d *driver) Close() error { return nil }
-
-func (d *driver) pushURL() string {
-	return d.cfg.URL + d.cfg.Endpoint
-}

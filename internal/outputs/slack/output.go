@@ -37,17 +37,19 @@ const (
 	formatText    = "text"
 )
 
+var targetOptions = shared.HTTPTargetOptions{DefaultHost: "https://hooks.slack.com", SecretEndpointRequired: true}
+
 type config struct {
-	WebhookURL        string `mapstructure:"webhook_url"`
-	Channel           string `mapstructure:"channel"`
-	Footer            string `mapstructure:"footer"`
-	IconURL           string `mapstructure:"icon_url"`
-	IconEmoji         string `mapstructure:"icon_emoji"`
-	Username          string `mapstructure:"username"`
-	OutputFormat      string `mapstructure:"output_format"`
-	MessageFormat     string `mapstructure:"message_format"`
-	shared.HTTPConfig `mapstructure:",squash"`
-	Runtime           output.RuntimeConfig `mapstructure:"runtime"`
+	Channel                 string `mapstructure:"channel"`
+	Footer                  string `mapstructure:"footer"`
+	IconURL                 string `mapstructure:"icon_url"`
+	IconEmoji               string `mapstructure:"icon_emoji"`
+	BotUsername             string `mapstructure:"bot_username"`
+	OutputFormat            string `mapstructure:"output_format"`
+	MessageFormat           string `mapstructure:"message_format"`
+	shared.HTTPTargetConfig `mapstructure:",squash"`
+	shared.HTTPConfig       `mapstructure:",squash"`
+	Runtime                 output.RuntimeConfig `mapstructure:"runtime"`
 }
 
 // OutputType describes the Slack output for the catalog.
@@ -56,16 +58,15 @@ var OutputType = output.Type{
 	Name:     "slack",
 	Category: "chat",
 	Schema: output.Schema{
-		Fields: append([]output.SchemaField{
-			{Name: "webhook_url", Type: "string", Required: true, Label: "Webhook URL", Secret: true},
+		Fields: append(append(shared.HTTPTargetSchemaFields(&targetOptions), []output.SchemaField{
 			{Name: "channel", Type: "string", Label: "Channel"},
-			{Name: "username", Type: "string", Label: "Bot Username"},
+			{Name: "bot_username", Type: "string", Label: "Bot Username"},
 			{Name: "icon_url", Type: "string", Label: "Icon URL"},
 			{Name: "icon_emoji", Type: "string", Label: "Icon Emoji (e.g., :ghost:)"},
 			{Name: "output_format", Type: "enum", Values: []string{"all", "fields", "text"}, Default: "all", Label: "Output Format"},
 			{Name: "message_format", Type: "string", Label: "Message Template"},
 			{Name: "footer", Type: "string", Label: "Footer"},
-		}, append(shared.HTTPConfigSchemaFields(), shared.RuntimeConfigSchemaFields()...)...),
+		}...), append(shared.HTTPConfigSchemaFields(), shared.RuntimeConfigSchemaFields()...)...),
 	},
 }
 
@@ -83,7 +84,7 @@ var validOutputFormats = map[string]bool{formatAll: true, formatFields: true, fo
 func (c *config) validate() utils.ValidationErrors {
 	var errs utils.ValidationErrors
 	errs.Merge("", c.HTTPConfig.Validate())
-	errs.Merge("webhook_url", shared.ValidateURL(c.WebhookURL))
+	errs.Merge("", c.HTTPTargetConfig.Validate(&targetOptions))
 	if c.OutputFormat == "" {
 		c.OutputFormat = formatAll
 	} else if !validOutputFormats[c.OutputFormat] {
@@ -141,12 +142,20 @@ func (d *driver) Init(_ context.Context) error { return nil }
 // Send delivers an event as a Slack attachment.
 // Checks the response body because Slack returns HTTP 200 with error text on failure.
 func (d *driver) Send(ctx context.Context, evt *event.Event) error {
-	return d.sender.SendJSONCheckBody(ctx, http.MethodPost, d.cfg.WebhookURL, d.buildPayload(evt), checkSlackResponse)
+	target, err := d.cfg.DeliveryURL()
+	if err != nil {
+		return shared.WrapDeliveryError("slack", "target", err)
+	}
+	return d.sender.SendJSONCheckBody(ctx, http.MethodPost, target, d.buildPayload(evt), checkSlackResponse)
 }
 
 // HealthCheck verifies connectivity to the Slack webhook.
 func (d *driver) HealthCheck(ctx context.Context) error {
-	return d.sender.HealthCheck(ctx, d.cfg.WebhookURL)
+	target, err := d.cfg.DeliveryURL()
+	if err != nil {
+		return shared.WrapDeliveryError("slack", "target", err)
+	}
+	return d.sender.HealthCheck(ctx, target)
 }
 
 func (d *driver) Close() error { return nil }

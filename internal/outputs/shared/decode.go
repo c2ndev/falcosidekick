@@ -33,8 +33,8 @@ var (
 	decodeExpectedMap  = regexp.MustCompile(`^'([^']*)' expected a map, got `)
 	decodeUnknownKeys  = regexp.MustCompile(`(?s)^'([^']*)' has invalid keys: (.*)$`)
 	decodeNamedFailure = regexp.MustCompile(`^(?:error decoding|cannot parse) '([^']*)'`)
-	// Fixed decodeHeaderHook texts; property names come from the Header definition.
-	decodeHeaderFailure = regexp.MustCompile(`^error decoding '([^']*)': (header entry must be a map|header property names must be strings|duplicate header property \w+|header \w+: must be a list of strings|unknown header property)$`)
+	// Fixed decodeValueSourcesHook texts, shared by headers and query_params; property names come from the ValueSources definition.
+	decodeValueSourcesFailure = regexp.MustCompile(`^error decoding '([^']*)': (entry must be a map|property names must be strings|duplicate property \w+|\w+: must be a list of strings|unknown property)$`)
 )
 
 // DecodeDriverConfig decodes a raw config map into a typed driver config struct.
@@ -48,7 +48,7 @@ func DecodeDriverConfig(raw map[string]any, result any) error {
 		Squash:           true,
 		DecodeHook: mapstructure.ComposeDecodeHookFunc(
 			mapstructure.StringToTimeDurationHookFunc(),
-			decodeHeaderHook,
+			decodeValueSourcesHook,
 		),
 		Result: result,
 	})
@@ -84,7 +84,7 @@ func safeDecodeMessage(message string) string {
 	if m := decodeExpectedMap.FindStringSubmatch(message); m != nil {
 		return withField(m[1], "invalid type, expected map")
 	}
-	if m := decodeHeaderFailure.FindStringSubmatch(message); m != nil {
+	if m := decodeValueSourcesFailure.FindStringSubmatch(message); m != nil {
 		return withField(m[1], m[2])
 	}
 	if m := decodeNamedFailure.FindStringSubmatch(message); m != nil {

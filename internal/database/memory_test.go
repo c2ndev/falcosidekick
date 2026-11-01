@@ -36,7 +36,7 @@ func TestProvisionCreatesEntries(t *testing.T) {
 
 	err := s.Provision(ctx, &core.ProvisionRequest{
 		Outputs: map[string]map[string]any{
-			"slack":  {"webhookurl": "https://hooks.slack.com/test"},
+			"slack":  {"secret_endpoint": "https://hooks.slack.com/test"},
 			"memory": {"capacity": 5000},
 		},
 	})
@@ -47,7 +47,7 @@ func TestProvisionCreatesEntries(t *testing.T) {
 	assert.Len(t, entries, 2)
 	assert.True(t, entries["slack"].Provisioned)
 	assert.True(t, entries["memory"].Provisioned)
-	assert.Equal(t, "https://hooks.slack.com/test", entries["slack"].Config["webhookurl"])
+	assert.Equal(t, "https://hooks.slack.com/test", entries["slack"].Config["secret_endpoint"])
 }
 
 func TestProvisionOverwritesProvisioned(t *testing.T) {
@@ -56,19 +56,19 @@ func TestProvisionOverwritesProvisioned(t *testing.T) {
 
 	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
 		Outputs: map[string]map[string]any{
-			"slack": {"webhookurl": "old"},
+			"slack": {"secret_endpoint": "old"},
 		},
 	}))
 
 	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
 		Outputs: map[string]map[string]any{
-			"slack": {"webhookurl": "new"},
+			"slack": {"secret_endpoint": "new"},
 		},
 	}))
 
 	entry, err := s.GetOutputConfig(ctx, "slack")
 	require.NoError(t, err)
-	assert.Equal(t, "new", entry.Config["webhookurl"])
+	assert.Equal(t, "new", entry.Config["secret_endpoint"])
 }
 
 func TestProvisionRemovesStaleProvisioned(t *testing.T) {
@@ -77,14 +77,14 @@ func TestProvisionRemovesStaleProvisioned(t *testing.T) {
 
 	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
 		Outputs: map[string]map[string]any{
-			"slack": {"webhookurl": "url"},
+			"slack": {"secret_endpoint": "host"},
 			"loki":  {"hostport": "http://loki:3100"},
 		},
 	}))
 
 	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
 		Outputs: map[string]map[string]any{
-			"slack": {"webhookurl": "url"},
+			"slack": {"secret_endpoint": "host"},
 		},
 	}))
 
@@ -98,11 +98,11 @@ func TestProvisionPreservesUICreatedEntries(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemory()
 
-	require.NoError(t, s.SaveOutputConfig(ctx, "custom", map[string]any{"url": "http://custom"}))
+	require.NoError(t, s.SaveOutputConfig(ctx, "custom", map[string]any{"host": "http://custom"}))
 
 	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
 		Outputs: map[string]map[string]any{
-			"slack": {"webhookurl": "url"},
+			"slack": {"secret_endpoint": "host"},
 		},
 	}))
 
@@ -130,12 +130,12 @@ func TestSaveOutputConfigNotProvisioned(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemory()
 
-	require.NoError(t, s.SaveOutputConfig(ctx, "custom", map[string]any{"url": "http://example.com"}))
+	require.NoError(t, s.SaveOutputConfig(ctx, "custom", map[string]any{"host": "http://example.com"}))
 
 	entry, err := s.GetOutputConfig(ctx, "custom")
 	require.NoError(t, err)
 	assert.False(t, entry.Provisioned)
-	assert.Equal(t, "http://example.com", entry.Config["url"])
+	assert.Equal(t, "http://example.com", entry.Config["host"])
 	assert.False(t, entry.UpdatedAt.IsZero())
 }
 
@@ -164,26 +164,26 @@ func TestProvisionOverwritesUIEditedProvisionedEntry(t *testing.T) {
 
 	// Seed: file-provisioned entry.
 	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
-		Outputs: map[string]map[string]any{"slack": {"webhookurl": "file-v1"}},
+		Outputs: map[string]map[string]any{"slack": {"secret_endpoint": "file-v1"}},
 	}))
 	// UI edits the provisioned entry (save preserves the Provisioned flag).
-	require.NoError(t, s.SaveOutputConfig(ctx, "slack", map[string]any{"webhookurl": "ui-edit"}))
+	require.NoError(t, s.SaveOutputConfig(ctx, "slack", map[string]any{"secret_endpoint": "ui-edit"}))
 	after, err := s.GetOutputConfig(ctx, "slack")
 	require.NoError(t, err)
 	require.NotNil(t, after)
 	require.True(t, after.Provisioned,
 		"SaveOutputConfig must preserve the Provisioned flag on an existing file-provisioned entry")
-	require.Equal(t, "ui-edit", after.Config["webhookurl"])
+	require.Equal(t, "ui-edit", after.Config["secret_endpoint"])
 
 	// File reload overrides the UI edit: file is authoritative.
 	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
-		Outputs: map[string]map[string]any{"slack": {"webhookurl": "file-v2"}},
+		Outputs: map[string]map[string]any{"slack": {"secret_endpoint": "file-v2"}},
 	}))
 	got, err := s.GetOutputConfig(ctx, "slack")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.True(t, got.Provisioned, "still provisioned after reload")
-	assert.Equal(t, "file-v2", got.Config["webhookurl"],
+	assert.Equal(t, "file-v2", got.Config["secret_endpoint"],
 		"file reload must overwrite the UI edit with the file version")
 }
 
@@ -193,15 +193,15 @@ func TestProvisionDisableDeletionKeepsOrphanProvisioned(t *testing.T) {
 
 	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
 		Outputs: map[string]map[string]any{
-			"slack":   {"url": "slack-file"},
-			"webhook": {"url": "webhook-file"},
+			"slack":   {"host": "slack-file"},
+			"webhook": {"host": "webhook-file"},
 		},
 	}))
 
 	// File now drops webhook; DisableDeletion=true preserves it as a
 	// Provisioned:true orphan instead of removing it from the store.
 	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
-		Outputs:         map[string]map[string]any{"slack": {"url": "slack-file"}},
+		Outputs:         map[string]map[string]any{"slack": {"host": "slack-file"}},
 		DisableDeletion: true,
 	}))
 
@@ -217,12 +217,12 @@ func TestProvisionDisableDeletionFalseDeletesOrphanProvisioned(t *testing.T) {
 
 	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
 		Outputs: map[string]map[string]any{
-			"slack":   {"url": "slack-file"},
-			"webhook": {"url": "webhook-file"},
+			"slack":   {"host": "slack-file"},
+			"webhook": {"host": "webhook-file"},
 		},
 	}))
 	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
-		Outputs:         map[string]map[string]any{"slack": {"url": "slack-file"}},
+		Outputs:         map[string]map[string]any{"slack": {"host": "slack-file"}},
 		DisableDeletion: false,
 	}))
 
@@ -237,9 +237,9 @@ func TestSaveOutputConfigPreservesProvisionedFlag(t *testing.T) {
 
 	// Existing Provisioned:true entry: save preserves the flag.
 	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
-		Outputs: map[string]map[string]any{"slack": {"url": "file"}},
+		Outputs: map[string]map[string]any{"slack": {"host": "file"}},
 	}))
-	require.NoError(t, s.SaveOutputConfig(ctx, "slack", map[string]any{"url": "edited"}))
+	require.NoError(t, s.SaveOutputConfig(ctx, "slack", map[string]any{"host": "edited"}))
 	got, err := s.GetOutputConfig(ctx, "slack")
 	require.NoError(t, err)
 	require.True(t, got.Provisioned, "UI edit of file-provisioned entry keeps Provisioned:true")
@@ -341,7 +341,7 @@ func TestProvisionCoreConfig(t *testing.T) {
 
 	require.NoError(t, s.Provision(ctx, &core.ProvisionRequest{
 		Config:  &core.Config{ListenPort: 2801, LogLevel: core.LogLevelInfo},
-		Outputs: map[string]map[string]any{"slack": {"url": "test"}},
+		Outputs: map[string]map[string]any{"slack": {"host": "test"}},
 	}))
 
 	entry, err := s.GetConfig(ctx)

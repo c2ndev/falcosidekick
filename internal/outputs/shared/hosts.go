@@ -18,8 +18,11 @@ package shared
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"regexp"
+	"strconv"
+	"strings"
 
 	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
@@ -33,42 +36,50 @@ var endpointRegex = regexp.MustCompile(`^/[\w/.%:@!$&'()*+,;=-]*$`)
 
 // Validation messages never include the value or url.Parse causes: URLs can carry credentials.
 
-// ValidateURL checks that a value is a valid HTTP(S) URL with scheme and host.
-func ValidateURL(value string) utils.ValidationErrors {
-	var errs utils.ValidationErrors
-	if value == "" {
-		errs.Add("", "is required")
-		return errs
-	}
-	if problem := urlProblem(value, true); problem != "" {
-		errs.Add("", problem)
-	}
-	return errs
-}
-
 // ValidateEndpoint checks that a value is a valid HTTP path.
 func ValidateEndpoint(value string) utils.ValidationErrors {
 	var errs utils.ValidationErrors
 	if value == "" {
 		return errs
 	}
-	if !endpointRegex.MatchString(value) {
+	if !validPath(value) {
 		errs.Add("", "must be a valid path starting with / (e.g. /api/v1)")
 	}
 	return errs
 }
 
-// ValidateHosts checks that hosts is non-empty and each entry has scheme and host.
-func ValidateHosts(hosts []string) utils.ValidationErrors {
-	return validateHosts(hosts, false)
+func validPath(value string) bool {
+	if !endpointRegex.MatchString(value) {
+		return false
+	}
+	_, err := url.PathUnescape(value)
+	return err == nil
 }
 
-// ValidateHTTPHosts is ValidateHosts restricted to HTTP(S) schemes.
-func ValidateHTTPHosts(hosts []string) utils.ValidationErrors {
-	return validateHosts(hosts, true)
+// ValidateOrigin checks that a value is exactly http(s)://host[:port].
+func ValidateOrigin(value string) utils.ValidationErrors {
+	var errs utils.ValidationErrors
+	if value == "" {
+		errs.Add("", "is required")
+		return errs
+	}
+	if problem := originProblem(value); problem != "" {
+		errs.Add("", problem)
+	}
+	return errs
 }
 
-func validateHosts(hosts []string, httpOnly bool) utils.ValidationErrors {
+// ValidateBrokers checks that brokers is non-empty and each entry is host:port.
+func ValidateBrokers(brokers []string) utils.ValidationErrors {
+	return validateHosts(brokers, brokerProblem)
+}
+
+// ValidateOrigins checks that hosts is non-empty and each entry passes ValidateOrigin.
+func ValidateOrigins(hosts []string) utils.ValidationErrors {
+	return validateHosts(hosts, originProblem)
+}
+
+func validateHosts(hosts []string, problemOf func(string) string) utils.ValidationErrors {
 	var errs utils.ValidationErrors
 	if len(hosts) == 0 {
 		errs.Add("", "is required")
@@ -79,23 +90,48 @@ func validateHosts(hosts []string, httpOnly bool) utils.ValidationErrors {
 			errs.Add("", fmt.Sprintf("entry [%d] must not be empty", i))
 			continue
 		}
-		if problem := urlProblem(h, httpOnly); problem != "" {
+		if problem := problemOf(h); problem != "" {
 			errs.Add("", fmt.Sprintf("entry [%d] %s", i, problem))
 		}
 	}
 	return errs
 }
 
-func urlProblem(value string, httpOnly bool) string {
-	u, err := url.Parse(value)
+func parseHost(value string) (host *url.URL, problem string) {
+	host, err := url.Parse(value)
 	if err != nil {
-		return "invalid URL"
+		return nil, "invalid URL"
 	}
-	if u.Scheme == "" || u.Host == "" {
-		return "must include scheme and host (e.g. https://host:port)"
+	if host.Scheme == "" || host.Host == "" {
+		return nil, "must include scheme and host (e.g. https://host:port)"
 	}
-	if httpOnly && u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS {
+	return host, ""
+}
+
+func brokerProblem(value string) string {
+	host, port, err := net.SplitHostPort(value)
+	if err != nil || host == "" || strings.ContainsAny(host, "/?#@") {
+		return "must be host:port without a scheme (e.g. kafka:9092)"
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return "port must be between 1 and 65535"
+	}
+	return ""
+}
+
+func originProblem(value string) string {
+	u, problem := parseHost(value)
+	if problem != "" {
+		return problem
+	}
+	if u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS {
 		return "scheme must be http or https"
+	}
+	if u.User != nil {
+		return "must not include credentials; use username/password or bearer_token"
+	}
+	if u.Path != "" || strings.ContainsAny(value, "?#") {
+		return "must be scheme, host and port only; use base_path, endpoint or query_params"
 	}
 	return ""
 }

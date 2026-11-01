@@ -25,7 +25,7 @@ import (
 func TestDiffOutputConfigsAddOnly(t *testing.T) {
 	old := map[string]map[string]any{}
 	updated := map[string]map[string]any{
-		"slack": {"webhook_url": "https://hooks.slack.com/test"},
+		"slack": {"secret_endpoint": "https://hooks.slack.com/test"},
 	}
 
 	diff := DiffOutputConfigs(old, updated)
@@ -39,7 +39,7 @@ func TestDiffOutputConfigsAddOnly(t *testing.T) {
 
 func TestDiffOutputConfigsRemoveOnly(t *testing.T) {
 	old := map[string]map[string]any{
-		"slack": {"webhook_url": "https://hooks.slack.com/test"},
+		"slack": {"secret_endpoint": "https://hooks.slack.com/test"},
 	}
 	updated := map[string]map[string]any{}
 
@@ -53,10 +53,10 @@ func TestDiffOutputConfigsRemoveOnly(t *testing.T) {
 
 func TestDiffOutputConfigsChangeOnly(t *testing.T) {
 	old := map[string]map[string]any{
-		"slack": {"webhook_url": "https://hooks.slack.com/old"},
+		"slack": {"secret_endpoint": "https://hooks.slack.com/old"},
 	}
 	updated := map[string]map[string]any{
-		"slack": {"webhook_url": "https://hooks.slack.com/new"},
+		"slack": {"secret_endpoint": "https://hooks.slack.com/new"},
 	}
 
 	diff := DiffOutputConfigs(old, updated)
@@ -69,8 +69,8 @@ func TestDiffOutputConfigsChangeOnly(t *testing.T) {
 
 func TestDiffOutputConfigsNoChange(t *testing.T) {
 	cfg := map[string]map[string]any{
-		"slack": {"webhook_url": "https://hooks.slack.com/same"},
-		"loki":  {"url": "http://loki:3100"},
+		"slack": {"secret_endpoint": "https://hooks.slack.com/same"},
+		"loki":  {"host": "http://loki:3100"},
 	}
 
 	diff := DiffOutputConfigs(cfg, cfg)
@@ -80,12 +80,12 @@ func TestDiffOutputConfigsNoChange(t *testing.T) {
 
 func TestDiffOutputConfigsMixed(t *testing.T) {
 	old := map[string]map[string]any{
-		"slack": {"webhook_url": "https://hooks.slack.com/old"},
-		"loki":  {"url": "http://loki:3100"},
+		"slack": {"secret_endpoint": "https://hooks.slack.com/old"},
+		"loki":  {"host": "http://loki:3100"},
 	}
 	updated := map[string]map[string]any{
-		"slack":         {"webhook_url": "https://hooks.slack.com/new"},
-		"elasticsearch": {"url": "https://es:9200"},
+		"slack":         {"secret_endpoint": "https://hooks.slack.com/new"},
+		"elasticsearch": {"host": "https://es:9200"},
 	}
 
 	diff := DiffOutputConfigs(old, updated)

@@ -111,7 +111,7 @@ func (d *driver) buildPayload(evt *event.Event) slackPayload {
 
 	p := slackPayload{
 		Text:        messageText,
-		Username:    d.cfg.Username,
+		Username:    d.cfg.BotUsername,
 		IconURL:     d.cfg.IconURL,
 		IconEmoji:   d.cfg.IconEmoji,
 		Attachments: []slackAttachment{attachment},

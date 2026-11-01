@@ -22,7 +22,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -33,15 +32,14 @@ import (
 )
 
 func TestInitTemplateSafeRequestError(t *testing.T) {
-	d := &driver{cfg: config{URL: "https://es.invalid/PATH_SECRET\n?token=QUERY_SECRET", Index: "falco"}}
+	d := &driver{cfg: config{
+		HTTPTargetConfig: shared.HTTPTargetConfig{Host: "https://es.invalid", BasePath: "/PATH_SECRET\n%zz"},
+		Index:            "falco",
+	}}
 	err := d.createIndexTemplate(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "build request")
-	assert.Contains(t, err.Error(), "invalid request")
+	assert.Contains(t, err.Error(), "elasticsearch target: cannot resolve target")
 	assert.NotContains(t, err.Error(), "PATH_SECRET")
-	assert.NotContains(t, err.Error(), "QUERY_SECRET")
-	var urlErr *url.Error
-	assert.ErrorAs(t, err, &urlErr)
 	var diagnostic *shared.DeliveryError
 	assert.ErrorAs(t, err, &diagnostic)
 }
@@ -57,7 +55,8 @@ func TestInitTemplateSafeHTTPError(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	d, err := createOutput(map[string]any{
-		"url":                   server.URL + "/PATH_SECRET",
+		"host":                  server.URL,
+		"base_path":             "/PATH_SECRET",
 		"create_index_template": true,
 		"number_of_shards":      1,
 	}, output.Deps{})
@@ -81,7 +80,7 @@ func TestInitTemplateAlreadyExists(t *testing.T) {
 	defer server.Close()
 
 	driver, err := createOutput(map[string]any{
-		"url":                   server.URL,
+		"host":                  server.URL,
 		"create_index_template": true,
 		"number_of_shards":      3,
 		"number_of_replicas":    1,
@@ -115,7 +114,7 @@ func TestInitTemplateCreated(t *testing.T) {
 	defer server.Close()
 
 	driver, err := createOutput(map[string]any{
-		"url":                   server.URL,
+		"host":                  server.URL,
 		"create_index_template": true,
 		"number_of_shards":      5,
 		"number_of_replicas":    2,
@@ -154,7 +153,7 @@ func TestInitTemplateSkipped(t *testing.T) {
 	defer server.Close()
 
 	driver, err := createOutput(map[string]any{
-		"url":                   server.URL,
+		"host":                  server.URL,
 		"create_index_template": false,
 	}, output.Deps{})
 	require.NoError(t, err)

@@ -52,11 +52,11 @@ func TestSecretContractGET(t *testing.T) {
 		{
 			name:       "public headers and file paths survive",
 			outputName: "webhook",
-			config: `{"url":"https://example.invalid/events","username":"reader","password":"scalar-private","bearer_token":"","headers":{
+			config: `{"host":"https://example.invalid","endpoint":"/events","username":"reader","password":"scalar-private","bearer_token":"","headers":{
 				"X-Team":{"values":["security"]},
 				"X-Key~Id":{"values":["public-prefix"],"secrets":["header-private-one","header-private-two"],"files":["/run/secrets/header"]},
 				"X-Empty":{"secrets":[]},"X-Null":{"secrets":null}}}`,
-			public: `{"url":"https://example.invalid/events","username":"reader","headers":{
+			public: `{"host":"https://example.invalid","endpoint":"/events","username":"reader","headers":{
 				"X-Team":{"values":["security"]},"X-Key~Id":{"values":["public-prefix"],"files":["/run/secrets/header"]},
 				"X-Empty":{},"X-Null":{}}}`,
 			fields: map[string]bool{"/password": true, "/bearer_token": false, "/headers/X-Key~0Id/secrets": true,
@@ -76,8 +76,8 @@ func TestSecretContractGET(t *testing.T) {
 		{
 			name:       "malformed header container is removed wholesale",
 			outputName: "webhook",
-			config:     `{"url":"https://example.invalid/events","HEADERS":["container-private",{"token":"nested-container-private"}]}`,
-			public:     `{"url":"https://example.invalid/events"}`,
+			config:     `{"host":"https://example.invalid","endpoint":"/events","HEADERS":["container-private",{"token":"nested-container-private"}]}`,
+			public:     `{"host":"https://example.invalid","endpoint":"/events"}`,
 			fields:     map[string]bool{"/HEADERS": true},
 			hidden:     []string{"container-private", "nested-container-private"},
 		},
@@ -190,7 +190,7 @@ func TestSecretContractPUT(t *testing.T) {
 		{"public sentinel is literal", `{"headers":{"X-Key":{"values":["****"]}}}`, `["stored-one","stored-two"]`, "stored-password", `["****"]`, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := parseSecretContractConfig(t, `{"url":"https://example.invalid/events","username":"reader","password":"stored-password",
+			cfg := parseSecretContractConfig(t, `{"host":"https://example.invalid","endpoint":"/events","username":"reader","password":"stored-password",
 				"headers":{"X-Key":{"values":["visible"],"secrets":["stored-one","stored-two"]},"X-Team":{"values":["security"]}}}`)
 			cfg["headers"].(map[string]any)["X-Key"].(map[string]any)["files"] = []any{headerFile}
 			if tt.legacy {
@@ -203,7 +203,7 @@ func TestSecretContractPUT(t *testing.T) {
 			body := `{"config":` + tt.patch + `,"secret_fields":{"/password":false,"/headers/X-Key/secrets":false}}`
 			raw := requestSecretContract(t, rig.Server, http.MethodPut, "/api/v1/pipeline/outputs/webhook", body, http.StatusOK)
 
-			want := parseSecretContractConfig(t, `{"url":"https://example.invalid/events","username":"reader",
+			want := parseSecretContractConfig(t, `{"host":"https://example.invalid","endpoint":"/events","username":"reader",
 				"headers":{"X-Key":{"values":`+tt.values+`},"X-Team":{"values":["security"]}}}`)
 			want["headers"].(map[string]any)["X-Key"].(map[string]any)["files"] = []any{headerFile}
 			public, err := json.Marshal(want)
@@ -252,7 +252,7 @@ func TestSecretContractPUTRejectsAmbiguousOrPlaceholderSecrets(t *testing.T) {
 		{"stored duplicate aliases", `{}`, "duplicate case-insensitive", true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := parseSecretContractConfig(t, `{"url":"https://example.invalid/events","password":"stored-private","headers":{"X-Key":{"secrets":["stored-header-private"]}}}`)
+			cfg := parseSecretContractConfig(t, `{"host":"https://example.invalid","endpoint":"/events","password":"stored-private","headers":{"X-Key":{"secrets":["stored-header-private"]}}}`)
 			if tt.ambiguous {
 				cfg["PASSWORD"] = "stored-alias-private"
 			}

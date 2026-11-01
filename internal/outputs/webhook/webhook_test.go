@@ -35,8 +35,8 @@ import (
 
 func TestWebhookCommonCases(t *testing.T) {
 	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
-		{Name: "sends valid event", AddressField: "url"},
-		{Name: "returns error on server 500", AddressField: "url", MockStatus: http.StatusInternalServerError, ExpectError: true},
+		{Name: "sends valid event", AddressField: "host"},
+		{Name: "returns error on server 500", AddressField: "host", MockStatus: http.StatusInternalServerError, ExpectError: true},
 	})
 }
 
@@ -44,7 +44,7 @@ func TestWebhookSpecificCases(t *testing.T) {
 	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
 		{
 			Name:         "sends POST by default",
-			AddressField: "url",
+			AddressField: "host",
 			ValidateReq: func(t *testing.T, req *http.Request, _ []byte) {
 				t.Helper()
 				assert.Equal(t, http.MethodPost, req.Method)
@@ -53,7 +53,7 @@ func TestWebhookSpecificCases(t *testing.T) {
 		},
 		{
 			Name:         "sends PUT when configured",
-			AddressField: "url",
+			AddressField: "host",
 			Config:       map[string]any{"method": "PUT"},
 			ValidateReq: func(t *testing.T, req *http.Request, _ []byte) {
 				t.Helper()
@@ -62,7 +62,7 @@ func TestWebhookSpecificCases(t *testing.T) {
 		},
 		{
 			Name:         "includes custom headers",
-			AddressField: "url",
+			AddressField: "host",
 			Config: map[string]any{
 				"headers": map[string]any{
 					"X-Custom":      map[string]any{"values": []string{"value", "second"}},
@@ -78,7 +78,7 @@ func TestWebhookSpecificCases(t *testing.T) {
 		},
 		{
 			Name:         "returns error on 500",
-			AddressField: "url",
+			AddressField: "host",
 			MockStatus:   http.StatusInternalServerError,
 			ExpectError:  true,
 		},
@@ -92,25 +92,25 @@ func TestWebhookCreateValidation(t *testing.T) {
 		}))
 		defer server.Close()
 
-		o, err := OutputType.New(map[string]any{"url": server.URL}, output.Deps{})
+		o, err := OutputType.New(map[string]any{"host": server.URL}, output.Deps{})
 		require.NoError(t, err)
 		assert.NoError(t, o.HealthCheck(context.Background()))
 	})
 
 	t.Run("healthcheck failure", func(t *testing.T) {
-		o, err := OutputType.New(map[string]any{"url": "http://127.0.0.1:1"}, output.Deps{})
+		o, err := OutputType.New(map[string]any{"host": "http://127.0.0.1:1"}, output.Deps{})
 		require.NoError(t, err)
 		assert.Error(t, o.HealthCheck(context.Background()))
 	})
 
 	t.Run("send to unreachable host", func(t *testing.T) {
-		o, err := OutputType.New(map[string]any{"url": "http://127.0.0.1:1"}, output.Deps{})
+		o, err := OutputType.New(map[string]any{"host": "http://127.0.0.1:1"}, output.Deps{})
 		require.NoError(t, err)
 		assert.Error(t, o.Send(context.Background(), testutil.CreateValidEvent()))
 	})
 
 	t.Run("init and close", func(t *testing.T) {
-		o, err := OutputType.New(map[string]any{"url": "http://example.com"}, output.Deps{})
+		o, err := OutputType.New(map[string]any{"host": "http://example.com"}, output.Deps{})
 		require.NoError(t, err)
 		assert.NoError(t, o.Init(context.Background()))
 		assert.NoError(t, o.Close())
@@ -128,11 +128,11 @@ func TestWebhookCreateValidation(t *testing.T) {
 		},
 		{
 			name: "valid minimal config",
-			cfg:  map[string]any{"url": "http://example.com"},
+			cfg:  map[string]any{"host": "http://example.com"},
 		},
 		{
 			name: "method defaults to POST",
-			cfg:  map[string]any{"url": "http://example.com"},
+			cfg:  map[string]any{"host": "http://example.com"},
 		},
 	}
 
@@ -150,13 +150,13 @@ func TestWebhookCreateValidation(t *testing.T) {
 }
 
 func TestWebhookInsecureSkipVerifyDefaults(t *testing.T) {
-	o, err := OutputType.New(map[string]any{"url": "http://example.com"}, output.Deps{})
+	o, err := OutputType.New(map[string]any{"host": "http://example.com"}, output.Deps{})
 	require.NoError(t, err)
 
 	w := o.(*driver)
 	assert.False(t, w.cfg.TLS.InsecureSkipVerify, "InsecureSkipVerify defaults to false")
 
-	o2, err := OutputType.New(map[string]any{"url": "http://example.com", "tls": map[string]any{"insecure_skip_verify": true}}, output.Deps{})
+	o2, err := OutputType.New(map[string]any{"host": "http://example.com", "tls": map[string]any{"insecure_skip_verify": true}}, output.Deps{})
 	require.NoError(t, err)
 	w2 := o2.(*driver)
 	assert.True(t, w2.cfg.TLS.InsecureSkipVerify, "InsecureSkipVerify explicitly true")
@@ -164,7 +164,7 @@ func TestWebhookInsecureSkipVerifyDefaults(t *testing.T) {
 
 func TestCreateOutputAcceptsRuntimeOverrides(t *testing.T) {
 	d, err := OutputType.New(map[string]any{
-		"url": "http://example.com",
+		"host": "http://example.com",
 		"runtime": map[string]any{
 			"minimum_priority": "warning",
 			"queue_size":       5000,
@@ -196,7 +196,7 @@ func TestCreateOutputAcceptsRuntimeOverrides(t *testing.T) {
 
 func TestCreateOutputRejectsUnknownKeys(t *testing.T) {
 	_, err := OutputType.New(map[string]any{
-		"url":   "http://example.com",
+		"host":  "http://example.com",
 		"methd": "PUT",
 	}, output.Deps{})
 	require.Error(t, err)
@@ -205,7 +205,7 @@ func TestCreateOutputRejectsUnknownKeys(t *testing.T) {
 
 func TestCreateOutputInvalidTLSFailsConstruction(t *testing.T) {
 	_, err := OutputType.New(map[string]any{
-		"url": "https://example.com",
+		"host": "https://example.com",
 		"tls": map[string]any{
 			"ca_file": "/nonexistent/ca.pem",
 		},
@@ -216,7 +216,7 @@ func TestCreateOutputInvalidTLSFailsConstruction(t *testing.T) {
 
 func TestCreateOutputInvalidClientCertFailsConstruction(t *testing.T) {
 	_, err := OutputType.New(map[string]any{
-		"url": "https://example.com",
+		"host": "https://example.com",
 		"tls": map[string]any{
 			"cert_file": "/nonexistent/cert.pem",
 			"key_file":  "/nonexistent/key.pem",
@@ -254,7 +254,7 @@ func TestWebhookHeaderValidation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tt.cfg["url"] = "http://example.com"
+			tt.cfg["host"] = "http://example.com"
 			d, err := OutputType.New(tt.cfg, output.Deps{})
 			require.Error(t, err)
 			assert.Nil(t, d)
@@ -274,7 +274,7 @@ func TestWebhookHeaderFileRotation(t *testing.T) {
 	defer server.Close()
 
 	d, err := OutputType.New(map[string]any{
-		"url": server.URL,
+		"host": server.URL,
 		"HEADERS": map[string]any{
 			"authorization": map[string]any{"FILES": []string{path}},
 			"X-Key":         map[string]any{"VALUES": []any{"public"}, "SECRETS": []any{"protected"}},
@@ -298,7 +298,7 @@ func TestWebhookRejectsHeaderPropertyAliases(t *testing.T) {
 	for _, field := range []string{"values", "secrets", "files"} {
 		t.Run(field, func(t *testing.T) {
 			_, err := OutputType.New(map[string]any{
-				"url": "http://example.com",
+				"host": "http://example.com",
 				"headers": map[string]any{
 					"X-Key": map[string]any{field: []string{}, strings.ToUpper(field): []string{}},
 				},

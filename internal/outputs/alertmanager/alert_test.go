@@ -158,6 +158,6 @@ func TestAlertmanagerMultiHost(t *testing.T) {
 	require.NoError(t, err)
 
 	o := d.(*driver)
-	assert.Len(t, o.hostURLs, 2)
+	assert.Len(t, o.cfg.Hosts, 2)
 	assert.NotNil(t, o.sender)
 }

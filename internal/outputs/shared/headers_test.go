@@ -39,23 +39,23 @@ func TestHeaderConstructorValidation(t *testing.T) {
 		name string
 		cfg  HTTPConfig
 	}{
-		{"empty name", HTTPConfig{Headers: map[string]Header{"": {}}}},
-		{"space in name", HTTPConfig{Headers: map[string]Header{"X Bad": {}}}},
-		{"colon in name", HTTPConfig{Headers: map[string]Header{"X:Bad": {}}}},
-		{"control in name", HTTPConfig{Headers: map[string]Header{"X-\r\nBad": {}}}},
-		{"nonascii name", HTTPConfig{Headers: map[string]Header{"X-\xff": {}}}},
-		{"duplicate names", HTTPConfig{Headers: map[string]Header{"X-Key": {}, "x-key": {}}}},
-		{"public controls", HTTPConfig{Headers: map[string]Header{"X-Key": {Values: []string{"private-value\n"}}}}},
-		{"secret controls", HTTPConfig{Headers: map[string]Header{"X-Key": {Secrets: []string{"private-value\x7f"}}}}},
-		{"missing file", HTTPConfig{Headers: map[string]Header{"X-Key": {Files: []string{missing}}}}},
-		{"empty file path", HTTPConfig{Headers: map[string]Header{"X-Key": {Files: []string{""}}}}},
-		{"directory", HTTPConfig{Headers: map[string]Header{"X-Key": {Files: []string{t.TempDir()}}}}},
-		{"invalid file", HTTPConfig{Headers: map[string]Header{"X-Key": {Files: []string{invalid}}}}},
-		{"public authorization", HTTPConfig{Headers: map[string]Header{"aUtHoRiZaTiOn": {Values: []string{"private-value"}}}}},
-		{"mixed authorization", HTTPConfig{Headers: map[string]Header{"Authorization": {Values: []string{""}, Secrets: []string{"private-value"}}}}},
-		{"bearer conflict", HTTPConfig{BearerToken: "private-bearer", Headers: map[string]Header{"authorization": {Secrets: []string{"private-value"}}}}},
-		{"basic conflict", HTTPConfig{Username: "user", Headers: map[string]Header{"Authorization": {Secrets: []string{"private-value"}}}}},
-		{"password conflict", HTTPConfig{Password: "private-password", Headers: map[string]Header{"Authorization": {Secrets: []string{"private-value"}}}}},
+		{"empty name", HTTPConfig{Headers: map[string]ValueSources{"": {}}}},
+		{"space in name", HTTPConfig{Headers: map[string]ValueSources{"X Bad": {}}}},
+		{"colon in name", HTTPConfig{Headers: map[string]ValueSources{"X:Bad": {}}}},
+		{"control in name", HTTPConfig{Headers: map[string]ValueSources{"X-\r\nBad": {}}}},
+		{"nonascii name", HTTPConfig{Headers: map[string]ValueSources{"X-\xff": {}}}},
+		{"duplicate names", HTTPConfig{Headers: map[string]ValueSources{"X-Key": {}, "x-key": {}}}},
+		{"public controls", HTTPConfig{Headers: map[string]ValueSources{"X-Key": {Values: []string{"private-value\n"}}}}},
+		{"secret controls", HTTPConfig{Headers: map[string]ValueSources{"X-Key": {Secrets: []string{"private-value\x7f"}}}}},
+		{"missing file", HTTPConfig{Headers: map[string]ValueSources{"X-Key": {Files: []string{missing}}}}},
+		{"empty file path", HTTPConfig{Headers: map[string]ValueSources{"X-Key": {Files: []string{""}}}}},
+		{"directory", HTTPConfig{Headers: map[string]ValueSources{"X-Key": {Files: []string{t.TempDir()}}}}},
+		{"invalid file", HTTPConfig{Headers: map[string]ValueSources{"X-Key": {Files: []string{invalid}}}}},
+		{"public authorization", HTTPConfig{Headers: map[string]ValueSources{"aUtHoRiZaTiOn": {Values: []string{"private-value"}}}}},
+		{"mixed authorization", HTTPConfig{Headers: map[string]ValueSources{"Authorization": {Values: []string{""}, Secrets: []string{"private-value"}}}}},
+		{"bearer conflict", HTTPConfig{BearerToken: "private-bearer", Headers: map[string]ValueSources{"authorization": {Secrets: []string{"private-value"}}}}},
+		{"basic conflict", HTTPConfig{Username: "user", Headers: map[string]ValueSources{"Authorization": {Secrets: []string{"private-value"}}}}},
+		{"password conflict", HTTPConfig{Password: "private-password", Headers: map[string]ValueSources{"Authorization": {Secrets: []string{"private-value"}}}}},
 		{"bearer controls", HTTPConfig{BearerToken: "private-bearer\n"}},
 	}
 	for _, tt := range tests {
@@ -75,7 +75,7 @@ func TestHeaderTransportOwnedNames(t *testing.T) {
 		"TE", "Upgrade", "Content-Encoding", "Accept-Encoding",
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := NewSender("test", &HTTPConfig{Headers: map[string]Header{
+			_, err := NewSender("test", &HTTPConfig{Headers: map[string]ValueSources{
 				strings.ToLower(name): {Values: []string{"private-value"}},
 			}})
 			require.Error(t, err)
@@ -88,7 +88,7 @@ func TestHeaderTransportOwnedNames(t *testing.T) {
 func TestHeaderValueControls(t *testing.T) {
 	for b := byte(0); b < 0x80; b++ {
 		t.Run(fmt.Sprintf("byte_%02x", b), func(t *testing.T) {
-			_, err := NewSender("test", &HTTPConfig{Headers: map[string]Header{
+			_, err := NewSender("test", &HTTPConfig{Headers: map[string]ValueSources{
 				"X-Key": {Secrets: []string{"private-" + string(b) + "-value"}},
 			}})
 			if b < 0x20 && b != '\t' || b == 0x7f {
@@ -106,7 +106,7 @@ func TestHeaderOrderRotationAndOwnership(t *testing.T) {
 	second := filepath.Join(t.TempDir(), "second")
 	require.NoError(t, os.WriteFile(first, []byte(" \tfile-one\r\n"), 0o600))
 	require.NoError(t, os.WriteFile(second, []byte("file-two\n"), 0o600))
-	cfg := HTTPConfig{Headers: map[string]Header{
+	cfg := HTTPConfig{Headers: map[string]ValueSources{
 		"x-key": {Values: []string{"one", "two"}, Secrets: []string{"secret-one", "secret-two"}, Files: []string{first, second}},
 	}}
 	s, err := NewSender("test", &cfg)
@@ -144,7 +144,7 @@ func TestHeaderFileFailureBeforeDelivery(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "key")
 			require.NoError(t, os.WriteFile(path, []byte("initial"), 0o600))
-			s, err := NewSender("test", &HTTPConfig{Headers: map[string]Header{"X-Key": {Files: []string{path}}}})
+			s, err := NewSender("test", &HTTPConfig{Headers: map[string]ValueSources{"X-Key": {Files: []string{path}}}})
 			require.NoError(t, err)
 			s.client.Transport = headerRoundTripper(func(*http.Request) (*http.Response, error) {
 				t.Error("invalid headers must not reach transport")
@@ -171,7 +171,7 @@ func TestHeaderFileFailureBeforeDelivery(t *testing.T) {
 }
 
 func TestHeaderSetHeaderPrecedence(t *testing.T) {
-	s, err := NewSender("test", &HTTPConfig{Headers: map[string]Header{
+	s, err := NewSender("test", &HTTPConfig{Headers: map[string]ValueSources{
 		"authorization": {Secrets: []string{"configured"}},
 		"x-scope-orgid": {Values: []string{"configured"}},
 		"content-type":  {Values: []string{"custom/type"}},
@@ -193,7 +193,7 @@ func TestHeaderSetHeaderPrecedence(t *testing.T) {
 func TestHeaderConcurrentRequests(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "key")
 	require.NoError(t, os.WriteFile(path, []byte("file-value\n"), 0o600))
-	s, err := NewSender("test", &HTTPConfig{Headers: map[string]Header{
+	s, err := NewSender("test", &HTTPConfig{Headers: map[string]ValueSources{
 		"X-Key": {Values: []string{"public"}, Secrets: []string{"private"}, Files: []string{path}},
 	}})
 	require.NoError(t, err)
@@ -214,7 +214,7 @@ func TestHeaderConcurrentRequests(t *testing.T) {
 func TestApplyHeadersFailureIsAtomic(t *testing.T) {
 	req := &http.Request{Header: http.Header{"X-Original": {"unchanged"}}}
 	original := req.Header.Clone()
-	err := ApplyHeaders(req, map[string]Header{
+	err := ApplyHeaders(req, map[string]ValueSources{
 		"A-Valid": {Values: []string{"value"}},
 		"Z-Key":   {Secrets: []string{"private-value\x00"}},
 	})
@@ -224,7 +224,7 @@ func TestApplyHeadersFailureIsAtomic(t *testing.T) {
 }
 
 func TestHeaderEmptyValuesAndNilRequestHeaders(t *testing.T) {
-	s, err := NewSender("test", &HTTPConfig{Headers: map[string]Header{
+	s, err := NewSender("test", &HTTPConfig{Headers: map[string]ValueSources{
 		"User-Agent": {},
 		"X-Empty":    {Values: []string{""}},
 	}})
@@ -254,7 +254,7 @@ func TestHeaderSetHeaderRejectsInvalidValues(t *testing.T) {
 func TestHeaderRelativeFileStartupValidation(t *testing.T) {
 	t.Chdir(t.TempDir())
 	require.NoError(t, os.WriteFile("key", []byte("protected\n"), 0o600))
-	cfg := HTTPConfig{Headers: map[string]Header{"X-Key": {Files: []string{"key"}}}}
+	cfg := HTTPConfig{Headers: map[string]ValueSources{"X-Key": {Files: []string{"key"}}}}
 	assert.Empty(t, cfg.Validate())
 	require.NoError(t, os.Remove("key"))
 	_, err := NewSender("test", &cfg)
@@ -274,7 +274,7 @@ func TestHeaderRelativeFileStartupValidation(t *testing.T) {
 func TestHeaderRedirectForwardingBlocked(t *testing.T) {
 	s, err := NewSender("test", &HTTPConfig{
 		BearerToken: "builtin-token",
-		Headers:     map[string]Header{"X-Api-Key": {Secrets: []string{"custom-token"}}},
+		Headers:     map[string]ValueSources{"X-Api-Key": {Secrets: []string{"custom-token"}}},
 	})
 	require.NoError(t, err)
 	redirected := false

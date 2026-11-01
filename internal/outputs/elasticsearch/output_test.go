@@ -53,7 +53,7 @@ func TestElasticsearchMarshalSafeDiagnostics(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			}))
 			t.Cleanup(server.Close)
-			d, err := createOutput(map[string]any{"url": server.URL}, output.Deps{})
+			d, err := createOutput(map[string]any{"host": server.URL}, output.Deps{})
 			require.NoError(t, err)
 			cause := errors.New("MARSHAL_SECRET")
 			evt := testutil.CreateValidEvent()
@@ -80,8 +80,8 @@ func TestElasticsearchMarshalSafeDiagnostics(t *testing.T) {
 
 func TestElasticsearchCommonCases(t *testing.T) {
 	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
-		{Name: "sends valid event", AddressField: "url"},
-		{Name: "returns error on server 500", AddressField: "url", MockStatus: http.StatusInternalServerError, ExpectError: true},
+		{Name: "sends valid event", AddressField: "host"},
+		{Name: "returns error on server 500", AddressField: "host", MockStatus: http.StatusInternalServerError, ExpectError: true},
 	})
 }
 
@@ -89,14 +89,14 @@ func TestElasticsearchPayloadFormat(t *testing.T) {
 	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
 		{
 			Name:         "includes @timestamp in body",
-			AddressField: "url",
+			AddressField: "host",
 			ValidateReq: func(t *testing.T, _ *http.Request, body []byte) {
 				assert.Contains(t, string(body), "@timestamp")
 			},
 		},
 		{
 			Name:         "sends to _doc endpoint",
-			AddressField: "url",
+			AddressField: "host",
 			Config:       map[string]any{"index": "security", "index_suffix": "none"},
 			ValidateReq: func(t *testing.T, req *http.Request, _ []byte) {
 				assert.Contains(t, req.URL.Path, "/security/_doc")
@@ -104,7 +104,7 @@ func TestElasticsearchPayloadFormat(t *testing.T) {
 		},
 		{
 			Name:         "applies basic auth",
-			AddressField: "url",
+			AddressField: "host",
 			Config:       map[string]any{"username": "elastic", "password": "secret"},
 			ValidateReq: func(t *testing.T, req *http.Request, _ []byte) {
 				user, pass, ok := req.BasicAuth()
@@ -115,7 +115,7 @@ func TestElasticsearchPayloadFormat(t *testing.T) {
 		},
 		{
 			Name:         "applies api key auth",
-			AddressField: "url",
+			AddressField: "host",
 			Config:       map[string]any{"api_key": "mykey123"},
 			ValidateReq: func(t *testing.T, req *http.Request, _ []byte) {
 				assert.Equal(t, "ApiKey mykey123", req.Header.Get("Authorization"))
@@ -123,7 +123,7 @@ func TestElasticsearchPayloadFormat(t *testing.T) {
 		},
 		{
 			Name:         "flattens field names when configured",
-			AddressField: "url",
+			AddressField: "host",
 			Config:       map[string]any{"flatten_fields": true},
 			ValidateReq: func(t *testing.T, _ *http.Request, body []byte) {
 				assert.NotContains(t, string(body), `"fd.name"`)
@@ -131,7 +131,7 @@ func TestElasticsearchPayloadFormat(t *testing.T) {
 		},
 		{
 			Name:         "includes pipeline query parameter",
-			AddressField: "url",
+			AddressField: "host",
 			Config:       map[string]any{"pipeline": "my-ingest"},
 			ValidateReq: func(t *testing.T, req *http.Request, _ []byte) {
 				assert.Equal(t, "my-ingest", req.URL.Query().Get("pipeline"))
@@ -149,7 +149,7 @@ func TestElasticsearchHealthCheck(t *testing.T) {
 	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
 		{
 			Name:         "sends GET to base URL",
-			AddressField: "url",
+			AddressField: "host",
 			ValidateReq: func(t *testing.T, req *http.Request, _ []byte) {
 				// harness validates Send works; HealthCheck validated by Init test
 			},
@@ -209,7 +209,7 @@ func TestFlattenFieldsReplacesDotsAndPreservesValues(t *testing.T) {
 	testutil.RunOutputTests(t, OutputType, []testutil.OutputTestCase{
 		{
 			Name:         "flattened field names use underscores",
-			AddressField: "url",
+			AddressField: "host",
 			Config:       map[string]any{"flatten_fields": true},
 			ValidateReq: func(t *testing.T, _ *http.Request, body []byte) {
 				bodyStr := string(body)

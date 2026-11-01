@@ -28,20 +28,20 @@ func TestDecodeHeaderLists(t *testing.T) {
 	for _, tt := range []struct {
 		raw  any
 		name string
-		want Header
+		want ValueSources
 	}{
-		{map[string]any{"values": []string{"public"}, "secrets": []any{"protected"}, "files": []string{"key"}}, "lists", Header{
+		{map[string]any{"values": []string{"public"}, "secrets": []any{"protected"}, "files": []string{"key"}}, "lists", ValueSources{
 			Values: []string{"public"}, Secrets: []string{"protected"}, Files: []string{"key"},
 		}},
-		{map[string]any{"VaLuEs": []any{"public"}, "SECRETS": []string{"protected"}, "FILES": []any{"key"}}, "case aliases", Header{
+		{map[string]any{"VaLuEs": []any{"public"}, "SECRETS": []string{"protected"}, "FILES": []any{"key"}}, "case aliases", ValueSources{
 			Values: []string{"public"}, Secrets: []string{"protected"}, Files: []string{"key"},
 		}},
-		{map[string][]string{"values": {"public"}}, "typed map", Header{Values: []string{"public"}}},
-		{map[any]any{"values": []string{"public"}}, "interface map", Header{Values: []string{"public"}}},
-		{map[string]any{"values": nil, "secrets": nil, "files": nil}, "null lists", Header{}},
-		{map[string]any{}, "empty entry", Header{}},
-		{nil, "null entry", Header{}},
-		{Header{Secrets: []string{"protected"}}, "typed entry", Header{Secrets: []string{"protected"}}},
+		{map[string][]string{"values": {"public"}}, "typed map", ValueSources{Values: []string{"public"}}},
+		{map[any]any{"values": []string{"public"}}, "interface map", ValueSources{Values: []string{"public"}}},
+		{map[string]any{"values": nil, "secrets": nil, "files": nil}, "null lists", ValueSources{}},
+		{map[string]any{}, "empty entry", ValueSources{}},
+		{nil, "null entry", ValueSources{}},
+		{ValueSources{Secrets: []string{"protected"}}, "typed entry", ValueSources{Secrets: []string{"protected"}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var cfg HTTPConfig

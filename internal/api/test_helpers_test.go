@@ -214,7 +214,7 @@ func newMutationTestCatalog(t *testing.T) *catalog.Catalog {
 		Name: "slack",
 		Schema: output.Schema{
 			Fields: []output.SchemaField{
-				{Name: "webhookurl", Type: "string", Required: true, Secret: true},
+				{Name: "secret_endpoint", Type: "string", Required: true, Secret: true},
 				{Name: "channel", Type: "string"},
 			},
 		},

@@ -35,7 +35,7 @@ func TestLoadOutputsSingleFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(f, []byte(`
 outputs:
   slack:
-    webhookurl: "https://hooks.slack.com/xxx"
+    secret_endpoint: "/services/xxx"
     channel: "#alerts"
   elasticsearch:
     hostport: "https://es:9200"
@@ -45,7 +45,7 @@ outputs:
 	require.NoError(t, err)
 
 	require.Len(t, cfg.Outputs, 2)
-	assert.Equal(t, "https://hooks.slack.com/xxx", cfg.Outputs["slack"]["webhookurl"])
+	assert.Equal(t, "/services/xxx", cfg.Outputs["slack"]["secret_endpoint"])
 	assert.Equal(t, "https://es:9200", cfg.Outputs["elasticsearch"]["hostport"])
 }
 
@@ -56,7 +56,7 @@ func TestLoadOutputsMultipleFilesMerge(t *testing.T) {
 	require.NoError(t, os.WriteFile(base, []byte(`
 outputs:
   slack:
-    webhookurl: "https://hooks.slack.com/xxx"
+    secret_endpoint: "/services/xxx"
     channel: "#alerts"
     minimum_priority: notice
 `), 0o600))
@@ -74,7 +74,7 @@ outputs:
 
 	require.Len(t, cfg.Outputs, 1)
 	slack := cfg.Outputs["slack"]
-	assert.Equal(t, "https://hooks.slack.com/xxx", slack["webhookurl"], "unmodified field preserved")
+	assert.Equal(t, "/services/xxx", slack["secret_endpoint"], "unmodified field preserved")
 	assert.Equal(t, "#security", slack["channel"], "overridden field updated")
 	assert.Equal(t, "warning", slack["minimum_priority"], "overridden field updated")
 }
@@ -168,7 +168,7 @@ func TestLoadOutputsNewOutputInLaterFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(base, []byte(`
 outputs:
   slack:
-    webhookurl: "https://hooks.slack.com/xxx"
+    secret_endpoint: "/services/xxx"
 `), 0o600))
 
 	extra := filepath.Join(dir, "extra.yaml")

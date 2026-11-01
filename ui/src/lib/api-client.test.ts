@@ -170,13 +170,13 @@ describe("api-client state helpers", () => {
           name: "slack",
           category: "chat",
           schema: {
-            fields: [{ name: "webhook_url", type: "secret", label: "Webhook", required: true }],
+            fields: [{ name: "secret_endpoint", type: "secret", label: "Secret Endpoint", required: true }],
           },
         },
         {
           name: "legacy",
           category: "test",
-          fields: [{ name: "url", type: "string", label: "URL", required: true }],
+          fields: [{ name: "host", type: "string", label: "Host", required: true }],
         },
       ],
     })
@@ -186,13 +186,13 @@ describe("api-client state helpers", () => {
         name: "slack",
         category: "chat",
         schema: {
-          fields: [{ name: "webhook_url", type: "secret", label: "Webhook", required: true }],
+          fields: [{ name: "secret_endpoint", type: "secret", label: "Secret Endpoint", required: true }],
         },
       },
       {
         name: "legacy",
         category: "test",
-        schema: { fields: [{ name: "url", type: "string", label: "URL", required: true }] },
+        schema: { fields: [{ name: "host", type: "string", label: "Host", required: true }] },
       },
     ])
   })

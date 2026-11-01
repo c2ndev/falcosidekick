@@ -52,7 +52,7 @@ func TestSendBatchSafeErrorLogs(t *testing.T) {
 				]}`))
 			}))
 			t.Cleanup(server.Close)
-			d, err := createOutput(map[string]any{"url": server.URL + "/PATH_SECRET"}, output.Deps{Logger: slog.New(handler)})
+			d, err := createOutput(map[string]any{"host": server.URL, "base_path": "/PATH_SECRET"}, output.Deps{Logger: slog.New(handler)})
 			require.NoError(t, err)
 			events := []*event.Event{testutil.CreateValidEvent(), testutil.CreateValidEvent(), testutil.CreateValidEvent()}
 			err = d.(output.BatchSender).SendBatch(context.Background(), events)
@@ -96,7 +96,7 @@ func TestSendBatchSafeParseErrors(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			t.Cleanup(server.Close)
-			d, err := createOutput(map[string]any{"url": server.URL}, output.Deps{})
+			d, err := createOutput(map[string]any{"host": server.URL}, output.Deps{})
 			require.NoError(t, err)
 			err = d.(output.BatchSender).SendBatch(context.Background(), []*event.Event{testutil.CreateValidEvent()})
 			require.Error(t, err)
@@ -124,7 +124,7 @@ func TestSendBatchUsesCreateAction(t *testing.T) {
 	defer server.Close()
 
 	driver, err := createOutput(map[string]any{
-		"url":          server.URL,
+		"host":         server.URL,
 		"index":        "test",
 		"index_suffix": "none",
 	}, output.Deps{})
@@ -146,7 +146,7 @@ func TestSendBatchUsesCreateAction(t *testing.T) {
 
 func TestBuildBulkBodyIsExactNDJSON(t *testing.T) {
 	created, err := createOutput(map[string]any{
-		"url":          "http://127.0.0.1:9200",
+		"host":         "http://127.0.0.1:9200",
 		"index":        "test",
 		"index_suffix": "none",
 	}, output.Deps{})
@@ -181,7 +181,7 @@ func TestSendBatchIncludesFilterPath(t *testing.T) {
 	defer server.Close()
 
 	driver, err := createOutput(map[string]any{
-		"url":          server.URL,
+		"host":         server.URL,
 		"index_suffix": "none",
 	}, output.Deps{})
 	require.NoError(t, err)
@@ -201,7 +201,7 @@ func TestSendBatchWithPipeline(t *testing.T) {
 	defer server.Close()
 
 	driver, err := createOutput(map[string]any{
-		"url":          server.URL,
+		"host":         server.URL,
 		"index_suffix": "none",
 		"pipeline":     "enrich",
 	}, output.Deps{})
@@ -268,7 +268,7 @@ func TestSendBatchBulkFormatAndIndex(t *testing.T) {
 	defer server.Close()
 
 	driver, err := createOutput(map[string]any{
-		"url":          server.URL,
+		"host":         server.URL,
 		"index":        "alerts",
 		"index_suffix": "none",
 	}, output.Deps{})

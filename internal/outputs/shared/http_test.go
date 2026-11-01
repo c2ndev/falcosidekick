@@ -60,7 +60,7 @@ func TestApplyHeaders(t *testing.T) {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://example.com", http.NoBody)
 	require.NoError(t, err)
 
-	require.NoError(t, ApplyHeaders(req, map[string]Header{
+	require.NoError(t, ApplyHeaders(req, map[string]ValueSources{
 		"X-Custom": {Values: []string{"value"}},
 		"X-Other":  {Values: []string{"other"}},
 	}))
