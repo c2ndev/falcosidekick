@@ -194,6 +194,38 @@ func TestMainFailurePaths(t *testing.T) {
 	}
 }
 
+func TestMainStartupFailureNeverEchoesOutputValues(t *testing.T) {
+	const (
+		outputsEnv = "FALCOSIDEKICK_TEST_MAIN_OUTPUTS"
+		sentinel   = "s3cret-sentinel"
+	)
+	if path := os.Getenv(outputsEnv); path != "" {
+		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+		flag.CommandLine.SetOutput(io.Discard)
+		os.Args = []string{"falcosidekick", "-o", path}
+		main()
+		return
+	}
+
+	outputs := writeTestOutputs(t, `
+outputs:
+  webhook:
+    url: "https://u:`+sentinel+`@ho st/x"
+`)
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestMainStartupFailureNeverEchoesOutputValues$")
+	cmd.Env = append(os.Environ(), outputsEnv+"="+outputs)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, cmd.Run(), &exitErr, "stderr: %s", stderr.String())
+	assert.Equal(t, 1, exitErr.ExitCode())
+	assert.Contains(t, stderr.String(), "fatal: ")
+	assert.Contains(t, stderr.String(), "url: invalid URL")
+	assert.NotContains(t, stderr.String()+stdout.String(), sentinel)
+}
+
 func TestRunInvalidConfigPath(t *testing.T) {
 	err := run(context.Background(), "/nonexistent/config.yaml", nil)
 	require.Error(t, err)

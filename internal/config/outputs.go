@@ -17,13 +17,19 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
+
+// yamlTypeMismatchLine matches yaml.v3 type errors, which quote a prefix of the scalar.
+var yamlTypeMismatchLine = regexp.MustCompile(`^line (\d+): cannot unmarshal `)
 
 // OutputsConfig holds output definitions loaded from one or more output files and their paths.
 type OutputsConfig struct {
@@ -47,7 +53,7 @@ func LoadOutputs(paths []string) (*OutputsConfig, error) {
 
 		var raw map[string]any
 		if err := yaml.Unmarshal(data, &raw); err != nil {
-			return nil, fmt.Errorf("parse output config %q: %w", path, err)
+			return nil, fmt.Errorf("parse output config %q: %w", path, safeYAMLError(err))
 		}
 
 		for key := range raw {
@@ -58,7 +64,7 @@ func LoadOutputs(paths []string) (*OutputsConfig, error) {
 
 		var partial OutputsConfig
 		if err := yaml.Unmarshal(data, &partial); err != nil {
-			return nil, fmt.Errorf("parse output config %q: %w", path, err)
+			return nil, fmt.Errorf("parse output config %q: %w", path, safeYAMLError(err))
 		}
 
 		for name, srcCfg := range partial.Outputs {
@@ -72,4 +78,19 @@ func LoadOutputs(paths []string) (*OutputsConfig, error) {
 	}
 
 	return merged, nil
+}
+
+func safeYAMLError(err error) error {
+	typeErr, ok := errors.AsType[*yaml.TypeError](err)
+	if !ok {
+		return err
+	}
+	lines := make([]string, len(typeErr.Errors))
+	for i, line := range typeErr.Errors {
+		lines[i] = "invalid structure"
+		if m := yamlTypeMismatchLine.FindStringSubmatch(line); m != nil {
+			lines[i] = "line " + m[1] + ": invalid structure"
+		}
+	}
+	return errors.New("yaml: " + strings.Join(lines, "; "))
 }

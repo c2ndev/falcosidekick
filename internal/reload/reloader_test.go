@@ -17,6 +17,7 @@
 package reload
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -40,6 +41,7 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/webhook"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
 )
 
@@ -856,6 +858,81 @@ func TestReloaderApplyOutput_InitFailureLeavesStateUnchanged(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "apply init")
 	assert.Empty(t, env.d.OutputNames(), "dispatcher must be untouched on Init failure")
+}
+
+func TestReloaderApplyOutput_RejectedConfigNeverEchoesValues(t *testing.T) {
+	const sentinel = "s3cret-sentinel"
+	cat, err := catalog.New([]output.Type{webhook.OutputType})
+	require.NoError(t, err)
+
+	env := newReloaderTestEnv(t, nil)
+	defer env.shutdown(t)
+
+	r := newApplyReloader(t, cat, env, map[string]map[string]any{})
+
+	err = r.ApplyOutput(context.Background(), "webhook", map[string]any{"url": "https://u:" + sentinel + "@ho st/x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "url: invalid URL")
+	assert.NotContains(t, err.Error(), sentinel)
+	assert.Empty(t, env.d.OutputNames(), "dispatcher must be untouched on rejected config")
+}
+
+func TestReloaderFileReloadNeverEchoesValues(t *testing.T) {
+	const sentinel = "s3cret-sentinel"
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "rejected url",
+			content: "outputs:\n  webhook:\n    url: \"https://u:" + sentinel + "@ho st/x\"\n",
+			want:    "url: invalid URL",
+		},
+		{
+			name:    "rejected secret type",
+			content: "outputs:\n  webhook:\n    url: https://h/x\n    password:\n      a: " + sentinel + "\n",
+			want:    "password: invalid type",
+		},
+		{
+			name:    "wrong file structure",
+			content: "outputs:\n  webhook: " + sentinel + "\n",
+			want:    "invalid structure",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "outputs.yaml")
+			writeOutputsYAML(t, path, tc.content)
+
+			cat, err := catalog.New([]output.Type{webhook.OutputType})
+			require.NoError(t, err)
+
+			env := newReloaderTestEnv(t, nil)
+			defer env.shutdown(t)
+
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			r := NewReloader(&ReloaderConfig{
+				OutputPaths:     []string{path},
+				Catalog:         cat,
+				Dispatcher:      env.d,
+				RuntimeDefaults: testutil.DefaultRuntimeConfig(),
+				Deps:            output.Deps{Logger: logger},
+				Logger:          logger,
+				InitialOutputs:  map[string]map[string]any{},
+			})
+
+			reloadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			err = r.Reload(reloadCtx, env.workerRunCtx, 10*time.Second)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+			assert.NotContains(t, err.Error(), "s3cret")
+			assert.NotContains(t, logs.String(), "s3cret")
+			assert.Empty(t, env.d.OutputNames(), "dispatcher must be untouched on rejected config")
+		})
+	}
 }
 
 func TestReloaderRemoveOutput_RemovesFromDispatcher(t *testing.T) {

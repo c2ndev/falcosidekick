@@ -76,7 +76,7 @@ func (d *driver) RuntimeConfig() output.RuntimeConfig { return d.cfg.Runtime }
 func (c *config) validate() utils.ValidationErrors {
 	var errs utils.ValidationErrors
 	errs.Merge("", c.HTTPConfig.Validate())
-	errs.Merge("hosts", shared.ValidateHosts(c.Hosts))
+	errs.Merge("hosts", shared.ValidateHTTPHosts(c.Hosts))
 	errs.Merge("endpoint", shared.ValidateEndpoint(c.Endpoint))
 	if c.Endpoint == "" {
 		c.Endpoint = defaultEndpoint

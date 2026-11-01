@@ -17,12 +17,14 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
@@ -229,4 +231,38 @@ func TestDeepMerge(t *testing.T) {
 			assert.Equal(t, tt.want, tt.dst)
 		})
 	}
+}
+
+func TestLoadOutputsParseErrorsNeverQuoteValues(t *testing.T) {
+	const sentinel = "s3cret-sentinel"
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{name: "scalar outputs", content: "outputs: \"" + sentinel + "\"\n", want: "line 1: invalid structure"},
+		{name: "scalar output", content: "outputs:\n  hook: \"" + sentinel + "\"\n", want: "line 2: invalid structure"},
+		{name: "scalar document", content: sentinel + "\n", want: "line 1: invalid structure"},
+		{name: "syntax error", content: "outputs:\n  hook:\n    url: \"" + sentinel + "\n", want: "line 3"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "outputs.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(tc.content), 0o600))
+
+			_, err := LoadOutputs([]string{path})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "parse output config")
+			assert.Contains(t, err.Error(), tc.want)
+			assert.NotContains(t, err.Error(), "s3cret")
+		})
+	}
+}
+
+func TestSafeYAMLErrorFailsClosed(t *testing.T) {
+	err := safeYAMLError(&yaml.TypeError{Errors: []string{"future text s3cret-sentinel"}})
+	assert.Equal(t, "yaml: invalid structure", err.Error())
+
+	plain := errors.New("yaml: line 2: mapping values are not allowed in this context")
+	assert.Equal(t, plain, safeYAMLError(plain))
 }

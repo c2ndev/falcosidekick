@@ -90,9 +90,9 @@ func normalizeOrigin(u *url.URL) (httpOrigin, bool) {
 	}
 	origin := httpOrigin{scheme: strings.ToLower(u.Scheme)}
 	switch origin.scheme {
-	case "http":
+	case schemeHTTP:
 		origin.port = 80
-	case "https":
+	case schemeHTTPS:
 		origin.port = 443
 	default:
 		return httpOrigin{}, false

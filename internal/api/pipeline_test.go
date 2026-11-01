@@ -37,6 +37,7 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/domain/event"
 	"github.com/falcosecurity/falcosidekick/internal/domain/output"
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/webhook"
 	"github.com/falcosecurity/falcosidekick/internal/pipeline"
 )
 
@@ -720,6 +721,74 @@ func TestHandlePipelineOutputPut_UnknownTypeRejected(t *testing.T) {
 	stored, err := db.GetOutputConfig(t.Context(), "not-a-type")
 	require.NoError(t, err)
 	assert.Nil(t, stored)
+}
+
+func TestHandlePipelineOutputPut_RejectedConfigNeverEchoesValues(t *testing.T) {
+	const sentinel = "s3cret-sentinel"
+	cat, err := catalog.New([]output.Type{webhook.OutputType})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "malformed url", body: `{"config":{"url":"https://u:` + sentinel + `@ho st/x"}}`, want: "url: invalid URL"},
+		{name: "unsupported scheme", body: `{"config":{"url":"ftp://u:` + sentinel + `@host/x"}}`, want: "url: scheme must be http or https"},
+		{name: "wrong secret type", body: `{"config":{"url":"https://h/x","password":{"a":"` + sentinel + `"}}}`, want: "password: invalid type"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := buildMutationRig(t, database.NewMemory(), cat, true)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/api/v1/pipeline/outputs/webhook", bytes.NewReader([]byte(tc.body)))
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := rig.Server.app.Test(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			respBody, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+			assert.Contains(t, string(respBody), tc.want)
+			assert.NotContains(t, string(respBody), sentinel)
+		})
+	}
+}
+
+func TestHandlePipelineOutputPut_SecretFileFailureReturns500(t *testing.T) {
+	cat, err := catalog.New([]output.Type{webhook.OutputType})
+	require.NoError(t, err)
+	rig := buildMutationRig(t, database.NewMemory(), cat, true)
+
+	body := bytes.NewReader([]byte(`{"config":{"url":"https://h/x","password_file":"/nonexistent/secret"}}`))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/api/v1/pipeline/outputs/webhook", body)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := rig.Server.app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+}
+
+func TestHandlePipelineOutputPut_InvalidBodyNeverEchoesValues(t *testing.T) {
+	const sentinel = "s3cret-sentinel"
+	for name, body := range map[string]string{
+		"scalar config": `{"config":"` + sentinel + `"}`,
+		"truncated":     `{"config":{"password":"` + sentinel,
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := buildMutationTestServer(t, database.NewMemory())
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/api/v1/pipeline/outputs/slack", bytes.NewReader([]byte(body)))
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := srv.app.Test(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			respBody, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+			assert.NotContains(t, string(respBody), "s3cret")
+		})
+	}
 }
 
 func TestHandlePipelineOutputPut_BadJSONReturns400(t *testing.T) {

@@ -277,6 +277,8 @@ func (s *Server) writeMutationError(c fiber.Ctx, name, verb string, err error) e
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "dispatcher stopped"})
 	case errors.Is(err, reload.ErrReloaderNotBound):
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "reloader not bound"})
+	case errors.Is(err, pipeline.ErrInvalidOutputConfig):
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": verb + " output: " + err.Error()})
 	case errors.Is(err, reload.ErrDBSyncFailed):
 		var body string
 		switch verb {

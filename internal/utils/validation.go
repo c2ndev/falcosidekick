@@ -51,7 +51,11 @@ func (ve *ValidationErrors) Add(field, msg string) {
 func (ve *ValidationErrors) Merge(prefix string, nested ValidationErrors) {
 	for _, err := range nested {
 		field := err.Field
-		if prefix != "" {
+		switch {
+		case prefix == "":
+		case field == "":
+			field = prefix
+		default:
 			field = prefix + "." + field
 		}
 		ve.Add(field, err.Message)

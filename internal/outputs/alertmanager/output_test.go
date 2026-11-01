@@ -35,6 +35,16 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/outputs/testutil"
 )
 
+func TestConstructorRejectsNonHTTPHostsWithoutEchoingThem(t *testing.T) {
+	const sentinel = "s3cret-sentinel"
+	_, err := OutputType.New(map[string]any{
+		"hosts": []string{"http://am:9093", "ftp://u:" + sentinel + "@am:9093"},
+	}, output.Deps{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "hosts: entry [1] scheme must be http or https")
+	assert.NotContains(t, err.Error(), sentinel)
+}
+
 func TestFanOutSafeDiagnostics(t *testing.T) {
 	for _, format := range []string{"text", "json"} {
 		for _, allFail := range []bool{false, true} {

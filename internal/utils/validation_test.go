@@ -75,6 +75,26 @@ func TestValidationErrorsMergeEmptyPrefix(t *testing.T) {
 	assert.Equal(t, "queue_size", parent[0].Field)
 }
 
+func TestValidationErrorsMergeFieldFormatting(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix string
+		field  string
+		want   string
+	}{
+		{name: "prefix and field", prefix: "tls", field: "cert", want: "tls.cert: bad"},
+		{name: "prefix only", prefix: "url", field: "", want: "url: bad"},
+		{name: "field only", prefix: "", field: "cert", want: "cert: bad"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var parent ValidationErrors
+			parent.Merge(tc.prefix, ValidationErrors{{Field: tc.field, Message: "bad"}})
+			assert.Equal(t, tc.want, parent.Error())
+		})
+	}
+}
+
 func TestValidationErrorsMergeNilChild(t *testing.T) {
 	var parent ValidationErrors
 	parent.Merge("prefix", nil)

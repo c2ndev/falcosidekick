@@ -24,22 +24,24 @@ import (
 	"github.com/falcosecurity/falcosidekick/internal/utils"
 )
 
+const (
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
+)
+
 var endpointRegex = regexp.MustCompile(`^/[\w/.%:@!$&'()*+,;=-]*$`)
 
-// ValidateURL checks that a value is a valid URL with scheme and host.
+// Validation messages never include the value or url.Parse causes: URLs can carry credentials.
+
+// ValidateURL checks that a value is a valid HTTP(S) URL with scheme and host.
 func ValidateURL(value string) utils.ValidationErrors {
 	var errs utils.ValidationErrors
 	if value == "" {
 		errs.Add("", "is required")
 		return errs
 	}
-	u, err := url.Parse(value)
-	if err != nil {
-		errs.Add("", fmt.Sprintf("invalid URL %q: %v", value, err))
-		return errs
-	}
-	if u.Scheme == "" || u.Host == "" {
-		errs.Add("", fmt.Sprintf("must include scheme and host (e.g. https://host:port), got %q", value))
+	if problem := urlProblem(value, true); problem != "" {
+		errs.Add("", problem)
 	}
 	return errs
 }
@@ -51,13 +53,22 @@ func ValidateEndpoint(value string) utils.ValidationErrors {
 		return errs
 	}
 	if !endpointRegex.MatchString(value) {
-		errs.Add("", fmt.Sprintf("must be a valid path starting with / (e.g. /api/v1), got %q", value))
+		errs.Add("", "must be a valid path starting with / (e.g. /api/v1)")
 	}
 	return errs
 }
 
 // ValidateHosts checks that hosts is non-empty and each entry has scheme and host.
 func ValidateHosts(hosts []string) utils.ValidationErrors {
+	return validateHosts(hosts, false)
+}
+
+// ValidateHTTPHosts is ValidateHosts restricted to HTTP(S) schemes.
+func ValidateHTTPHosts(hosts []string) utils.ValidationErrors {
+	return validateHosts(hosts, true)
+}
+
+func validateHosts(hosts []string, httpOnly bool) utils.ValidationErrors {
 	var errs utils.ValidationErrors
 	if len(hosts) == 0 {
 		errs.Add("", "is required")
@@ -68,14 +79,23 @@ func ValidateHosts(hosts []string) utils.ValidationErrors {
 			errs.Add("", fmt.Sprintf("entry [%d] must not be empty", i))
 			continue
 		}
-		u, err := url.Parse(h)
-		if err != nil {
-			errs.Add("", fmt.Sprintf("entry [%d] invalid URL %q: %v", i, h, err))
-			continue
-		}
-		if u.Scheme == "" || u.Host == "" {
-			errs.Add("", fmt.Sprintf("entry [%d] must include scheme and host, got %q", i, h))
+		if problem := urlProblem(h, httpOnly); problem != "" {
+			errs.Add("", fmt.Sprintf("entry [%d] %s", i, problem))
 		}
 	}
 	return errs
+}
+
+func urlProblem(value string, httpOnly bool) string {
+	u, err := url.Parse(value)
+	if err != nil {
+		return "invalid URL"
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return "must include scheme and host (e.g. https://host:port)"
+	}
+	if httpOnly && u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS {
+		return "scheme must be http or https"
+	}
+	return ""
 }

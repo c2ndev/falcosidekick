@@ -88,6 +88,7 @@ func TestBuildOutput_CatalogCreateError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, out)
 	assert.ErrorIs(t, err, createErr, "create error must propagate via %%w")
+	assert.ErrorIs(t, err, pipeline.ErrInvalidOutputConfig)
 	assert.Contains(t, err.Error(), "create:", "error must carry the create: prefix")
 }
 
@@ -109,6 +110,7 @@ func TestBuildOutput_InitError(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, out)
 	assert.ErrorIs(t, err, initErr)
+	assert.NotErrorIs(t, err, pipeline.ErrInvalidOutputConfig, "init failures are not config rejections")
 	assert.Contains(t, err.Error(), "init:")
 	assert.Equal(t, int32(1), closeCalls.Load(), "driver must be closed on Init failure")
 }
@@ -131,6 +133,7 @@ func TestBuildOutput_RuntimeMergeError(t *testing.T) {
 	out, err := pipeline.BuildOutput(context.Background(), cat, "slack", map[string]any{}, testutil.DefaultRuntimeConfig(), output.Deps{})
 	require.Error(t, err)
 	assert.Nil(t, out)
+	assert.ErrorIs(t, err, pipeline.ErrInvalidOutputConfig)
 	assert.Contains(t, err.Error(), "runtime merge:")
 	assert.Equal(t, int32(1), closeCalls.Load(), "driver must be closed on merge failure")
 }
