@@ -205,7 +205,7 @@ aws:
     # minimumpriority: "" # minimum priority of event for using this output, order is emergency|alert|critical|error|warning|notice|informational|debug or "" (default)
     # endpoint: "" # endpoint URL that overrides the default generated endpoint, use this for S3 compatible APIs
     # objectcannedacl: "bucket-owner-full-control" # Canned ACL (x-amz-acl) to use when creating the object
-  securitylake.:
+  securitylake:
     # bucket: "" # Bucket for AWS SecurityLake data, if not empty, AWS SecurityLake output is enabled
     # region: "" # Bucket Region  (mandatory)
     # prefix: "" # Prefix for keys  (mandatory)
@@ -304,6 +304,12 @@ gcp:
   cloudrun:
     endpoint: "" # The URL of the Cloud Function
     jwt: "" # Appropriate JWT to invoke the Cloud Function
+    # minimumpriority: "debug" # minimum priority of event for using this output, order is emergency|alert|critical|error|warning|notice|informational|debug or "" (default)
+  chronicle:
+    # projectid: "" # The GCP Project ID containing the Chronicle instance
+    # instanceid: "" # The Chronicle instance ID
+    # region: "" # The Chronicle region (e.g., "us", "europe-west12")
+    # logtype: "FALCO_IDS" # The log type identifier (default: "FALCO_IDS")
     # minimumpriority: "debug" # minimum priority of event for using this output, order is emergency|alert|critical|error|warning|notice|informational|debug or "" (default)
 
 googlechat:
@@ -499,8 +505,10 @@ redis:
   # minimumpriority: "" # minimum priority of event for using this output, order is emergency|alert|critical|error|warning|notice|informational|debug or "" (default)
 
 telegram:
+  # host: "https://api.telegram.org" # telegram bot api host (default: https://api.telegram.org)
   # token: "" # telegram bot authentication token
   # chatid: "" # telegram Identifier of the shared chat
+  # messagethreadid: "" # telegram individual chats (topics) within the group
   # checkcert: true # check if ssl certificate of the output is valid (default: true)
   # minimumpriority: "" # minimum priority of event for using this output, order is emergency|alert|critical|error|warning|notice|informational|debug or "" (default)
 
@@ -551,7 +559,8 @@ otlp:
       # OTEL_EXPORTER_OTLP_TRACES_TIMEOUT: 10000
       # OTEL_EXPORTER_OTLP_TIMEOUT: 10000
     # minimumpriority: "" # minimum priority of event for using this output, order is emergency|alert|critical|error|warning|notice|informational|debug or "" (default)
-    # checkcert: true # Set if you want to skip TLS certificate validation (default: true)
+    # tls: false # Use TLS for the connection (default: false)
+    # checkcert: true # Set to false to skip TLS certificate validation (only when tls is true) (default: true)
   logs:
     # endpoint: "" # OTLP endpoint in the form of http(s)://{domain or ip}:4318(/v1/logs), if not empty, OTLP Traces output is enabled
     # protocol: "" # OTLP protocol http/json, http/protobuf, grpc (default: "" which uses SDK default: http/json)
@@ -561,7 +570,8 @@ otlp:
       # OTEL_EXPORTER_OTLP_TRACES_TIMEOUT: 10000
       # OTEL_EXPORTER_OTLP_TIMEOUT: 10000
     # minimumpriority: "" # minimum priority of event for using this output, order is emergency|alert|critical|error|warning|notice|informational|debug or "" (default)
-    # checkcert: true # Set if you want to skip TLS certificate validation (default: true)
+    # tls: false # Use TLS for the connection (default: false)
+    # checkcert: true # Set to false to skip TLS certificate validation (only when tls is true) (default: true)
   metrics:
     # endpoint: "" # OTLP endpoint, typically in the form http(s)://{domain or ip}:4318(/v1/metrics), if not empty, OTLP Metrics output is enabled
     # protocol: "" # OTLP transport protocol to be used for metrics data; it can be "grpc" or "http/protobuf" (default: "grpc")
@@ -571,7 +581,8 @@ otlp:
       # OTEL_EXPORTER_OTLP_METRICS_TIMEOUT: 10000
       # OTEL_EXPORTER_OTLP_TIMEOUT: 10000
     # minimumpriority: "" # Minimum priority of event for using this output, order is emergency|alert|critical|error|warning|notice|informational|debug or "" (default: "")
-    # checkcert: true # Set to false if you want to skip TLS certificate validation (only with https) (default: true)
+    # tls: false # Use TLS for the connection (default: false)
+    # checkcert: true # Set to false to skip TLS certificate validation (only when tls is true) (default: true)
     # extraattributes: "" # Comma-separated list of fields to use as labels additionally to source, priority, rule, hostname, tags, k8s_ns_name, k8s_pod_name and custom_fields
 
 talon:

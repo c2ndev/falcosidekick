@@ -34,6 +34,7 @@ import (
 	"github.com/segmentio/kafka-go"
 	logstash "github.com/telkomdev/go-stash"
 	wavefront "github.com/wavefronthq/wavefront-sdk-go/senders"
+	"golang.org/x/oauth2"
 	"golang.org/x/sync/semaphore"
 	"k8s.io/client-go/kubernetes"
 	crdClient "sigs.k8s.io/wg-policy-prototypes/policy-report/pkg/generated/v1alpha2/clientset/versioned"
@@ -116,6 +117,8 @@ type Client struct {
 	DogstatsdClient         *statsd.Client
 	GCPTopicClient          *pubsub.Topic
 	GCPCloudFunctionsClient *gcpfunctions.CloudFunctionsClient
+	GCPChronicleClient      *http.Client
+	GCPTokenSource          oauth2.TokenSource
 
 	GCSStorageClient  *storage.Client
 	KafkaProducer     *kafka.Writer
@@ -480,7 +483,9 @@ func (c *Client) configureTransport() (*http.Transport, error) {
 		if err != nil {
 			return customTransport, err
 		}
-		customTransport.TLSClientConfig.RootCAs.AppendCertsFromPEM(caCert)
+		if !customTransport.TLSClientConfig.RootCAs.AppendCertsFromPEM(caCert) {
+			return customTransport, fmt.Errorf("tlsclient.cacertfile %s contains no valid PEM certificates", c.Config.TLSClient.CaCertFile)
+		}
 	}
 
 	if c.cfg.MutualTLS {
@@ -511,14 +516,14 @@ func (c *Client) configureTransport() (*http.Transport, error) {
 		if err != nil {
 			return customTransport, err
 		}
-		customTransport.TLSClientConfig.RootCAs.AppendCertsFromPEM(caCert)
+		if !customTransport.TLSClientConfig.RootCAs.AppendCertsFromPEM(caCert) {
+			return customTransport, fmt.Errorf("mutual TLS CA cert file %s contains no valid PEM certificates", MutualTLSClientCaCertPath)
+		}
 		customTransport.TLSClientConfig.Certificates = []tls.Certificate{cert}
 	} else {
 		// With MutualTLS enabled, the check cert flag is ignored
 		if !c.cfg.CheckCert {
-			customTransport.TLSClientConfig = &tls.Config{
-				InsecureSkipVerify: true, // #nosec G402 This is only set as a result of explicit configuration
-			}
+			customTransport.TLSClientConfig = utils.InsecureSkipVerifyTLSConfig()
 		}
 	}
 	return customTransport, nil

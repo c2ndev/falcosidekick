@@ -29,6 +29,10 @@ import (
 // and that was limiting the the number of requests to 1 at a time.
 const defaultMaxConcurrentHttpRequests = 1
 
+// chronicleFieldRegex to check Region, ProjectID, InstanceID, and LogType
+// so they are safe to interpolate into Chronicle API URLs (no /, ?, .., etc.).
+var chronicleFieldRegex = regexp.MustCompile("^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
+
 // Common http outputs defaults
 var commonHttpOutputDefaults = map[string]any{
 	"MutualTLS": false,
@@ -252,6 +256,7 @@ var httpOutputDefaults = map[string]map[string]any{
 		"Database":        0,
 		"StorageType":     "list",
 		"Key":             "falco",
+		"CheckCert":       true,
 		"MinimumPriority": "",
 	},
 	"OpenObserve": {
@@ -403,8 +408,10 @@ var outputDefaults = map[string]map[string]any{
 		"CheckCert":       true,
 	},
 	"Telegram": {
+		"Host":            "https://api.telegram.org",
 		"Token":           "",
 		"ChatID":          "",
+		"MessageThreadID": "",
 		"MinimumPriority": "",
 		"CheckCert":       true,
 	},
@@ -570,6 +577,12 @@ func getConfig() *types.Configuration {
 	v.SetDefault("GCP.CloudRun.JWT", "")
 	v.SetDefault("GCP.CloudRun.MinimumPriority", "")
 
+	v.SetDefault("GCP.Chronicle.MinimumPriority", "")
+	v.SetDefault("GCP.Chronicle.Region", "")
+	v.SetDefault("GCP.Chronicle.ProjectID", "")
+	v.SetDefault("GCP.Chronicle.InstanceID", "")
+	v.SetDefault("GCP.Chronicle.LogType", "FALCO_IDS")
+
 	v.SetDefault("Yandex.AccessKeyID", "")
 	v.SetDefault("Yandex.SecretAccessKey", "")
 	v.SetDefault("Yandex.Region", "ru-central1")
@@ -593,6 +606,7 @@ func getConfig() *types.Configuration {
 	v.SetDefault("OTLP.Traces.Timeout", 10000)
 	v.SetDefault("OTLP.Traces.Synced", false)
 	v.SetDefault("OTLP.Traces.MinimumPriority", "")
+	v.SetDefault("OTLP.Traces.TLS", false)
 	v.SetDefault("OTLP.Traces.CheckCert", true)
 	// NB: Unfortunately falco events don't provide endtime, artificially set
 	// it to 1000ms by default, override-able via OTLP_DURATION environment variable.
@@ -607,6 +621,7 @@ func getConfig() *types.Configuration {
 	v.SetDefault("OTLP.Logs.Headers", "")
 	v.SetDefault("OTLP.Logs.Timeout", 10000)
 	v.SetDefault("OTLP.Logs.MinimumPriority", "")
+	v.SetDefault("OTLP.Logs.TLS", false)
 	v.SetDefault("OTLP.Logs.CheckCert", true)
 
 	v.SetDefault("OTLP.Metrics.Endpoint", "")
@@ -616,6 +631,7 @@ func getConfig() *types.Configuration {
 	v.SetDefault("OTLP.Metrics.Headers", "")
 	v.SetDefault("OTLP.Metrics.Timeout", 10000)
 	v.SetDefault("OTLP.Metrics.MinimumPriority", "")
+	v.SetDefault("OTLP.Metrics.TLS", false)
 	v.SetDefault("OTLP.Metrics.CheckCert", true)
 	v.SetDefault("OTLP.Metrics.ExtraAttributes", "")
 
@@ -915,6 +931,10 @@ func getConfig() *types.Configuration {
 		})
 	}
 
+	if c.Telegram.Host == "" {
+		c.Telegram.Host = "https://api.telegram.org"
+	}
+
 	c.Slack.MinimumPriority = checkPriority(c.Slack.MinimumPriority)
 	c.Rocketchat.MinimumPriority = checkPriority(c.Rocketchat.MinimumPriority)
 	c.Mattermost.MinimumPriority = checkPriority(c.Mattermost.MinimumPriority)
@@ -946,6 +966,9 @@ func getConfig() *types.Configuration {
 	c.GCP.Storage.MinimumPriority = checkPriority(c.GCP.Storage.MinimumPriority)
 	c.GCP.CloudFunctions.MinimumPriority = checkPriority(c.GCP.CloudFunctions.MinimumPriority)
 	c.GCP.CloudRun.MinimumPriority = checkPriority(c.GCP.CloudRun.MinimumPriority)
+	c.GCP.Chronicle.MinimumPriority = checkPriority(c.GCP.Chronicle.MinimumPriority)
+	// Chronicle config is validated because Region, ProjectID, InstanceID, and LogType are interpolated into API URLs.
+	validateChronicleConfig(c)
 	c.Googlechat.MinimumPriority = checkPriority(c.Googlechat.MinimumPriority)
 	c.Cliq.MinimumPriority = checkPriority(c.Cliq.MinimumPriority)
 	c.Kafka.MinimumPriority = checkPriority(c.Kafka.MinimumPriority)
@@ -994,6 +1017,23 @@ func checkPriority(prio string) string {
 	}
 
 	return ""
+}
+
+func validateChronicleConfig(c *types.Configuration) {
+	fields := []struct {
+		name  string
+		value string
+	}{
+		{"Region", c.GCP.Chronicle.Region},
+		{"ProjectID", c.GCP.Chronicle.ProjectID},
+		{"InstanceID", c.GCP.Chronicle.InstanceID},
+		{"LogType", c.GCP.Chronicle.LogType},
+	}
+	for _, f := range fields {
+		if f.value != "" && !chronicleFieldRegex.MatchString(f.value) {
+			utils.Log(utils.FatalLvl, "GCP Chronicle", fmt.Sprintf("invalid %s %q: must match ^[a-zA-Z0-9][a-zA-Z0-9_-]*$", f.name, f.value))
+		}
+	}
 }
 
 func getMessageFormatTemplate(output, temp string) *template.Template {

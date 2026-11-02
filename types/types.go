@@ -29,6 +29,23 @@ type FalcoPayload struct {
 	Hostname     string                 `json:"hostname,omitempty"`
 }
 
+// DeepCopy returns a deep copy of the FalcoPayload, duplicating the OutputFields
+// map and Tags slice so concurrent goroutines can safely read without racing.
+func (f FalcoPayload) DeepCopy() FalcoPayload {
+	c := f
+	if f.OutputFields != nil {
+		c.OutputFields = make(map[string]interface{}, len(f.OutputFields))
+		for k, v := range f.OutputFields {
+			c.OutputFields[k] = v
+		}
+	}
+	if f.Tags != nil {
+		c.Tags = make([]string, len(f.Tags))
+		copy(c.Tags, f.Tags)
+	}
+	return c
+}
+
 func (f FalcoPayload) String() string {
 	j, _ := json.Marshal(f)
 	return string(j)
@@ -536,6 +553,7 @@ type GcpOutputConfig struct {
 	Storage          gcpStorage
 	CloudFunctions   gcpCloudFunctions
 	CloudRun         gcpCloudRun
+	Chronicle        gcpChronicle
 }
 
 type gcpCloudFunctions struct {
@@ -554,6 +572,14 @@ type gcpStorage struct {
 	Bucket          string
 	Prefix          string
 	MinimumPriority string
+}
+
+type gcpChronicle struct {
+	MinimumPriority string
+	Region          string
+	ProjectID       string
+	InstanceID      string
+	LogType         string
 }
 
 // GooglechatConfig represents parameters for Google chat
@@ -768,11 +794,16 @@ type RedisConfig struct {
 	Version         int
 	MinimumPriority string
 	CheckCert       bool
+	TLS             bool
 	MutualTLS       bool
+	CertFile        string
+	KeyFile         string
+	CaCertFile      string
 }
 
 // TelegramConfig represents parameters for Telegram
 type TelegramConfig struct {
+	Host            string
 	Token           string
 	ChatID          string
 	MinimumPriority string
@@ -819,11 +850,12 @@ type OTLPTraces struct {
 	Duration        int64
 	Synced          bool
 	ExtraEnvVars    map[string]string
+	TLS             bool
 	CheckCert       bool
 	MinimumPriority string
 }
 
-// OTLPLogs represents config parameters for OTLP Traces
+// OTLPLogs represents config parameters for OTLP Logs
 type OTLPLogs struct {
 	Endpoint        string
 	Protocol        string
@@ -831,6 +863,7 @@ type OTLPLogs struct {
 	Synced          bool
 	Headers         string
 	ExtraEnvVars    map[string]string
+	TLS             bool
 	CheckCert       bool
 	MinimumPriority string
 }
@@ -938,6 +971,7 @@ type Statistics struct {
 	Talon             *expvar.Map
 	Logstash          *expvar.Map
 	Splunk            *expvar.Map
+	GCPChronicle      *expvar.Map
 }
 
 // PromStatistics is a struct to store prometheus metrics
