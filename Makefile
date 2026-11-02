@@ -185,7 +185,7 @@ clean: ## Remove build artifacts
 BUN            ?= $(HOME)/.bun/bin/bun
 V3_BINARY_UI   := falcosidekick-v3
 V3_BINARY_SLIM := falcosidekick-v3-slim
-V3_IMAGE       ?= ghcr.io/c2ndev/falcosidekick
+V3_IMAGE       ?= falcosidekick
 V3_DIST        := dist
 
 # v3 version string: closest v3.* tag, or `v3-dev-<short-sha>` before the
@@ -226,7 +226,7 @@ ui-v3-test: ## Run UI unit/component tests via Bun test + happy-dom
 	cd ui && $(BUN) test
 
 .PHONY: ui-v3-dev-cluster
-ui-v3-dev-cluster: ## Run the UI dev server against a backend running in the current kube-context
+ui-v3-dev-cluster: ## Run the UI dev server against a backend running in the selected kind cluster
 	hack/ui-dev-cluster.sh
 
 .PHONY: falcosidekick-v3
@@ -300,12 +300,16 @@ v3-test-ui-tag: ui-v3-build ## Run v3 Go tests with -tags=builtinui (includes ./
 	$(GO) vet -tags=builtinui $(V3_PACKAGES) ./ui
 	$(GO) test -tags=builtinui $(TEST_FLAGS) $(V3_PACKAGES) ./ui
 
+.PHONY: v3-test-hack
+v3-test-hack: ## Run release and helper script tests
+	$(GO) test $(TEST_FLAGS) ./hack
+
 .PHONY: v3-lint-full
 v3-lint-full: ## Run golangci-lint across v3 Go packages including ./ui
 	golangci-lint run $(V3_PACKAGES) ./ui ./hack
 
 .PHONY: v3-verify-full
-v3-verify-full: v3-lint-full v3-test-default v3-test-ui-tag ui-v3-build ui-v3-lint ui-v3-typecheck ui-v3-test ## Full v3 verification: Go default + tagged, golangci, Bun install/build/lint/typecheck/test
+v3-verify-full: v3-lint-full v3-test-default v3-test-hack v3-test-ui-tag ui-v3-build ui-v3-lint ui-v3-typecheck ui-v3-test ## Full v3 verification: Go default + tagged, golangci, Bun install/build/lint/typecheck/test
 
 .PHONY: v3-live-test
 v3-live-test: build-image-v3-local ## Deploy v3 to the local kind cluster and run the live-test protocol

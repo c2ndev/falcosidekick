@@ -5,21 +5,16 @@ set -euo pipefail
 # See README.md in this directory for the criteria.
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMAGE="${V3_IMAGE:-ghcr.io/c2ndev/falcosidekick}:${V3_TAG:-v3-local}"
-NAMESPACE="${V3_NAMESPACE:-falco}"
+# shellcheck source=hack/lib/cluster.sh
+source "$HERE/../lib/cluster.sh"
+NAMESPACE="$HELPER_NAMESPACE"
+MANIFESTS=("$HERE/webhook-receiver.yaml" "$HERE/component.yaml")
+IMAGE="${V3_IMAGE:-falcosidekick}:${V3_TAG:-v3-local}"
 LOCAL_PORT="${V3_LOCAL_PORT:-28010}"
 TIMEOUT_READY="${V3_TIMEOUT_READY:-90s}"
 FALCO_PROPAGATION_WAIT="${V3_FALCO_WAIT:-30}"
 WEBHOOK_WAIT="${V3_WEBHOOK_WAIT:-8}"
 
-# Auto-detect the kind cluster name when only one exists; override with V3_KIND_CLUSTER.
-if [[ -z "${V3_KIND_CLUSTER:-}" ]]; then
-  _kind_clusters=$(kind get clusters 2>/dev/null || true)
-  if [[ $(echo "$_kind_clusters" | grep -c .) -eq 1 ]]; then
-    V3_KIND_CLUSTER="$(echo "$_kind_clusters" | head -1)"
-  fi
-fi
-KIND_CLUSTER="${V3_KIND_CLUSTER:-kind}"
 FAIL=0
 PF_PID=""
 
@@ -31,37 +26,43 @@ cleanup() {
     kill "$PF_PID" 2>/dev/null || true
     wait "$PF_PID" 2>/dev/null || true
   fi
-  log "teardown: deleting Component + webhook-receiver"
-  kubectl delete --ignore-not-found -f "$HERE/component.yaml" >/dev/null 2>&1 || true
-  kubectl delete --ignore-not-found -f "$HERE/webhook-receiver.yaml" >/dev/null 2>&1 || true
+  if [[ "$HELPER_APPLIED" -eq 1 ]]; then
+    log "teardown: deleting resources owned by this helper"
+  fi
+  teardown_owned
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 require() { command -v "$1" >/dev/null 2>&1 || { fail "missing required binary: $1"; exit 1; }; }
 require kubectl
 require kind
 require docker
 
-log "1/9 cluster reachable?"
-kubectl cluster-info >/dev/null || { fail "no cluster reachable (kubectl cluster-info)"; exit 1; }
+KIND_CLUSTER="$(resolve_cluster "${V3_KIND_CLUSTER:-}")" || { fail "set V3_KIND_CLUSTER to select the cluster"; exit 1; }
+use_cluster "$KIND_CLUSTER"
+
+log "1/9 cluster reachable? (context $HELPER_CONTEXT)"
+kctl cluster-info >/dev/null || { fail "no cluster reachable (context $HELPER_CONTEXT)"; exit 1; }
+require_owned "${MANIFESTS[@]}" || { fail "existing resources are not owned by this helper"; exit 1; }
 
 log "2/9 loading image $IMAGE into kind cluster '$KIND_CLUSTER'"
 kind load docker-image --name "$KIND_CLUSTER" "$IMAGE" >/dev/null \
   || { fail "kind load docker-image failed (cluster: $KIND_CLUSTER). Build it first via 'make build-image-v3-local'"; exit 1; }
 
 log "3/9 applying webhook-receiver + Component CR"
-kubectl apply -f "$HERE/webhook-receiver.yaml" >/dev/null
-kubectl apply -f "$HERE/component.yaml" >/dev/null
+apply_owned "${MANIFESTS[@]}"
 
 log "4/9 waiting for webhook-receiver + falcosidekick to be Ready (timeout $TIMEOUT_READY)"
-kubectl -n "$NAMESPACE" rollout status deployment/webhook-receiver --timeout="$TIMEOUT_READY" \
+kctl -n "$NAMESPACE" rollout status deployment/webhook-receiver --timeout="$TIMEOUT_READY" \
   || { fail "webhook-receiver did not become Ready"; exit 1; }
 
 # The falco-operator reconciles the Component CR into a Deployment asynchronously,
 # so the pod may not exist immediately. Poll for its existence, then wait for Ready.
 sidekick_deadline=$(( $(date +%s) + ${TIMEOUT_READY%s} ))
 while true; do
-  if kubectl -n "$NAMESPACE" get pod -l app.kubernetes.io/name=falcosidekick 2>/dev/null | grep -q falcosidekick; then
+  if kctl -n "$NAMESPACE" get pod -l app.kubernetes.io/name=falcosidekick 2>/dev/null | grep -q falcosidekick; then
     break
   fi
   if [[ $(date +%s) -gt $sidekick_deadline ]]; then
@@ -70,12 +71,12 @@ while true; do
   fi
   sleep 2
 done
-kubectl -n "$NAMESPACE" wait --for=condition=Ready pod -l app.kubernetes.io/name=falcosidekick --timeout="$TIMEOUT_READY" \
+kctl -n "$NAMESPACE" wait --for=condition=Ready pod -l app.kubernetes.io/name=falcosidekick --timeout="$TIMEOUT_READY" \
   || { fail "falcosidekick pod did not become Ready"; exit 1; }
 log "  ok: pod Ready [criterion 1]"
 
 log "5/9 starting port-forward to falcosidekick:2801 -> localhost:$LOCAL_PORT"
-kubectl -n "$NAMESPACE" port-forward svc/falcosidekick "$LOCAL_PORT:2801" >/dev/null 2>&1 &
+kubectl --context "$HELPER_CONTEXT" -n "$NAMESPACE" port-forward svc/falcosidekick "$LOCAL_PORT:2801" >/dev/null 2>&1 &
 PF_PID=$!
 sleep 2
 
@@ -167,7 +168,7 @@ log "8/9 real Falco rule trigger (read /etc/shadow in a pod)"
 # the run, we miss the very delivery we're trying to detect.
 post_trigger_webhook=$(webhook_sent_total)
 log "  webhook sent_total baseline before trigger = $post_trigger_webhook"
-kubectl run -n default --rm -i --restart=Never --image=alpine:3.22 "live-test-trigger-$$" -- \
+kctl run -n default --rm -i --restart=Never --image=alpine:3.22 "live-test-trigger-$$" -- \
     sh -c 'cat /etc/shadow >/dev/null 2>&1 || true' >/dev/null 2>&1 \
   || { fail "kubectl run live-test-trigger failed"; }
 log "  triggered; polling for up to ${FALCO_PROPAGATION_WAIT}s"
@@ -225,9 +226,13 @@ if [[ "$status" == "200" ]]; then
   start_ts=$(date +%s)
   while :; do
     sleep 1
-    curl -sS -X POST -H 'Content-Type: application/json' \
-      -d "$(printf '{"time":"%s","output":"ui-apply-probe","priority":"Error","rule":"ui-apply","source":"test"}' "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)")" \
-      "http://127.0.0.1:$LOCAL_PORT/" >/dev/null 2>&1 || true
+    probe_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+      -d "$(printf '{"time":"%s","output":"ui-apply-probe","priority":"Error","rule":"ui-apply","source":"test","output_fields":{"proc.name":"probe"}}' "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)")" \
+      "http://127.0.0.1:$LOCAL_PORT/" 2>/dev/null || true)
+    if [[ "$probe_status" != "200" ]]; then
+      fail "UI apply probe event returned '$probe_status' (expected 200)"
+      break
+    fi
     new_sent="$(webhook_sent_total)"
     if [[ "$new_sent" -gt "$pre_ui_sent" ]]; then
       log "  ok: UI-updated webhook output delivered events (sent_total ${pre_ui_sent} -> ${new_sent}) [criterion 9b]"

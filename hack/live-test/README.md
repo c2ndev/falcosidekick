@@ -5,7 +5,7 @@ Deploys a freshly-built `falcosidekick` v3 image into a local kind cluster throu
 ## Prerequisites
 
 - Local kind cluster up.
-- Falco operator installed and reconciling the `Falco` + `Config` + `Plugin` + `Rulesfile` CRs from [`kind.yaml`](../../kind.yaml). The `Config` CR in that file already forces Falco's HTTP output to `http://falcosidekick.falco.svc:2801`.
+- Falco operator installed and reconciling the `Falco` + `Config` + `Plugin` + `Rulesfile` CRs from [`operator-resources.yaml`](operator-resources.yaml). The `Config` CR in that file already forces Falco's HTTP output to `http://falcosidekick.falco.svc:2801`.
 - `kubectl` context pointing at the kind cluster.
 - Docker Desktop running (for `kind load docker-image`).
 - Bun installed (via `~/.bun/bin/bun`).
@@ -20,15 +20,15 @@ make v3-live-test
 
 which expands to:
 
-1. `make build-image-v3-local`: builds the multi-arch v3 UI image into the local Docker daemon as `ghcr.io/c2ndev/falcosidekick:v3-local`.
+1. `make build-image-v3-local`: builds the multi-arch v3 UI image into the local Docker daemon as `falcosidekick:v3-local`.
 2. `./hack/live-test/run.sh`: orchestrates the rest.
 
-Override the image variant with `V3_TAG=v3-local-slim` (use after `make build-image-v3-slim-local`) to run against the slim binary. Override the namespace with `V3_NAMESPACE=<ns>`, the local port with `V3_LOCAL_PORT=<port>`.
+Override the image variant with `V3_TAG=v3-local-slim` (use after `make build-image-v3-slim-local`) to run against the slim binary. Override the local port with `V3_LOCAL_PORT=<port>`.
 
 ## What the script does
 
 1. Verify `kubectl cluster-info` works.
-2. `kind load docker-image ghcr.io/c2ndev/falcosidekick:v3-local` (loads the image into kind's node cache).
+2. `kind load docker-image falcosidekick:v3-local` (loads the image into kind's node cache).
 3. `kubectl apply` [`webhook-receiver.yaml`](webhook-receiver.yaml) + [`component.yaml`](component.yaml).
 4. Wait for the `webhook-receiver` Deployment and the falcosidekick pod (managed by the operator via the `Component` CR) to become `Ready` (90s timeout).
 5. Port-forward `svc/falcosidekick` to `localhost:28010`.
@@ -68,4 +68,4 @@ Criterion summary:
 - If `kind load docker-image` fails, run `make build-image-v3-local` and retry.
 - If the pod doesn't become Ready, check `kubectl -n falco describe pod <falcosidekick-pod>` and `kubectl -n falco logs <falcosidekick-pod>`.
 - If criterion 6 fails, inspect `kubectl -n falco logs deploy/falco -c falco` for the `Read sensitive file untrusted` rule firing; if Falco logs the rule but falcosidekick never sees it, check the `Config` CR's `http_output.url` and DNS resolution from the Falco pod (`curl http://falcosidekick.falco.svc:2801/healthz` from inside a Falco pod).
-- If `/metrics` counters read zero, check that events are actually reaching falcosidekick's `POST /` (the Config CR in `kind.yaml` forces Falco to use the correct URL; without that, events go nowhere).
+- If `/metrics` counters read zero, check that events are actually reaching falcosidekick's `POST /` (the Config CR in `operator-resources.yaml` forces Falco to use the correct URL; without that, events go nowhere).

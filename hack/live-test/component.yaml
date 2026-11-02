@@ -3,6 +3,8 @@ kind: ConfigMap
 metadata:
   name: falcosidekick-config
   namespace: falco
+  labels:
+    app.kubernetes.io/part-of: falcosidekick-dev
 data:
   sidekick.yaml: |
     listen_address: 0.0.0.0
@@ -14,6 +16,8 @@ data:
       event_source: inmemory
     database:
       backend: inmemory
+    provisioning:
+      allow_ui_updates: true
     runtime_defaults:
       workers: 2
       queue_size: 1000
@@ -50,6 +54,7 @@ metadata:
   namespace: falco
   labels:
     app.kubernetes.io/managed-by: falco-operator
+    app.kubernetes.io/part-of: falcosidekick-dev
 spec:
   component:
     type: falcosidekick
@@ -57,7 +62,7 @@ spec:
     spec:
       containers:
         - name: falcosidekick
-          image: ghcr.io/c2ndev/falcosidekick:v3-local
+          image: falcosidekick:v3-local
           imagePullPolicy: IfNotPresent
           args:
             - "-c"
@@ -95,6 +100,7 @@ metadata:
   namespace: falco
   labels:
     app.kubernetes.io/managed-by: falco-operator
+    app.kubernetes.io/part-of: falcosidekick-dev
 spec:
   selector:
     app.kubernetes.io/name: falcosidekick

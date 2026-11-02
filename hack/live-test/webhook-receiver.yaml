@@ -5,6 +5,7 @@ metadata:
   namespace: falco
   labels:
     app: webhook-receiver
+    app.kubernetes.io/part-of: falcosidekick-dev
 spec:
   replicas: 1
   selector:
@@ -45,6 +46,8 @@ kind: Service
 metadata:
   name: webhook-receiver
   namespace: falco
+  labels:
+    app.kubernetes.io/part-of: falcosidekick-dev
 spec:
   selector:
     app: webhook-receiver

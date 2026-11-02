@@ -51,6 +51,7 @@ fi
 
 # The emitter is exported as an env-visible function. xargs spawns bash -c and
 # invokes it per event; RANDOM is re-seeded per subshell so each event is unique.
+# shellcheck disable=SC2329 # invoked through xargs and export -f
 emit_event() {
   # Rule catalog: rule|source|tag1,tag2
   local rules=(
@@ -180,6 +181,11 @@ echo ""
 echo "[ingest] done in ${elapsed}s  ok=${ok}  fail=${fail}  rate=${rate}/s"
 echo ""
 
+# The summary below is informational and must not decide the exit status.
+set +e
+
+if (( QUIET == 0 )); then
+
 if command -v python3 >/dev/null 2>&1; then
   echo "==> pipeline/status:"
   curl -s "${BASE}/api/v1/pipeline/status" | python3 -c 'import json,sys
@@ -246,3 +252,10 @@ try:
 except Exception as e:
   print("  (unable: " + str(e) + ")")'
 fi
+fi
+
+if (( fail > 0 )); then
+  echo "[ingest] ${fail} of ${COUNT} events failed" >&2
+  exit 1
+fi
+exit 0
