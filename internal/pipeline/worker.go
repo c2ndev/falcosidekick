@@ -32,6 +32,10 @@ func (o *Output) runWorker(ctx context.Context) {
 			if !ok {
 				return
 			}
+			if ctx.Err() != nil {
+				o.recordDrop()
+				return
+			}
 			o.executeWithRetry(ctx, 1, func(ctx context.Context) error {
 				return o.driver.Send(ctx, evt)
 			})
@@ -54,6 +58,11 @@ func (o *Output) runBatchWorker(ctx context.Context) {
 			buffer = o.flushBatch(ctx, buffer)
 		case evt, ok := <-o.queue:
 			if !ok {
+				o.flushBatch(ctx, buffer)
+				return
+			}
+			if ctx.Err() != nil {
+				o.recordDrop()
 				o.flushBatch(ctx, buffer)
 				return
 			}

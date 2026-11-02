@@ -182,10 +182,14 @@ func (o *Output) Enqueue(evt *event.Event) {
 	select {
 	case o.queue <- evt:
 	default:
-		o.droppedTotal.Add(1)
-		if o.metrics != nil {
-			o.metrics.RecordDrop(context.Background(), o.driver.Name())
-		}
+		o.recordDrop()
+	}
+}
+
+func (o *Output) recordDrop() {
+	o.droppedTotal.Add(1)
+	if o.metrics != nil {
+		o.metrics.RecordDrop(context.Background(), o.driver.Name())
 	}
 }
 
@@ -198,7 +202,8 @@ func (o *Output) Close() error {
 // Retire closes the queue, drains bounded by ctx, then closes the driver.
 // On deadline it cancels the worker context and returns; the driver close
 // is deferred until workers actually exit. driver.Close is never invoked
-// while a worker may still be in Send.
+// while a worker may still be in Send. Events left in the queue when workers
+// exit count as dropped.
 func (o *Output) Retire(ctx context.Context) error {
 	if o.cancel != nil {
 		defer o.cancel()
@@ -207,7 +212,7 @@ func (o *Output) Retire(ctx context.Context) error {
 
 	done := make(chan struct{})
 	go func() {
-		o.workerDone.Wait()
+		o.waitDone()
 		close(done)
 	}()
 
@@ -229,8 +234,20 @@ func (o *Output) closeQueue() {
 	close(o.queue)
 }
 
+// waitDone blocks until workers exit, then counts events they left queued.
 func (o *Output) waitDone() {
 	o.workerDone.Wait()
+	for {
+		select {
+		case _, ok := <-o.queue:
+			if !ok {
+				return
+			}
+			o.recordDrop()
+		default:
+			return
+		}
+	}
 }
 
 // GetStatus returns a snapshot of this output's counters and state.
@@ -253,7 +270,8 @@ func (o *Output) GetStatus() OutputStatus {
 }
 
 // executeWithRetry runs fn with circuit breaker and retry. On success it adds
-// count to sentTotal; on final failure it adds count to failedTotal.
+// count to sentTotal; on final failure, including cancellation during backoff,
+// it adds count to failedTotal.
 func (o *Output) executeWithRetry(ctx context.Context, count int64, sendFunc func(ctx context.Context) error) {
 	var lastErr error
 	for attempt := 0; attempt < o.config.Retry.MaxAttempts; attempt++ {
@@ -261,6 +279,7 @@ func (o *Output) executeWithRetry(ctx context.Context, count int64, sendFunc fun
 			backoff := o.config.Retry.ComputeBackoff(attempt)
 			select {
 			case <-ctx.Done():
+				o.recordFailure(ctx, count, lastErr)
 				return
 			case <-time.After(backoff):
 			}
@@ -298,10 +317,14 @@ func (o *Output) executeWithRetry(ctx context.Context, count int64, sendFunc fun
 		lastErr = err
 	}
 
+	o.recordFailure(ctx, count, lastErr)
+}
+
+func (o *Output) recordFailure(ctx context.Context, count int64, err error) {
 	o.failedTotal.Add(count)
-	o.lastError.Store(lastErr.Error())
+	o.lastError.Store(err.Error())
 	if o.metrics != nil {
 		o.metrics.RecordOutput(ctx, o.driver.Name(), "error", 0)
-		o.metrics.RecordError(ctx, o.driver.Name(), lastErr)
+		o.metrics.RecordError(ctx, o.driver.Name(), err)
 	}
 }
