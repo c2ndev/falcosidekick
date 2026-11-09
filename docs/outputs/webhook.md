@@ -1,44 +1,36 @@
 # Webhook
 
-- **Category**: Web
-- **Website**: <n/a>
+Sends each event as JSON to an HTTP endpoint, with `POST` or, if set, `PUT`. Only a 2xx answer counts as delivered.
 
-## Table of content
+## Example
 
-- [Webhook](#webhook)
-  - [Table of content](#table-of-content)
-  - [Configuration](#configuration)
-  - [Example of config.yaml](#example-of-configyaml)
-  - [Additional info](#additional-info)
-  - [Screenshots](#screenshots)
-
-## Configuration
-
-| Setting                   | Env var                   | Default value    | Description                                                                                                                         |
-| ------------------------- | ------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `webhook.address`         | `WEBHOOK_ADDRESS`         |                  | Webhook address, if not empty, Webhook output is **enabled**                                                                        |
-| `webhook.method`          | `WEBHOOK_METHOD`          | `POST`           | Webhook http method: `POST` or `PUT`                                                                                                |
-| `webhook.customheaders`   | `WEBHOOK_CUSTOMHEADERS`   |                  | Custom headers to add in POST, useful for Authentication                                                                            |
-| `webhook.mutualtls`       | `WEBHOOK_MUTUALTLS`       | `false`          | Authenticate to the output with TLS, if true, checkcert flag will be ignored (server cert will always be checked)                   |
-| `webhook.checkcert`       | `WEBHOOK_CHECKCERT`       | `true`           | Check if ssl certificate of the output is valid                                                                                     |
-| `webhook.minimumpriority` | `WEBHOOK_MINIMUMPRIORITY` | `""` (= `debug`) | Minimum priority of event for using this output, order is `emergency,alert,critical,error,warning,notice,informational,debug or ""` |
-
-> [!NOTE]
-The Env var values override the settings from yaml file.
-
-## Example of config.yaml
-
+<!-- example -->
 ```yaml
-webhook:
-  address: "" # Webhook address, if not empty, Webhook output is enabled
-  # method: "POST" # Webhook http method: POST or PUT (default: POST)
-  # customHeaders: # Custom headers to add in the request, useful for Authentication
-  #   key: value
-  # minimumpriority: "" # minimum priority of event for using this output, order is emergency|alert|critical|error|warning|notice|informational|debug or "" (default)
-  # mutualtls: false # if true, checkcert flag will be ignored (server cert will always be checked)
-  # checkcert: true # check if ssl certificate of the output is valid (default: true)
+outputs:
+  webhook:
+    host: https://events.example.com
+    endpoint: /falco
+    headers:
+      Authorization:
+        files:
+          - /etc/falcosidekick/secrets/webhook/authorization
 ```
 
-## Additional info
+<!-- BEGIN GENERATED: settings -->
+<!-- Generated from the output schema by `make docs`. Do not edit. -->
 
-## Screenshots
+## Settings
+
+Key in the output file: `webhook`. Category: Webhooks. UI event source: no. Batching: no.
+
+| Setting | Type | Default | Description |
+| --- | --- | --- | --- |
+| `host` | string, **required** | - | Address of the destination as scheme, host and optional port, such as `https://example.com:8443`; the path goes in the base path and endpoint. |
+| `base_path` | string | - | Path prefix of every request, such as `/proxy/v2` when the destination sits behind a reverse proxy. |
+| `endpoint` | string | `/` | Path the events are sent to, after the base path. |
+| `secret_endpoint` | string, secret | - | Path the events are sent to, used instead of the endpoint when the path itself is a credential, as in a webhook URL; the API never returns it. Also accepted as `secret_endpoint_file`, the path of a file holding the value. |
+| `method` | one of `POST`, `PUT` | `POST` | HTTP method of the request that carries each event as a JSON body, in uppercase. |
+
+Also takes the shared settings in [Query parameters](common.md#query-parameters), [HTTP authentication and headers](common.md#http-authentication-and-headers), [TLS](common.md#tls), [Delivery](common.md#delivery).
+
+<!-- END GENERATED: settings -->

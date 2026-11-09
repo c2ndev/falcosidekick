@@ -1,65 +1,48 @@
-# SMTP
+# Email (SMTP)
 
+Sends one email per event, HTML or text (`format`). The subject is `[Priority] rule on hostname`, without `on hostname` when the event has none.
 
-- **Category**: Email
-- **Website**: https://en.wikipedia.org/wiki/Simple_Mail_Transfer_Protocol
+- `tls_mode` is `starttls` (required), `implicit`, `opportunistic` or `none`. Credentials are sent only over TLS or to localhost.
+- Startup connects, negotiates TLS and authenticates without sending mail: rejected credentials, a missing STARTTLS or an untrusted certificate stop startup.
+- A 5yz reply fails the event for good, a 4yz reply is retried. With several recipients a refused recipient is retried: the client library reports only the last recipient's reply.
+- SMTP connects directly, without a proxy.
 
-## Table of content
+Tested with Mailpit v1.33.0.
 
-- [SMTP](#smtp)
-  - [Table of content](#table-of-content)
-  - [Configuration](#configuration)
-  - [Example of config.yaml](#example-of-configyaml)
-  - [Screenshots](#screenshots)
+## Example
 
-## Configuration
-
-| Setting                | Env var                | Default value    | Description                                                                                                                         |
-| ---------------------- | ---------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `smtp.hostport`        | `SMTP_HOSTPORT`        |                  | host:port address of SMTP server, if not empty, SMTP output is **enabled**                                                          |
-| `smtp.tls`             | `SMTP_TLS`             | `true`           | Use TLS connection (true/false)                                                                                                     |
-| `smtp.authmechanism`   | `SMTP_AUTHMECHANISM`   | `plain`          | SASL Mechanisms : `plain`, `oauthbearer`, `external`, `anonymous` or `none` (disable SASL)                                          |
-| `smtp.user`            | `SMTP_USER`            |                  | User for Plain Mechanism                                                                                                            |
-| `smtp.password`        | `SMTP_PASSWORD`        |                  | Password for Plain Mechanism                                                                                                        |
-| `smtp.token`           | `SMTP_TOKEN`           |                  | OAuthBearer token for OAuthBearer Mechanism                                                                                         |
-| `smtp.identity`        | `SMTP_IDENTITY`        |                  | Identity string for Plain and External Mechanisms                                                                                   |
-| `smtp.trace`           | `SMTP_TRACE`           |                  | Trace string for Anonymous Mechanism                                                                                                |
-| `smtp.from`            | `SMTP_FROM`            |                  | Sender address (mandatory if SMTP output is enabled)                                                                                |
-| `smtp.to`              | `SMTP_TO`              |                  | Comma-separated list of Recipident addresses, can't be empty (mandatory if SMTP output is enabled)                                  |
-| `smtp.outputformat`    | `SMTP_OUTPUTFORMAT`    | `html`           | `html`, `text`                                                                                                                      |
-| `smtp.minimumpriority` | `SMTP_MINIMUMPRIORITY` | `""` (= `debug`) | Minimum priority of event for using this output, order is `emergency,alert,critical,error,warning,notice,informational,debug or ""` |
-
-
-> [!NOTE]
-The Env var values override the settings from yaml file.
-
-> [!WARNING]
-The `smtp` can't work with the Office365 domains because of the authentication method used by the platform, it includes outlook.com, office365.com, hotmail.com, ...
-
-## Example of config.yaml
-
+<!-- example -->
 ```yaml
-smtp:
-  hostport: "" # host:port address of SMTP server, if not empty, SMTP output is enabled
-  # tls: true # use TLS connection (true/false), default is "true"
-  # authmechanism: "plain" # SASL Mechanisms : plain, oauthbearer, external, anonymous or none (disable SASL). Default: plain
-  # user: "" # user for Plain Mechanism
-  # password: "" # password for Plain Mechanism
-  # token: "" # OAuthBearer token for OAuthBearer Mechanism
-  # identity: "" # identity string for Plain and External Mechanisms
-  # trace: "" trace string for Anonymous Mechanism
-  # from: "" # Sender address (mandatory if SMTP output is enabled)
-  # to: "" # comma-separated list of Recipident addresses, can't be empty (mandatory if SMTP output is enabled)
-  # outputformat: "" # html (default), text
-  # minimumpriority: "" # minimum priority of event for using this output, order is emergency|alert|critical|error|warning|notice|informational|debug or "" (default)
+outputs:
+  smtp:
+    host: smtp.example.com
+    username: falcosidekick@example.com
+    password_file: /etc/falcosidekick/secrets/smtp/password
+    from: Falco <falcosidekick@example.com>
+    to:
+      - security@example.com
 ```
 
-## Screenshots
+<!-- BEGIN GENERATED: settings -->
+<!-- Generated from the output schema by `make docs`. Do not edit. -->
 
-(SMTP_OUTPUTFORMAT="**html**")
+## Settings
 
-![smtp html example](images/smtp_html.png)
+Key in the output file: `smtp`. Category: Email. UI event source: no. Batching: no.
 
-(SMTP_OUTPUTFORMAT="**text**")
+| Setting | Type | Default | Description |
+| --- | --- | --- | --- |
+| `host` | string, **required** | - | SMTP server host name or IP address, without scheme or port. Also the name verified in the server certificate. |
+| `port` | integer | - | SMTP server port. Empty or `0` uses `587` with `starttls` and `opportunistic`, `465` with `implicit`, `25` with `none`. |
+| `tls_mode` | one of `starttls`, `implicit`, `opportunistic`, `none` | `starttls` | `starttls` requires STARTTLS, `implicit` connects over TLS, `opportunistic` uses STARTTLS when offered, `none` sends in clear and refuses `tls` settings. |
+| `auth_mechanism` | one of `plain`, `xoauth2`, `none` | `plain` | `plain` needs username and password, `xoauth2` needs username and token with `starttls` or `implicit`, `none` sends no credentials. Credentials go only over TLS, except to localhost. |
+| `username` | string | - | Account name for `plain` or `xoauth2` authentication. |
+| `password` | string, secret | - | Password for `plain` authentication. Also accepted as `password_file`, the path of a file holding the value. |
+| `token` | string, secret | - | OAuth 2.0 access token for `xoauth2` authentication. Also accepted as `token_file`, the path of a file holding the value. |
+| `from` | string, **required** | - | One RFC 5322 address for the `From` header and envelope sender, such as `Falco <falco@example.com>`. |
+| `to` | list of strings, **required** | - | Recipients, one RFC 5322 address per entry. All receive the same message. |
+| `format` | one of `html`, `text` | `html` | `html` sends a multipart message with text and HTML parts; `text` sends plain text only. |
 
-![smtp plaintext example](images/smtp_plaintext.png)
+Also takes the shared settings in [TLS](common.md#tls), [Delivery](common.md#delivery).
+
+<!-- END GENERATED: settings -->

@@ -1,55 +1,47 @@
-# AlertManager
+# Alertmanager
 
-- **Category**: Alerting
-- **Website**: https://github.com/prometheus/alertmanager
+Sends each event as an alert to one or more Prometheus Alertmanager instances.
 
-## Table of content
+- Posts to every host in `hosts`. The event counts as sent when at least one host accepts it; a failing host sets the output `degraded` with `last_warning` until a delivery reaches every host.
+- Labels: `alertname` (the rule), `source`, `priority` (as Falco writes it, such as `Warning`), `severity`, `hostname` and `tags`. Annotations: `summary` (the rule) and `description` (the output).
+- `severity` is `critical` (Emergency, Alert, Critical), `warning` (Error, Warning) or `info` (Notice and below), the values of the monitoring mixins; `custom_severity_map` overrides it. Its keys are Falco priorities in any case, `info` included; a key that names no priority, or a priority twice, is refused at startup.
+- Label values are sent as they are. Names in `extra_labels` must match `[a-zA-Z_][a-zA-Z0-9_]*`; any other name fails the configuration.
+- The health probe is `GET /-/healthy` on each host.
+- `expires_after` is a Go duration, such as `30m`, that sets `endsAt` after the event time. With `0` the alert has no `endsAt`, and Alertmanager resolves it after its `resolve_timeout` (5m by default) unless it is sent again.
 
-- [AlertManager](#alertmanager)
-  - [Table of content](#table-of-content)
-  - [Configuration](#configuration)
-  - [Example of config.yaml](#example-of-configyaml)
-  - [Screenshots](#screenshots)
+Tested with Alertmanager v0.34.2 and v0.33.1.
 
-## Configuration
+## Example
 
-|                 Setting                 |                 Env var                 |                            Default value                             |                                                                                                               Description                                                                                                                |
-| --------------------------------------- | --------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `alertmanager.hostport`                 | `ALERTMANAGER_HOSTPORT`                 |                                                                      | Comma separated list of http://{domain or ip}:{port} that will all receive the payload, if not empty, Alertmanager output is **enabled**                                                                                                 |
-| `alertmanager.mutualtls`                | `ALERTMANAGER_MUTUALTLS`                | `false`                                                              | Authenticate to the output with TLS, if true, checkcert flag will be ignored (server cert will always be checked)                                                                                                                        |
-| `alertmanager.checkcert`                | `ALERTMANAGER_CHECKCERT`                | `true`                                                               | check if ssl certificate of the output is valid                                                                                                                                                                                          |
-| `alertmanager.endpoint`                 | `ALERTMANAGER_ENDPOINT`                 | `/api/v2/alerts`                                                     | Alertmanager endpoint for posting alerts `/api/v1/alerts` or `/api/v2/alerts`                                                                                                                                                            |
-| `alertmanager.expiresafter`             | `ALERTMANAGER_EXPIRESAFTER`             | `0`                                                                  | If set to a non-zero value, alert expires after that time in seconds                                                                                                                                                                     |
-| `alertmanager.extralabels`              | `ALERTMANAGER_EXTRALABELS`              |                                                                      | Comma separated list of labels composed of a ':' separated name and value that is added to the Alerts. Example: `my_annotation_1:my_value_1, my_annotation_1:my_value_2`                                                                 |
-| `alertmanager.extraannotations`         | `ALERTMANAGER_EXTRAANNOTATIONS`         |                                                                      | Comma separated list of annotations composed of a ':' separated name and value that is added to the Alerts Example: `debug:value_1,critical:value2`                                                                                      |
-| `alertmanager.customseveritymap`        | `ALERTMANAGER_CUSTOMSEVERITYMAP`        |                                                                      | Comma separated list of tuple composed of a ':' separated Falco priority and Alertmanager severity that is used to override the severity label associated to the priority level of falco event. Example: `debug:value_1,critical:value2` |
-| `alertmanager.dropeventdefaultpriority` | `ALERTMANAGER_DROPEVENTDEFAULTPRIORITY` | `critical`                                                           | Default priority of dropped events, values are `emergency,alert,critical,error,warning,notice,informational,debug`                                                                                                                       |
-| `alertmanager.dropeventthresholds`      | `ALERTMANAGER_DROPEVENTTHRESHOLDS`      | `10000:critical, 1000:critical, 100:critical, 10:warning, 1:warning` | Comma separated list of priority re-evaluation thresholds of dropped events composed of a ':' separated integer threshold and string priority. Example: `10000:critical, 100:warning, 1:informational`                                   |
-| `alertmanager.minimumpriority`          | `ALERTMANAGER_MINIMUMPRIORITY`          | `""` (= `debug`)                                                     | Minimum priority of event for using this output, order is `emergency,alert,critical,error,warning,notice,informational,debug or ""`                                                                                                      |
-| `alertmanager.customheaders`            | `ALERTMANAGER_CUSTOMHEADERS`            |                                                                      | Custom headers for the POST request                                                                                                                                                                                                      |
-
-> [!NOTE]
-The Env var values override the settings from yaml file.
-
-## Example of config.yaml
-
+<!-- example -->
 ```yaml
-alertmanager:
-  hostport: "" # http://{domain or ip}:{port}, if not empty, Alertmanager output is enabled
-  # mutualtls: false # if true, checkcert flag will be ignored (server cert will always be checked)
-  # checkcert: true # check if ssl certificate of the output is valid (default: true)
-  # endpoint: "" # alertmanager endpoint for posting alerts: "/api/v1/alerts" or "/api/v2/alerts" (default: "/api/v1/alerts")
-  # expiresafter: "" if set to a non-zero value, alert expires after that time in seconds (default: 0)
-  # extralabels: "" # comma separated list of labels composed of a ':' separated name and value that is added to the Alerts. Example: my_label_1:my_value_1, my_label_1:my_value_2
-  # extraannotations: "" # comma separated list of annotations composed of a ':' separated name and value that is added to the Alerts. Example: my_annotation_1:my_value_1, my_annotation_1:my_value_2
-  # customseveritymap: "" # comma separated list of tuple composed of a ':' separated Falco priority and Alertmanager severity that is used to override the severity label associated to the priority level of falco event. Example: debug:value_1,critical:value2. Default mapping: emergency:critical,alert:critical,critical:critical,error:warning,warning:warning,notice:information,informational:information,debug:information. (default: "")
-  # dropeventdefaultpriority: "" # default priority of dropped events, values are emergency|alert|critical|error|warning|notice|informational|debug (default: "critical")
-  # dropeventthresholds: # comma separated list of priority re-evaluation thresholds of dropped events composed of a ':' separated integer threshold and string priority. Example: `10000:critical, 100:warning, 1:informational` (default: `"10000:critical, 1000:critical, 100:critical, 10:warning, 1:warning"`)
-  # minimumpriority: "" # minimum priority of event for using this output, order is emergency|alert|critical|error|warning|notice|informational|debug or "" (default)
-  # customHeaders: # Custom headers to add in POST, useful for Authentication
-  #   key: value
+outputs:
+  alertmanager:
+    hosts:
+      - http://alertmanager:9093
+    extra_labels:
+      team: security
 ```
 
-## Screenshots
+<!-- BEGIN GENERATED: settings -->
+<!-- Generated from the output schema by `make docs`. Do not edit. -->
 
-![alertmanager example](images/alertmanager.png)
+## Settings
+
+Key in the output file: `alertmanager`. Category: Alerting and on-call. UI event source: no. Batching: no.
+
+| Setting | Type | Default | Description |
+| --- | --- | --- | --- |
+| `base_path` | string | - | Path prefix of every request, such as `/proxy/v2` when the destination sits behind a reverse proxy. |
+| `endpoint` | string | `/api/v2/alerts` | Path the events are sent to, after the base path. |
+| `secret_endpoint` | string, secret | - | Path the events are sent to, used instead of the endpoint when the path itself is a credential, as in a webhook URL; the API never returns it. Also accepted as `secret_endpoint_file`, the path of a file holding the value. |
+| `hosts` | list of strings, **required** | - | Alertmanager instances, each as scheme, host and optional port such as `http://alertmanager:9093`. Every alert goes to all of them and counts as delivered when at least one accepts it. |
+| `generator_url` | string | - | Link sent as the `generatorURL` of every alert; Alertmanager shows it as the alert source. |
+| `expires_after` | string | `0` | Go duration, such as `30m`, after the event time at which the alert ends, sent as `endsAt`. `0` sends no end time, so Alertmanager resolves the alert after its `resolve_timeout`. |
+| `extra_labels` | map by name | - | Labels added to every alert, by label name; they replace built-in labels of the same name. Names must match `[a-zA-Z_][a-zA-Z0-9_]*`. |
+| `extra_annotations` | map by name | - | Annotations added to every alert, by name; they replace the built-in `summary` and `description` of the same name. |
+| `custom_severity_map` | map by name | - | Value of the `severity` label by Falco priority, in any case, such as `critical: P1`; other keys are refused. Priorities not listed get `critical`, `warning` or `info`. |
+
+Also takes the shared settings in [Query parameters](common.md#query-parameters), [HTTP authentication and headers](common.md#http-authentication-and-headers), [TLS](common.md#tls), [Delivery](common.md#delivery).
+
+<!-- END GENERATED: settings -->

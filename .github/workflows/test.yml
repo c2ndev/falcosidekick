@@ -1,32 +1,104 @@
 name: tests
 
 on:
-  push:
+  workflow_call:
+  workflow_dispatch:
+  pull_request:
     branches:
       - master
-  pull_request:
 
 permissions: {}
 
+# Pull requests cancel their older runs; other runs, called by build and release, have a group of their own.
+concurrency:
+  group: tests-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   unit-tests:
-    name: Run unit tests
-
+    name: Go + UI tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
-
-    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26'
+          go-version-file: go.mod
           cache: false
-          check-latest: true
 
-      - name: Run Go tests
-        run: make test
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: ui/package.json
+
+      # hack/chart_test.go renders the chart with helm; the version the falcosecurity/charts tests use.
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.1.1
+
+      - name: Check the Helm chart
+        run: make chart.lint chart.docs.check
+
+      - name: Install UI dependencies
+        working-directory: ui
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck UI
+        working-directory: ui
+        run: bun run typecheck
+
+      - name: Test UI
+        id: ui-tests
+        working-directory: ui
+        run: bun test
+
+      - name: Build UI
+        working-directory: ui
+        run: bun run build
+
+      - name: Run Go tests (default build)
+        run: go test -race -count=1 ./internal/... ./cmd/... ./ui ./hack/...
+
+      - name: Run Go tests (-tags=builtinui)
+        run: go test -race -count=1 -tags=builtinui ./internal/... ./cmd/... ./ui
+
+      - name: Check release configuration
+        id: release-config
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          version: v2.18.2
+          args: check
+
+      - name: Coverage (minimum 80% per package)
+        id: coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          mkdir -p dist/coverage
+          for package in ./internal/api ./cmd/falcosidekick; do
+            profile="dist/coverage/${package##*/}.out"
+            go test -count=1 -coverprofile="$profile" "$package"
+            go tool cover -func="$profile" | tee "${profile%.out}.txt" | awk -v package="$package" '
+              $1 == "total:" {
+                count++
+                if ($3 !~ /^[0-9]+([.][0-9]+)?%$/) invalid = 1
+                coverage = $3
+                sub(/%$/, "", coverage)
+                if (coverage + 0 < 80 || coverage + 0 > 100) invalid = 1
+                printf "%s: %s coverage (minimum 80%%)\n", package, $3
+              }
+              END {
+                if (count != 1 || invalid) {
+                  printf "::error::%s failed the coverage gate\n", package
+                  exit 1
+                }
+              }
+            '
+          done

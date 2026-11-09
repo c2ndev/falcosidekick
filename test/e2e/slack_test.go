@@ -1,0 +1,226 @@
+// Copyright (C) 2026 The Falco Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// SPDX-License-Identifier: Apache-2.0
+
+//go:build e2e
+
+package e2e
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"mime"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+const (
+	slackSecretToken = "e2eSecretToken"
+	slackSecretPath  = "/services/T0E2E/B0E2E/" + slackSecretToken
+)
+
+// slackMessage mirrors the documented incoming webhook payload:
+// https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks
+// https://docs.slack.dev/messaging/formatting-message-text#when-to-use-attachments
+type slackMessage struct {
+	Mrkdwn      *bool             `json:"mrkdwn"`
+	Text        string            `json:"text"`
+	ThreadTS    string            `json:"thread_ts"`
+	Blocks      json.RawMessage   `json:"blocks"`
+	Attachments []slackAttachment `json:"attachments"`
+}
+
+type slackAttachment struct {
+	Fallback   string          `json:"fallback"`
+	Color      string          `json:"color"`
+	Pretext    string          `json:"pretext"`
+	AuthorName string          `json:"author_name"`
+	AuthorLink string          `json:"author_link"`
+	AuthorIcon string          `json:"author_icon"`
+	Title      string          `json:"title"`
+	TitleLink  string          `json:"title_link"`
+	Text       string          `json:"text"`
+	Fields     []slackField    `json:"fields"`
+	ImageURL   string          `json:"image_url"`
+	ThumbURL   string          `json:"thumb_url"`
+	Footer     string          `json:"footer"`
+	FooterIcon string          `json:"footer_icon"`
+	TS         json.Number     `json:"ts"`
+	MrkdwnIn   []string        `json:"mrkdwn_in"`
+	Blocks     json.RawMessage `json:"blocks"`
+}
+
+type slackField struct {
+	Title string `json:"title"`
+	Value string `json:"value"`
+	Short bool   `json:"short"`
+}
+
+// slackBlock covers the header, section and context blocks:
+// https://docs.slack.dev/reference/block-kit/blocks
+type slackBlock struct {
+	Text     *slackText  `json:"text"`
+	Type     string      `json:"type"`
+	Fields   []slackText `json:"fields"`
+	Elements []slackText `json:"elements"`
+}
+
+type slackText struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// slackWebhook is a strict fake that answers rejected requests the way Slack does.
+type slackWebhook struct {
+	reply    string
+	messages []slackMessage
+	rejected []string
+	status   int
+	mu       sync.Mutex
+}
+
+func (s *slackWebhook) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	reject := func(status int, body, reason string) {
+		s.rejected = append(s.rejected, req.Method+" "+req.URL.Path+": "+reason)
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}
+	if req.URL.Path != slackSecretPath {
+		reject(http.StatusNotFound, "no_service", "unknown webhook path")
+		return
+	}
+	if req.Method != http.MethodPost {
+		reject(http.StatusMethodNotAllowed, "invalid_method", "method not allowed")
+		return
+	}
+	if mediaType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type")); err != nil || mediaType != contentTypeJSON {
+		reject(http.StatusBadRequest, "invalid_payload", "content type "+req.Header.Get("Content-Type"))
+		return
+	}
+	dec := json.NewDecoder(req.Body)
+	dec.DisallowUnknownFields()
+	var msg slackMessage
+	if err := dec.Decode(&msg); err != nil {
+		reject(http.StatusBadRequest, "invalid_payload", err.Error())
+		return
+	}
+	if dec.More() {
+		reject(http.StatusBadRequest, "invalid_payload", "trailing data")
+		return
+	}
+	if msg.Text == "" && len(msg.Blocks) == 0 && len(msg.Attachments) == 0 {
+		reject(http.StatusBadRequest, "no_text", "empty message")
+		return
+	}
+	s.messages = append(s.messages, msg)
+	w.WriteHeader(s.status)
+	_, _ = io.WriteString(w, s.reply)
+}
+
+func (s *slackWebhook) snapshot() (messages []slackMessage, rejected []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]slackMessage(nil), s.messages...), append([]string(nil), s.rejected...)
+}
+
+func startSlack(t *testing.T, status int, reply string) (*slackWebhook, *sidekick) {
+	t.Helper()
+	hook := &slackWebhook{status: status, reply: reply}
+	server := httptest.NewServer(hook)
+	t.Cleanup(server.Close)
+	sk := startSidekick(t, fmt.Sprintf("slack:\n  host: %q\n  secret_endpoint: %q\n", server.URL, slackSecretPath))
+	return hook, sk
+}
+
+func TestSlackDeliversEvent(t *testing.T) {
+	hook, sk := startSlack(t, http.StatusOK, "ok")
+
+	marker := newMarker(t)
+	sk.postEvent(t, marker)
+	st := sk.waitStatus(t, "slack", func(st outputStatus) bool { return st.SentTotal == 1 })
+	assert.Zero(t, st.FailedTotal)
+
+	messages, rejected := hook.snapshot()
+	require.Empty(t, rejected)
+	require.Len(t, messages, 1)
+	summary := "[Warning] E2E " + marker + " on e2e-host"
+	assert.Equal(t, summary, messages[0].Text, "notifications show the text")
+	assert.Empty(t, messages[0].Blocks, "the blocks stay in the attachment, under its color")
+	require.Len(t, messages[0].Attachments, 1)
+	attachment := messages[0].Attachments[0]
+	assert.Equal(t, summary, attachment.Fallback)
+	assert.Equal(t, "#ffc700", attachment.Color, "warning in the shared palette")
+	assert.Empty(t, attachment.Fields, "legacy attachment fields are not used")
+
+	var blocks []slackBlock
+	require.NoError(t, json.Unmarshal(attachment.Blocks, &blocks))
+	require.GreaterOrEqual(t, len(blocks), 3)
+	assert.Equal(t, "header", blocks[0].Type)
+	assert.Equal(t, slackText{Type: "plain_text", Text: "E2E " + marker}, *blocks[0].Text)
+	assert.Equal(t, "section", blocks[1].Type)
+	assert.Equal(t, slackText{Type: "mrkdwn", Text: "e2e event " + marker}, *blocks[1].Text)
+	var fields []string
+	for _, b := range blocks[2:] {
+		assert.Equal(t, "section", b.Type)
+		assert.LessOrEqual(t, len(b.Fields), 10)
+		for _, f := range b.Fields {
+			fields = append(fields, f.Text)
+		}
+	}
+	assert.Contains(t, fields, "*rule*\nE2E "+marker)
+	assert.Contains(t, fields, "*priority*\nWarning")
+	assert.Contains(t, fields, "*e2e.marker*\n"+marker)
+	timeField := slices.IndexFunc(fields, func(f string) bool { return strings.HasPrefix(f, "*time*\n") })
+	require.GreaterOrEqual(t, timeField, 0)
+	assert.Regexp(t, `^\*time\*\n<!date\^\d+\^\{date_short_pretty\} \{time\}\|\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ>$`, fields[timeField])
+}
+
+func TestSlackReportsNoService(t *testing.T) {
+	hook, sk := startSlack(t, http.StatusNotFound, "no_service")
+
+	sk.postEvent(t, newMarker(t))
+	st := sk.waitStatus(t, "slack", func(st outputStatus) bool { return st.FailedTotal == 1 })
+	assert.Zero(t, st.SentTotal)
+	assert.Contains(t, st.LastError, "HTTP 404")
+	assert.NotContains(t, st.LastError, slackSecretToken)
+	assert.NotContains(t, sk.logs.String(), slackSecretToken)
+
+	messages, rejected := hook.snapshot()
+	assert.Empty(t, rejected)
+	assert.Len(t, messages, 1, "max_attempts 1 sends exactly once")
+}
+
+func TestSlackReportsInvalidPayload(t *testing.T) {
+	hook, sk := startSlack(t, http.StatusBadRequest, "invalid_payload")
+
+	sk.postEvent(t, newMarker(t))
+	st := sk.waitStatus(t, "slack", func(st outputStatus) bool { return st.FailedTotal == 1 })
+	assert.Zero(t, st.SentTotal)
+	assert.Contains(t, st.LastError, "HTTP 400")
+
+	messages, rejected := hook.snapshot()
+	assert.Empty(t, rejected)
+	assert.Len(t, messages, 1, "max_attempts 1 sends exactly once")
+}

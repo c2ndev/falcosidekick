@@ -1,0 +1,180 @@
+// Copyright (C) 2026 The Falco Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package slack
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"text/template"
+
+	"github.com/falcosecurity/falcosidekick/internal/domain/event"
+	"github.com/falcosecurity/falcosidekick/internal/domain/output"
+	"github.com/falcosecurity/falcosidekick/internal/outputs/shared"
+	"github.com/falcosecurity/falcosidekick/internal/utils"
+)
+
+const (
+	name            = "slack"
+	suggestedFooter = "https://github.com/falcosecurity/falcosidekick"
+	formatAll       = "all"
+	formatFields    = "fields"
+	formatText      = "text"
+)
+
+// webhookErrors are the codes Slack documents for incoming webhooks, mapped to whether a retry can succeed.
+// https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks#handling-errors
+var webhookErrors = map[string]bool{
+	"action_prohibited": false, "channel_is_archived": false, "channel_not_found": false, "invalid_payload": false,
+	"invalid_token": false, "no_active_hooks": false, "no_service": false, "no_service_id": false, "no_team": false,
+	"no_text": false, "posting_to_general_channel_denied": false, "team_disabled": false,
+	"too_many_attachments": false, "user_not_found": false, "rollup_error": true,
+}
+
+var targetOptions = shared.HTTPTargetOptions{DefaultHost: "https://hooks.slack.com", SecretEndpointRequired: true}
+
+// Slack-app webhooks ignore channel, username and icon overrides, so the output offers none.
+type config struct {
+	Footer                  string `mapstructure:"footer"`
+	OutputFormat            string `mapstructure:"output_format"`
+	MessageTemplate         string `mapstructure:"message_template"`
+	shared.HTTPTargetConfig `mapstructure:",squash"`
+	shared.HTTPConfig       `mapstructure:",squash"`
+	Runtime                 output.RuntimeConfig `mapstructure:"runtime"`
+}
+
+// OutputType describes the Slack output for the catalog.
+var OutputType = output.Type{
+	New:      createOutput,
+	Name:     name,
+	Category: output.CategoryChat,
+	Schema: output.Schema{
+		Fields: append(append(shared.HTTPTargetSchemaFields(&targetOptions), []output.SchemaField{
+			{
+				Name: "output_format", Type: "enum", Values: []string{"all", "fields", "text"}, Default: "all", Label: "Output Format",
+				Description: "Content under the rule heading: `text` is the event output text, `fields` lists rule, priority, source, hostname, tags, time and output fields, `all` shows both.",
+			},
+			{
+				Name: "message_template", Type: "string", Label: "Message Template",
+				Description: "Go template for the message text, which notifications show, applied to the event, such as `Rule {{ .Rule }} on {{ .Hostname }}`. " +
+					"Empty, or a template that fails, sends `[Priority] rule on hostname`.",
+			},
+			{
+				Name: "footer", Type: "string", Label: "Footer", Suggested: suggestedFooter,
+				Description: "Slack markup shown at the bottom of the attachment, cut to 300 characters. Empty shows no footer.",
+			},
+		}...), append(shared.HTTPConfigSchemaFields(), shared.RuntimeConfigSchemaFields()...)...),
+	},
+}
+
+type driver struct {
+	sender      *shared.Sender
+	logger      *slog.Logger
+	messageTmpl *template.Template
+	cfg         config
+}
+
+func (d *driver) RuntimeConfig() output.RuntimeConfig { return d.cfg.Runtime }
+
+var validOutputFormats = map[string]bool{formatAll: true, formatFields: true, formatText: true}
+
+func (c *config) validate() utils.ValidationErrors {
+	var errs utils.ValidationErrors
+	errs.Merge("", c.HTTPConfig.Validate())
+	errs.Merge("", c.HTTPTargetConfig.Validate(&targetOptions))
+	if c.OutputFormat == "" {
+		c.OutputFormat = formatAll
+	} else if !validOutputFormats[c.OutputFormat] {
+		errs.Add("output_format", "must be all/fields/text")
+	}
+	if c.MessageTemplate != "" {
+		if _, err := template.New("").Parse(c.MessageTemplate); err != nil {
+			errs.Add("message_template", "invalid Go template")
+		}
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
+
+func createOutput(raw map[string]any, deps output.Deps) (output.Driver, error) {
+	var cfg config
+	if err := shared.DecodeDriverConfig(raw, &cfg); err != nil {
+		return nil, fmt.Errorf("%s config: %w", name, err)
+	}
+	if errs := cfg.validate(); len(errs) > 0 {
+		return nil, fmt.Errorf("%s: %s", name, errs.Error())
+	}
+
+	sender, err := shared.NewSender(name, &cfg.HTTPConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	o := &driver{
+		cfg:    cfg,
+		sender: sender,
+		logger: shared.ResolveLogger(deps.Logger, name),
+	}
+
+	if cfg.MessageTemplate != "" {
+		tmpl, err := template.New(name).Parse(cfg.MessageTemplate)
+		if err != nil {
+			return nil, fmt.Errorf("%s: parse message template: %w", name, err)
+		}
+		o.messageTmpl = tmpl
+	}
+
+	return o, nil
+}
+
+func (d *driver) Name() string { return name }
+
+func (d *driver) Init(_ context.Context) error { return nil }
+
+// Send checks the body because Slack answers 200 with error text on failure.
+func (d *driver) Send(ctx context.Context, evt *event.Event) error {
+	target, err := d.cfg.DeliveryURL()
+	if err != nil {
+		return shared.WrapDeliveryError(name, shared.OpTarget, err)
+	}
+	return d.sender.SendJSONCheckBody(ctx, http.MethodPost, target, d.buildPayload(evt), checkSlackResponse)
+}
+
+// HealthCheck is a no-op: the endpoint only accepts POST, which delivers a message.
+func (d *driver) HealthCheck(context.Context) error { return nil }
+
+func (d *driver) Close() error {
+	d.sender.Close()
+	return nil
+}
+
+func checkSlackResponse(body []byte) error {
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 || bytes.Equal(body, []byte("ok")) {
+		return nil
+	}
+	code := string(body)
+	retriable, documented := webhookErrors[code]
+	if !documented {
+		return &shared.DeliveryError{Output: name, Operation: shared.OpResponse, Code: "unexpected response"}
+	}
+	return &shared.DeliveryError{Output: name, Operation: shared.OpResponse, Code: code, Permanent: !retriable}
+}

@@ -1,56 +1,50 @@
 # Loki
 
+Pushes each event as a log line to Grafana Loki, at `/loki/api/v1/push` under `base_path`. `tenant` sets `X-Scope-OrgID` for a multi-tenant Loki. The health probe is `GET /ready`.
 
-- **Category**: Logs
-- **Website**: https://grafana.com/oss/loki/
+Stream labels are few and bounded, as Loki recommends:
 
-## Table of content
+| Label | Value |
+| --- | --- |
+| `source` | Event source, such as `syscall`. |
+| `priority` | Priority as Falco writes it, such as `Warning`. |
+| `level` | Priority in the names Grafana colors: `critical` (Emergency, Alert, Critical), `error`, `warning`, `info` (Notice, Informational) or `debug`. |
+| `hostname` | Host that produced the event, when set. |
+| `k8s_ns_name` | Kubernetes namespace, when the event has `k8s.ns.name`. |
 
-- [Loki](#loki)
-  - [Table of content](#table-of-content)
-  - [Configuration](#configuration)
-  - [Example of config.yaml](#example-of-configyaml)
-  - [Screenshots](#screenshots)
+The rule, tags, pod and other output fields are not labels. With `format: json`, the default, they are in the log line; filter on them with `| json`. `label_fields` adds other output fields as labels, named with `.` and `[` as `_`: `container.name` becomes `container_name`. Each distinct value makes a new stream, so add only fields with few values.
 
-## Configuration
+Tested with Loki 3.7.9 and 2.9.17.
 
-|        Setting         |        Env var         |    Default value    |                                                             Description                                                             |                              |                              |                  |                                                                                                                                     |
-| ---------------------- | ---------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- | ---------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `loki.hostport`        | `LOKI_HOSTPORT`        |                     | http://{domain or ip}:{port}, if not empty, Loki output is **enabled**                                                              |                              |                              |                  |                                                                                                                                     |
-| `loki.user`            | `LOKI_USER`            |                     | User for Grafana Logs                                                                                                               |                              |                              |                  |                                                                                                                                     |
-| `loki.apikey`          | `LOKI_APIKEY`          |                     | API KEy for Grafana Logs                                                                                                            |                              |                              |                  |                                                                                                                                     |
-| `loki.tenant`          | `LOKI_TENANT`          |                     | Add the tenant header if needed                                                                                                     |                              |                              |                  |                                                                                                                                     |
-| `loki.format`          | `LOKI_FORMAT`          | `text`              | Format for the log entry value: json, text                                                                                          |                              |                              |                  |                                                                                                                                     |
-| `loki.endpoint`        | `LOKI_ENDPOINT`        | `/loki/api/v1/push` | The endpoint URL path, more info : https://grafana.com/docs/loki/latest/api/#post-apiprompush                                       |                              |                              |                  |                                                                                                                                     |
-| `loki.extralabels`     | `LOKI_EXTRALABELS`     |                     | comma separated list of fields to use as labels additionally to `rule`, `source`, `priority`, `tags` and `custom_fields`            |                              |                              |                  |                                                                                                                                     |
-| `loki.customheaders`   | `LOKI_CUSTOMHEADERS`   |                     | Custom headers to add in POST, useful for Authentication                                                                            |                              |                              |                  |                                                                                                                                     |
-| `loki.mutualtls`       | `LOKI_MUTUALTLS`       | `false`             | Authenticate to the output with TLS, if true, checkcert flag will be ignored (server cert will always be checked)                   |                              |                              |                  |                                                                                                                                     |
-| `loki.checkcert`       | `LOKI_CHECKCERT`       | `/api/v1/alerts`    | Check if ssl certificate of the output is valid                                                                                     | `mattermost.minimumpriority` | `MATTERMOST_MINIMUMPRIORITY` | `""` (= `debug`) | Minimum priority of event for using this output, order is `emergency,alert,critical,error,warning,notice,informational,debug or ""` |
-| `loki.minimumpriority` | `LOKI_MINIMUMPRIORITY` | `""` (= `debug`)    | Minimum priority of event for using this output, order is `emergency,alert,critical,error,warning,notice,informational,debug or ""` |                              |                              |                  |                                                                                                                                     |
+## Example
 
-
-> [!NOTE]
-The Env var values override the settings from yaml file.
-
-## Example of config.yaml
-
+<!-- example -->
 ```yaml
-loki:
-  # hostport: "" # http://{domain or ip}:{port}, if not empty, Loki output is enabled
-  # user: "" # user for Grafana Logs
-  # apikey: "" # API Key for Grafana Logs
-  # minimumpriority: "" # minimum priority of event for using this output, order is emergency|alert|critical|error|warning|notice|informational|debug or "" (default)
-  # checkcert: true # check if ssl certificate of the output is valid (default: true)
-  # tenant: "" # Add the tenant header if needed. Enabled if not empty
-  # format: "text" # Format for the log entry value: json, text (default)
-  # endpoint: "/loki/api/v1/push" # The endpoint URL path, default is "/loki/api/v1/push" more info : https://grafana.com/docs/loki/latest/api/#post-apiprompush
-  # extralabels: "" # comma separated list of fields to use as labels additionally to rule, source, priority, tags and custom_fields
-  # customHeaders: # Custom headers to add in POST, useful for Authentication
-  #   key: value
+outputs:
+  loki:
+    host: http://loki:3100
+    tenant: security
+    label_fields:
+      - container.name
 ```
 
-## Screenshots
+<!-- BEGIN GENERATED: settings -->
+<!-- Generated from the output schema by `make docs`. Do not edit. -->
 
-With Grafana
+## Settings
 
-![loki example](images/loki.png)
+Key in the output file: `loki`. Category: Logs. UI event source: no. Batching: yes.
+
+| Setting | Type | Default | Description |
+| --- | --- | --- | --- |
+| `host` | string, **required** | - | Address of the destination as scheme, host and optional port, such as `https://example.com:8443`; the path goes in the base path and endpoint. |
+| `base_path` | string | - | Path prefix of every request, such as `/proxy/v2` when the destination sits behind a reverse proxy. |
+| `endpoint` | string | `/loki/api/v1/push` | Path the events are sent to, after the base path. |
+| `secret_endpoint` | string, secret | - | Path the events are sent to, used instead of the endpoint when the path itself is a credential, as in a webhook URL; the API never returns it. Also accepted as `secret_endpoint_file`, the path of a file holding the value. |
+| `tenant` | string | - | Tenant ID sent in the `X-Scope-OrgID` header, for a multi-tenant Loki. Empty sends no header. |
+| `format` | one of `json`, `text` | `json` | Content of each log line: `json` is the whole event as JSON, `text` is the event output text only. |
+| `label_fields` | list of strings | - | Output field names, such as `container.name`, added as stream labels when the event has them, named with `.` and `[` as `_`: `container_name`. Every distinct value adds a stream, so list only fields with few values. A name that does not make a valid label name, or makes a built-in label, is refused. |
+
+Also takes the shared settings in [Query parameters](common.md#query-parameters), [HTTP authentication and headers](common.md#http-authentication-and-headers), [TLS](common.md#tls), [Delivery](common.md#delivery), [Batching](common.md#batching).
+
+<!-- END GENERATED: settings -->

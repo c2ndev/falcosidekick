@@ -1,70 +1,133 @@
 version: 2
 
 project_name: falcosidekick
+dist: dist/release
 
 env:
-  - GO111MODULE=on
-  - DOCKER_CLI_EXPERIMENTAL=enabled
-  - DOCKER_BUILDKIT=1
-  - BUILDX_PLATFORMS=linux/amd64,linux/arm64,linux/arm/v7
   - COSIGN_YES=true
 
 snapshot:
-  version_template: "latest"
+  version_template: "v3-main"
 
 checksum:
-  name_template: "checksums.txt"
+  name_template: "falcosidekick-checksums.txt"
 
-# Prevents parallel builds from stepping on each others toes downloading modules
 before:
   hooks:
-    - go mod tidy
-    - /bin/bash -c 'if [ -n "$(git --no-pager diff --exit-code go.mod go.sum)" ]; then exit 1; fi'
-
-# gomod:
-#   proxy: true
+    - sh -c "cd ui && bun install --frozen-lockfile"
+    - sh -c "cd ui && bun run build"
 
 sboms:
   - artifacts: archive
 
 builds:
-  - id: "falcosidekick"
+  - id: falcosidekick
+    main: ./cmd/falcosidekick
+    binary: falcosidekick
+    mod_timestamp: "{{ .CommitTimestamp }}"
     goos:
       - linux
     goarch:
       - amd64
       - arm64
-      - arm
-    goarm:
-      - "7"
     env:
       - CGO_ENABLED=0
     flags:
+      - -mod=readonly
+      - -trimpath
+      - -tags=builtinui
+    ldflags:
+      - -s -w
+      - -X github.com/falcosecurity/falcosidekick/internal/version.Version={{ .Version }}
+      - -X github.com/falcosecurity/falcosidekick/internal/version.Commit={{ .FullCommit }}
+      - -X github.com/falcosecurity/falcosidekick/internal/version.BuildDate={{ .CommitDate }}
+
+  - id: falcosidekick-slim
+    main: ./cmd/falcosidekick
+    binary: falcosidekick-slim
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -mod=readonly
       - -trimpath
     ldflags:
-      - "{{ .Env.LDFLAGS }}"
-    binary: falcosidekick
+      - -s -w
+      - -X github.com/falcosecurity/falcosidekick/internal/version.Version={{ .Version }}
+      - -X github.com/falcosecurity/falcosidekick/internal/version.Commit={{ .FullCommit }}
+      - -X github.com/falcosecurity/falcosidekick/internal/version.BuildDate={{ .CommitDate }}
+
+archives:
+  - id: falcosidekick
+    ids:
+      - falcosidekick
+    name_template: "falcosidekick_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: falcosidekick-slim
+    ids:
+      - falcosidekick-slim
+    name_template: "falcosidekick_{{ .Version }}_{{ .Os }}_{{ .Arch }}_slim"
 
 dockers_v2:
-  - dockerfile: Dockerfile
-    flags:
-      - "--pull=true"
+  - id: falcosidekick-ui
+    dockerfile: Dockerfile
+    ids:
+      - falcosidekick
     platforms:
       - linux/amd64
       - linux/arm64
-      - linux/arm/v7
-
     images:
       - "falcosecurity/falcosidekick"
-      - "public.ecr.aws/falcosecurity/falcosidekick"
     tags:
-      - stable
       - "{{ .Version }}"
+      - '{{ if eq (index .Env "FSK_LATEST_MINOR") "true" }}{{ .Major }}.{{ .Minor }}{{ end }}'
+      - '{{ if eq (index .Env "FSK_LATEST_MAJOR") "true" }}{{ .Major }}{{ end }}'
+      - '{{ if eq (index .Env "FSK_LATEST_MAJOR") "true" }}v3-latest{{ end }}'
+    build_args:
+      BINARY: falcosidekick
     labels:
-      "org.opencontainers.image.created": "{{.Date}}"
-      "org.opencontainers.image.name": "{{.ProjectName}}"
-      "org.opencontainers.image.revision": "{{.FullCommit}}"
-      "org.opencontainers.image.version": "{{.Version}}"
+      "org.opencontainers.image.title": "falcosidekick"
+      "org.opencontainers.image.description": "Forwards Falco events to outputs, with a web UI"
+      "org.opencontainers.image.source": "https://github.com/falcosecurity/falcosidekick"
+      "org.opencontainers.image.licenses": "Apache-2.0"
+      "org.opencontainers.image.vendor": "The Falco Authors"
+      "org.opencontainers.image.created": "{{ .CommitDate }}"
+      "org.opencontainers.image.revision": "{{ .FullCommit }}"
+      "org.opencontainers.image.version": "{{ .Version }}"
+      "io.falcosecurity.falcosidekick.variant": "ui"
+    extra_files:
+      - LICENSE
+
+  - id: falcosidekick-slim
+    dockerfile: Dockerfile
+    ids:
+      - falcosidekick-slim
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    images:
+      - "falcosecurity/falcosidekick"
+    tags:
+      - "{{ .Version }}-slim"
+      - '{{ if eq (index .Env "FSK_LATEST_MINOR") "true" }}{{ .Major }}.{{ .Minor }}-slim{{ end }}'
+      - '{{ if eq (index .Env "FSK_LATEST_MAJOR") "true" }}{{ .Major }}-slim{{ end }}'
+      - '{{ if eq (index .Env "FSK_LATEST_MAJOR") "true" }}v3-latest-slim{{ end }}'
+    build_args:
+      BINARY: falcosidekick-slim
+    labels:
+      "org.opencontainers.image.title": "falcosidekick"
+      "org.opencontainers.image.description": "Forwards Falco events to outputs, without the web UI"
+      "org.opencontainers.image.source": "https://github.com/falcosecurity/falcosidekick"
+      "org.opencontainers.image.licenses": "Apache-2.0"
+      "org.opencontainers.image.vendor": "The Falco Authors"
+      "org.opencontainers.image.created": "{{ .CommitDate }}"
+      "org.opencontainers.image.revision": "{{ .FullCommit }}"
+      "org.opencontainers.image.version": "{{ .Version }}"
+      "io.falcosecurity.falcosidekick.variant": "slim"
     extra_files:
       - LICENSE
 
@@ -80,11 +143,11 @@ signs:
     args: ["sign-blob", "--bundle", "${artifact}.bundle", "${artifact}"]
     artifacts: checksum
 
+# By digest: a tag can move between the push and the signature.
 docker_signs:
   - id: falcosidekick
     cmd: cosign
-    args: ["sign", "--recursive", "${artifact}"]
-    artifacts: manifests
+    args: ["sign", "--recursive", "${artifact}@${digest}"]
     output: true
 
 release:
@@ -92,3 +155,4 @@ release:
     owner: falcosecurity
     name: falcosidekick
   prerelease: auto
+  name_template: "falcosidekick {{ .Version }}"

@@ -1,44 +1,42 @@
 # Syslog
 
-- **Category**: Syslog
-- **Website**: https://en.wikipedia.org/wiki/Syslog
+Sends each event as an RFC 5424 message over UDP or TCP; TCP uses octet-counting framing (RFC 6587), and `tls.enabled: true` runs it over TLS (RFC 5425, port 6514 by default). The severity follows the Falco priority. TCP keeps one connection and reconnects when the receiver closes it. Startup dials TCP receivers; an untrusted certificate stops startup. Syslog connects directly, without a proxy.
 
-## Table of content
+`format` is `json`, the event, or `cef`, ArcSight CEF:
 
-- [Syslog](#syslog)
-  - [Table of content](#table-of-content)
-  - [Configuration](#configuration)
-  - [Example of config.yaml](#example-of-configyaml)
-  - [Additional info](#additional-info)
-  - [Screenshots](#screenshots)
+- Device Vendor is `Falcosecurity` and Device Product `Falcosidekick`; Device Version is the Falcosidekick version; Device Event Class ID and Name are the rule; Severity follows the priority.
+- `rt` is the event time in epoch milliseconds, `dvchost` the hostname, `msg` the output, cut at 1023 characters, `externalId` the event UUID and `cat` the Falco source.
+- The first six output fields, in name order, go in `cs1` to `cs6` with the field name in `cs1Label` to `cs6Label`, cut to the CEF lengths: 4000 characters for a value, 1023 for a label. The others, and the tags, go in keys starting with `FalcoFalcosidekick`, such as `FalcoFalcosidekickK8sNsName`: receivers keep them but may not index them.
+- Values are escaped as the CEF specification asks: `\`, `=` and line breaks in the extension, `\` and `|` in the header.
 
-## Configuration
+## Example
 
-| Setting                  | Env var                  | Default value    | Description                                                                                                                         |
-| ------------------------ | ------------------------ | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `syslog.host`            | `SYSLOG_HOST`            |                  | Syslog host, if not empty, Syslog output is enabled                                                                                 |
-| `syslog.port`            | `SYSLOG_PORT`            |                  | Syslog endpoint port number                                                                                                         |
-| `syslog.protocol`        | `SYSLOG_PROTOCOL`        | `tcp`            | Syslog transport protocol. It can be either `tcp` or `udp`                                                                          |
-| `syslog.format`          | `SYSLOG_FORMAT`          | `json`           | Syslog payload format. It can be either `json` or `cef`                                                                             |
-| `syslog.minimumpriority` | `SYSLOG_MINIMUMPRIORITY` | `""` (= `debug`) | Minimum priority of event for using this output, order is `emergency,alert,critical,error,warning,notice,informational,debug or ""` |
-
-> [!NOTE]
-The Env var values override the settings from yaml file.
-
-## Example of config.yaml
-
+<!-- example -->
 ```yaml
-syslog:
-  host: "" # Syslog host, if not empty, Syslog output is enabled
-  port: "" # Syslog endpoint port number
-  # protocol: "" # Syslog transport protocol. It can be either "tcp" or "udp" (default: tcp)
-  # format: "" # Syslog payload format. It can be either "json" or "cef" (default: json)
-  # minimumpriority: "debug" # minimum priority of event for using this output, order is emergency|alert|critical|error|warning|notice|informational|debug or "" (default)
+outputs:
+  syslog:
+    host: syslog.example.com
+    tls:
+      enabled: true
+    format: cef
 ```
 
-## Additional info
-```
-# Recommended version rsyslogd  8.2102 or newer
-rsyslogd -v to check the version
-```
-## Screenshots
+<!-- BEGIN GENERATED: settings -->
+<!-- Generated from the output schema by `make docs`. Do not edit. -->
+
+## Settings
+
+Key in the output file: `syslog`. Category: Logs. UI event source: no. Batching: no.
+
+| Setting | Type | Default | Description |
+| --- | --- | --- | --- |
+| `host` | string, **required** | - | Syslog receiver host name or IP address, without scheme, port or path. |
+| `port` | integer | - | Receiver port. Empty or `0` uses `514`, or `6514` with `tls.enabled`. |
+| `protocol` | one of `tcp`, `udp` | `tcp` | Transport for RFC 5424 messages. `tcp` keeps one connection with octet-counting framing, over TLS (RFC 5425) with `tls.enabled`; `udp` sends one datagram per message and cannot use TLS. |
+| `format` | one of `json`, `cef` | `json` | Message body: the event JSON, or ArcSight CEF with the output fields in `cs1` to `cs6` and `FalcoFalcosidekick` keys. |
+| `facility` | one of `auth`, `authpriv`, `cron`, `daemon`, `ftp`, `kern`, `local0`, `local1`, `local2`, `local3`, `local4`, `local5`, `local6`, `local7`, `lpr`, `mail`, `news`, `syslog`, `user`, `uucp` | `local0` | Syslog facility of every message; the severity follows the Falco priority. |
+| `tls.enabled` | boolean | `false` | Connects over TLS. The other `tls` settings are refused unless this is set. |
+
+Also takes the shared settings in [TLS](common.md#tls), [Delivery](common.md#delivery).
+
+<!-- END GENERATED: settings -->

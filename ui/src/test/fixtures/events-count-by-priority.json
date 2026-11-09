@@ -1,0 +1,7 @@
+{
+  "groups": {
+    "Critical": 1,
+    "Notice": 1,
+    "Warning": 1
+  }
+}

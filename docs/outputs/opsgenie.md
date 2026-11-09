@@ -1,40 +1,35 @@
 # Opsgenie
 
-- **Category**: Alerting
-- **Website**: https://www.opsgenie.com/
+Creates an alert per event with `/v2/alerts` on the `us` or `eu` host. Atlassian ends Opsgenie on 2027-04-05 (sales stopped on 2025-06-04).
 
-## Table of content
+- `message` is the rule (130 characters at most), `description` the output (15000) and `entity` the hostname (512), left out when the event has none.
+- The event UUID is the `alias`, so a retried event updates the same alert.
+- Startup calls `GET /v2/heartbeats`: 401 or 404 stops startup; 403, the answer for an alert-only key, is accepted.
 
-- [Opsgenie](#opsgenie)
-  - [Table of content](#table-of-content)
-  - [Configuration](#configuration)
-  - [Example of config.yaml](#example-of-configyaml)
-  - [Additional info](#additional-info)
-  - [Screenshots](#screenshots)
+## Example
 
-## Configuration
-
-| Setting                    | Env var                    | Default value    | Description                                                                                                                         |
-| -------------------------- | -------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `opsgenie.apikey`          | `OPSGENIE_APIKEY`          |                  | Opsgenie API Key, if not empty, Opsgenie output is **enabled**                                                                      |
-| `opsgenie.region`          | `OPSGENIE_REGION`          | `us`             | Region of your domain (`us`, `eu`)                                                                                                  |
-| `opsgenie.minimumpriority` | `OPSGENIE_MINIMUMPRIORITY` | `""` (= `debug`) | Minimum priority of event for using this output, order is `emergency,alert,critical,error,warning,notice,informational,debug or ""` |
-
-> [!NOTE]
-The Env var values override the settings from yaml file.
-
-## Example of config.yaml
-
+<!-- example -->
 ```yaml
-opsgenie:
-  apikey: "" # Opsgenie API Key, if not empty, Opsgenie output is enabled
-  region: "eu" # Region of your domain (us|eu) (default: us)
-  # minimumpriority: "" # minimum priority of event for using this output, order is emergency|alert|critical|error|warning|notice|informational|debug or "" (default)
-
+outputs:
+  opsgenie:
+    api_key_file: /etc/falcosidekick/secrets/opsgenie/api-key
+    region: eu
 ```
 
-## Additional info
+<!-- BEGIN GENERATED: settings -->
+<!-- Generated from the output schema by `make docs`. Do not edit. -->
 
-## Screenshots
+## Settings
 
-![opsgenie example](images/opsgenie.png)
+Key in the output file: `opsgenie`. Category: Alerting and on-call. UI event source: no. Batching: no.
+
+| Setting | Type | Default | Description |
+| --- | --- | --- | --- |
+| `host` | string | - | Address of the destination as scheme, host and optional port. Empty uses the host of the selected region. |
+| `base_path` | string | - | Path prefix of every request, such as `/proxy/v2` when the destination sits behind a reverse proxy. |
+| `api_key` | string, secret, **required** | - | Key of an Opsgenie API integration, sent as `Authorization: GenieKey <key>`. Also accepted as `api_key_file`, the path of a file holding the value. |
+| `region` | one of `us`, `eu` | `us` | Region of the service account. It sets the host when the host is empty. |
+
+Also takes the shared settings in [Query parameters](common.md#query-parameters), [HTTP authentication and headers](common.md#http-authentication-and-headers), [TLS](common.md#tls), [Delivery](common.md#delivery).
+
+<!-- END GENERATED: settings -->

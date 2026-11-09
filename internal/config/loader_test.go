@@ -1,0 +1,194 @@
+// Copyright (C) 2026 The Falco Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestLoadDefaults(t *testing.T) {
+	cfg, err := Load("")
+	require.NoError(t, err)
+
+	assert.Empty(t, cfg.ListenAddress)
+	assert.Equal(t, 2801, cfg.ListenPort)
+	assert.Equal(t, "127.0.0.1", cfg.Management.ListenAddress, "the API listens on loopback by default")
+	assert.Equal(t, 2802, cfg.Management.ListenPort)
+	assert.Equal(t, 1000, cfg.Metrics.MaxLabelValues)
+	assert.Equal(t, "info", string(cfg.LogLevel))
+	assert.Equal(t, "text", string(cfg.LogFormat))
+	assert.False(t, cfg.UI.Enabled)
+	assert.False(t, cfg.API.AllowWrites, "API writes are off unless enabled")
+	assert.Equal(t, "inmemory", cfg.UI.EventSource)
+	assert.Equal(t, 1000, cfg.RuntimeDefaults.QueueSize)
+	assert.Equal(t, 2, cfg.RuntimeDefaults.Workers)
+}
+
+func TestLoadFromFile(t *testing.T) {
+	cfgFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(cfgFile, []byte(`
+listen_port: 3000
+log_level: debug
+ui:
+  enabled: true
+api:
+  allow_writes: true
+runtime_defaults:
+  queue_size: 5000
+enricher:
+  truncate_event_threshold: 8192
+`), 0o600))
+
+	cfg, err := Load(cfgFile)
+	require.NoError(t, err)
+
+	assert.Equal(t, 3000, cfg.ListenPort)
+	assert.Equal(t, "debug", string(cfg.LogLevel))
+	assert.True(t, cfg.UI.Enabled)
+	assert.True(t, cfg.API.AllowWrites)
+	assert.Equal(t, 5000, cfg.RuntimeDefaults.QueueSize)
+	assert.Empty(t, cfg.ListenAddress)
+	assert.Equal(t, 8192, cfg.Enricher.TruncateEventThreshold)
+}
+
+func TestLoadEnvOverride(t *testing.T) {
+	t.Setenv("FALCOSIDEKICK_LISTEN_PORT", "9999")
+	t.Setenv("FALCOSIDEKICK_LOG_LEVEL", "error")
+
+	cfg, err := Load("")
+	require.NoError(t, err)
+
+	assert.Equal(t, 9999, cfg.ListenPort)
+	assert.Equal(t, "error", string(cfg.LogLevel))
+}
+
+// Keys without a default are read from the environment too.
+func TestLoadEnvOnlyKeys(t *testing.T) {
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.Nil(t, cfg.TLS, "no TLS block without TLS settings")
+
+	t.Setenv("FALCOSIDEKICK_TLS_ENABLED", "true")
+	t.Setenv("FALCOSIDEKICK_TLS_CERT_FILE", "/certs/tls.crt")
+	t.Setenv("FALCOSIDEKICK_PROVISIONING_ALLOW_UI_UPDATES", "true")
+	t.Setenv("FALCOSIDEKICK_RUNTIME_DEFAULTS_MINIMUM_PRIORITY", "warning")
+	t.Setenv("FALCOSIDEKICK_RUNTIME_DEFAULTS_HEALTH_CHECK", "false")
+
+	cfg, err = Load("")
+	require.NoError(t, err)
+	require.NotNil(t, cfg.TLS)
+	assert.True(t, cfg.TLS.Enabled)
+	assert.Equal(t, "/certs/tls.crt", cfg.TLS.CertFile)
+	assert.True(t, cfg.Provisioning.AllowUIUpdates)
+	assert.Equal(t, "Warning", cfg.RuntimeDefaults.MinPriority.String())
+	require.NotNil(t, cfg.RuntimeDefaults.HealthCheck)
+	assert.False(t, *cfg.RuntimeDefaults.HealthCheck)
+}
+
+func TestLoadMetricsExtraLabels(t *testing.T) {
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Metrics.ExtraLabels)
+
+	cfgFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(cfgFile, []byte("metrics:\n  extra_labels: [k8s.ns.name, proc.name]\n"), 0o600))
+	cfg, err = Load(cfgFile)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"k8s.ns.name", "proc.name"}, cfg.Metrics.ExtraLabels)
+
+	t.Setenv("FALCOSIDEKICK_METRICS_EXTRA_LABELS", "k8s.pod.name,container.id")
+	cfg, err = Load("")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"k8s.pod.name", "container.id"}, cfg.Metrics.ExtraLabels)
+}
+
+func TestLoadEnvOverridesFile(t *testing.T) {
+	cfgFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(cfgFile, []byte(`listen_port: 3000`), 0o600))
+
+	t.Setenv("FALCOSIDEKICK_LISTEN_PORT", "4000")
+
+	cfg, err := Load(cfgFile)
+	require.NoError(t, err)
+
+	assert.Equal(t, 4000, cfg.ListenPort)
+}
+
+func TestLoadRejectsUnknownCoreKeys(t *testing.T) {
+	cfgFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(cfgFile, []byte(`
+listen_port: 3000
+listen_portt: 4000
+`), 0o600))
+
+	_, err := Load(cfgFile)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "listen_portt")
+}
+
+func TestLoadFileKeysAreCaseInsensitiveAndEnvWins(t *testing.T) {
+	cfgFile := filepath.Join(t.TempDir(), "sidekick.yaml")
+	require.NoError(t, os.WriteFile(cfgFile, []byte("Listen_Port: 2802\nLog_Level: debug\nruntime_defaults:\n  Queue_Size: 7\n"), 0o600))
+	t.Setenv("FALCOSIDEKICK_LOG_LEVEL", "error")
+
+	cfg, err := Load(cfgFile)
+	require.NoError(t, err)
+	assert.Equal(t, 2802, cfg.ListenPort)
+	assert.Equal(t, 7, cfg.RuntimeDefaults.QueueSize, "nested keys merge over the defaults")
+	assert.Equal(t, 2, cfg.RuntimeDefaults.Workers, "nested defaults the file does not set are kept")
+	assert.Equal(t, "error", string(cfg.LogLevel), "the environment overrides the file")
+}
+
+func TestLoadParseErrorsNeverQuoteTheFile(t *testing.T) {
+	const sentinel = "s3cret-sentinel"
+	for _, tc := range []struct {
+		name, content, want string
+	}{
+		{name: "unknown alias", content: "log_level: *" + sentinel + "\n", want: "yaml: line 1: invalid anchor or alias"},
+		{name: "unterminated quote", content: "log_level: \"" + sentinel + "\n", want: "yaml: lines 1-2: invalid syntax"},
+		{name: "duplicate key", content: "log_level: info\nlog_level: " + sentinel + "\n", want: "yaml: line 2: invalid structure"},
+		{name: "duration with spaces", content: "reload:\n  retire_timeout: \"" + sentinel + " x\"\n", want: "reload.retire_timeout"},
+		{name: "number", content: "listen_port: " + sentinel + "\n", want: "listen_port"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfgFile := filepath.Join(t.TempDir(), "sidekick.yaml")
+			require.NoError(t, os.WriteFile(cfgFile, []byte(tc.content), 0o600))
+			_, err := Load(cfgFile)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+			assert.NotContains(t, err.Error(), sentinel)
+		})
+	}
+}
+
+func TestLoadInvalidFilePath(t *testing.T) {
+	_, err := Load("/nonexistent/config.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config read")
+}
+
+func TestLoadValidatesWithDefaults(t *testing.T) {
+	cfg := loadDefaults(t)
+
+	errs := cfg.Validate()
+	assert.Empty(t, errs)
+}

@@ -1,79 +1,54 @@
 # Elasticsearch
 
-- **Category**: Logs
-- **Website**: https://www.elastic.co/elasticsearch/
+Indexes each event in Elasticsearch or OpenSearch.
 
-## Table of content
+- Each event is indexed with its UUID as document id (`create`). A retried batch does not duplicate documents in the same index; an item already indexed counts as delivered. A data stream checks ids only in its current backing index, so a retry after a rollover can write a duplicate.
+- In a bulk request, one item rejected for good marks the whole batch as failed.
+- By default each event goes to a dated index, `<index>-YYYY.MM.DD`, from the event time in UTC.
+- `data_stream: true` writes to `index` as a data stream instead. Every document carries `@timestamp`, and no date suffix applies: `index_suffix` must be `none` or unset. The data stream needs an index template with `data_stream` that matches its name: `create_index_template: true` creates one, or use your own.
+- `create_index_template: true` installs a template once, if none with that name exists. Its priority is `200`, above the built-in `logs-*-*` template (`100`), so a data stream such as `logs-falco-default` takes its mappings. It sets `number_of_shards` and `number_of_replicas` only when you set them; otherwise the cluster default applies, `1` and `1`.
+- `hostname` is mapped as `keyword`. Output fields with dots, such as `proc.name`, are stored as nested objects; `flatten_fields: true` stores them as flat fields, such as `proc_name`. OpenSearch has no `subobjects` setting, so `flatten_fields` is the way that works on both.
+- Authentication: basic auth, `api_key` or a client certificate; combining `api_key` with basic auth, `bearer_token` or an `Authorization` header is rejected.
 
-- [Elasticsearch](#elasticsearch)
-  - [Table of content](#table-of-content)
-  - [Configuration](#configuration)
-  - [Example of config.yaml](#example-of-configyaml)
-  - [Screenshots](#screenshots)
+Tested with Elasticsearch 7.17.28, 8.19.23 and 9.5.5, and OpenSearch 2.19.7 and 3.9.0.
 
-## Configuration
+## Example
 
-|               Setting                 |               Env var                  |  Default value   |                                                             Description                                                             |
-| ------------------------------------- | -------------------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `elasticsearch.hostport`              | `ELASTICSEARCH_HOSTPORT`               |                  | http://{domain or ip}:{port}, if not empty, Elasticsearch output is **enabled**                                                     |
-| `elasticsearch.index`                 | `ELASTICSEARCH_INDEX`                  | `falco`          | Index                                                                                                                               |
-| `elasticsearch.type`                  | `ELASTICSEARCH_TYPE`                   | `_doc`           | Index                                                                                                                               |
-| `elasticsearch.pipeline`              | `ELASTICSEARCH_PIPELINE`               |                  | Optional ingest pipeline name. Documentation: https://www.elastic.co/guide/en/elasticsearch/reference/current/ingest.html           |
-| `elasticsearch.suffix`                | `ELASTICSEARCH_SUFFIX`                 | `daily`          | Date suffix for index rotation : `daily`, `monthly`, `annually`, `none`                                                             |
-| `elasticsearch.apikey`                | `ELASTICSEARCH_APIKEY`                 |                  | Use this APIKey to authenticate to Elasticsearch                                                                                    |
-| `elasticsearch.username`              | `ELASTICSEARCH_USERNAME`               |                  | Use this username to authenticate to Elasticsearch                                                                                  |
-| `elasticsearch.password`              | `ELASTICSEARCH_PASSWORD`               |                  | Use this password to authenticate to Elasticsearch                                                                                  |
-| `elasticsearch.flattenfields`         | `ELASTICSEARCH_FLATTENFIELDS`          | `false`          | Replace . by _ to avoid mapping conflicts, force to true if `createindextemplate=true`                                              |
-| `elasticsearch.createindextemplate`   | `ELASTICSEARCH_CREATEINDEXTEMPLATE`    | `false`          | Create an index template                                                                                                            |
-| `elasticsearch.numberofshards`        | `ELASTICSEARCH_NUMBEROFSHARDS`         | `3`              | Number of shards set by the index template                                                                                          |
-| `elasticsearch.numberofreplicas`      | `ELASTICSEARCH_NUMBEROFREPLICAS`       | `3`              | Number of replicas set by the index template                                                                                        |
-| `elasticsearch.customheaders`         | `ELASTICSEARCH_CUSTOMHEADERS`          |                  | Custom headers to add in POST, useful for Authentication                                                                            |
-| `elasticsearch.mutualtls`             | `ELASTICSEARCH_MUTUALTLS`              | `false`          | Authenticate to the output with TLS, if true, checkcert flag will be ignored (server cert will always be checked)                   |
-| `elasticsearch.checkcert`             | `ELASTICSEARCH_CHECKCERT`              | `true`           | Check if ssl certificate of the output is valid                                                                                     |
-| `elasticsearch.minimumpriority`       | `ELASTICSEARCH_MINIMUMPRIORITY`        | `""` (= `debug`) | Minimum priority of event for using this output, order is `emergency,alert,critical,error,warning,notice,informational,debug or ""` |
-| `elasticsearch.maxconcurrentrequests` | `ELASTICSEARCH_MAXCONCURRENTREQUESTS`  | `1`              | Max number of concurrent requests                                                                                                   |
-| `elasticsearch.enablecompression`     | `ELASTICSEARCH_ENABLECOMPRESSION`      | `false`          | Enables gzip compression                                                                                                            |
-| `elasticsearch.batching.enabled`      | `ELASTICSEARCH_BATCHING_ENABLED`       | `false`          | Enables batching (utilizing Elasticsearch bulk API)                                                                                 |
-| `elasticsearch.batching.batchsize`    | `ELASTICSEARCH_BATCHING_BATCHSIZE`     | `5242880`        | Batch size in bytes, default 5MB                                                                                                    |
-| `elasticsearch.batching.flushinterval`| `ELASTICSEARCH_BATCHING_FLUSHINTERVAL` | `1s`             | Batch flush interval, use valid Go duration string                                                                                  |
-
-> [!NOTE]
-The Env var values override the settings from yaml file.
-
-> [!NOTE]
-Increasing the default number of concurrent requests is a good way to increase throughput of the http outputs. This also increases the potential number of open connections. Choose wisely.
-
-> [!NOTE]
-Enabling batching for Elasticsearch is invaluable when the expected number of falco alerts is in the hundreds or thousands per second. The batching of data can be fine-tuned for your specific use case. The batch request is sent to Elasticsearch when the pending data size reaches `batchsize` or upon the `flushinterval`.
-Enabling gzip compression increases throughput even further.
-
-> [!WARNING]
-By enabling the creation of the index template with `elasticsearch.createindextemplate=true`, the output fields of the Falco events will be flatten to avoid any mapping conflict.
-
-## Example of config.yaml
-
+<!-- example -->
 ```yaml
-elasticsearch:
-  # hostport: "" # http://{domain or ip}:{port}, if not empty, Elasticsearch output is enabled
-  # index: "falco" # index (default: falco)
-  # type: "_doc"
-  # suffix: "daily" # date suffix for index rotation : daily (default), monthly, annually, none
-  # username: "" # use this username to authenticate to Elasticsearch if the username is not empty (default: "")
-  # password: "" # use this password to authenticate to Elasticsearch if the password is not empty (default: "")
-  # customHeaders: # Custom headers to add in POST, useful for Authentication
-  #   key: value
-  # mutualtls: false # if true, checkcert flag will be ignored (server cert will always be checked)
-  # checkcert: true # check if ssl certificate of the output is valid (default: true)
-  # minimumpriority: "" # minimum priority of event for using this output, order is emergency|alert|critical|error|warning|notice|informational|debug or "" (default)
-  # enablecompression: # if true enables gzip compression for http requests (default: false)
-  # batching: # batching configuration, improves throughput dramatically utilizing _bulk Elasticsearch API
-  #   enabled: true # if true enables batching
-  #   batchsize: 5242880 # batch size in bytes (default: 5 MB)
-  #   flushinterval: 1s # batch fush interval (default: 1s)
-  # maxconcurrentrequests: # max number of concurrent http requests (default: 1)
+outputs:
+  elasticsearch:
+    host: https://elasticsearch:9200
+    index: falco
+    index_suffix: daily
+    username: falcosidekick
+    password_file: /etc/falcosidekick/secrets/elasticsearch/password
+    runtime:
+      batching:
+        enabled: true
 ```
 
-## Screenshots
+<!-- BEGIN GENERATED: settings -->
+<!-- Generated from the output schema by `make docs`. Do not edit. -->
 
-With Kibana:
-![kibana example](images/kibana.png)
+## Settings
+
+Key in the output file: `elasticsearch`. Category: Logs. UI event source: no. Batching: yes.
+
+| Setting | Type | Default | Description |
+| --- | --- | --- | --- |
+| `host` | string, **required** | - | Address of the destination as scheme, host and optional port, such as `https://example.com:8443`; the path goes in the base path and endpoint. |
+| `base_path` | string | - | Path prefix of every request, such as `/proxy/v2` when the destination sits behind a reverse proxy. |
+| `index` | string | `falco` | Index the events are written to, before the date suffix, or the data stream name with `data_stream`: lowercase letters, digits, `.`, `-` and `_`, starting with a letter or digit. |
+| `index_suffix` | one of `daily`, `monthly`, `annually`, `none` | `daily` | Date of the event, in UTC, added to the index: `-YYYY.MM.DD`, `-YYYY.MM` or `-YYYY`. `none` writes to the index itself. With `data_stream`, only `none` is accepted and it is the default. |
+| `data_stream` | boolean | `false` | Writes to `index` as a data stream: every document is created, never overwritten, and carries `@timestamp`; no date suffix applies. Elasticsearch creates the data stream on the first document when an index template with `data_stream` matches its name. |
+| `pipeline` | string | - | Ingest pipeline every document goes through, sent as the `pipeline` query parameter. Empty uses the index default. |
+| `api_key` | string, secret | - | Elasticsearch API key in its encoded form, sent as `Authorization: ApiKey <key>`. Also accepted as `api_key_file`, the path of a file holding the value. |
+| `flatten_fields` | boolean | `false` | Replaces `.` with `_` in output field names, such as `proc_name`, so they are stored as flat fields instead of nested objects. |
+| `create_index_template` | boolean | `false` | Creates an index template named after the index, with the event mappings and the shard and replica counts when set, before the first delivery. With `data_stream`, the template creates a data stream. An existing template is left unchanged. |
+| `number_of_shards` | integer | - | Primary shards of each new index, set in the created template; must be greater than `0`. Unset leaves the cluster default, `1`. Used only when the template is created. |
+| `number_of_replicas` | integer | - | Replicas of each primary shard, set in the created template; `0` keeps no replica. Unset leaves the cluster default, `1`. Used only when the template is created. |
+
+Also takes the shared settings in [Query parameters](common.md#query-parameters), [HTTP authentication and headers](common.md#http-authentication-and-headers), [TLS](common.md#tls), [Delivery](common.md#delivery), [Batching](common.md#batching).
+
+<!-- END GENERATED: settings -->
